@@ -1,0 +1,122 @@
+# Project Plan
+
+## Completed
+- Set up FastAPI backend with SQLAlchemy models
+- Implemented authentication endpoints for registering and logging in
+- Created inventory item CRUD endpoints
+- Added dynamic field definitions API
+- Added basic team management endpoints
+- Implemented item relationship endpoints
+- Added file upload endpoints and tests
+- Implemented relationship graph endpoint
+- Integrated MinIO for file storage
+- Added item update/delete endpoints and filtering options
+- Implemented advanced inventory filtering by custom fields
+- Bootstrapped a Next.js frontend using shadcn/ui
+- Added login and register pages with auth token handling
+- Built inventory listing and creation UI
+- Field definition management UI
+
+- Improve validation in dynamic forms and implement item editing
+- Integrated file uploads and relationship graphs in the frontend
+- Add real-time updates and websocket support
+- Implement protocol template engine
+- Build protocol execution tracking
+- Implement troubleshooting system
+- Integrate troubleshooting UI
+- Expand protocol UI
+- Implement lab notebook module
+- Build lab notebook frontend
+- Implement collaboration comment system
+- Implement resource scheduling system
+- Integrate scheduling with notification system
+
+- Add notification preferences center
+
+- Expand notification channels (email/SMS)
+
+- Implement daily notification digest
+- Add user profile management endpoints
+- Basic sequence analysis utilities
+- Asynchronous sequence analysis jobs
+- Sequence alignment endpoint
+- Primer design endpoint
+- Restriction mapping endpoint
+- Sequence annotation tools
+- Sanger chromatogram parsing endpoint
+- Build chromatogram viewer UI and integrate file previews
+- Integrate chromatogram viewer with inventory file previews
+
+- Add FASTA/FASTQ file preview support
+
+- Implement BLAST sequence search
+- Integrate BLAST search in frontend
+- Add job status page for sequence analysis
+- Implement project management module
+
+- Calendar events and analysis tools
+- Lab buddy assistant integration
+- Full-text search endpoint
+- Inventory CSV export endpoint
+- Barcode generation endpoint
+- Inventory CSV import endpoint
+- Two-factor authentication
+- Password reset flow
+
+- Implement audit logging system
+- Basic analytics endpoint
+- Equipment integration API
+- External service connectors
+- Compliance dashboard
+- Audit report generator
+- Notebook PDF export endpoint
+- Docker containerization and CI pipeline
+- E2E tests with Playwright
+- Performance benchmarking with Locust
+- UI/UX refinements
+- DevOps & Monitoring
+- Data analysis toolkit with Pandas integration
+- Knowledge base module
+- Workflow engine for chaining tools and protocols
+- Notebook entries linked to projects and multiple items
+- Calendar UI integration
+- Project task tracking and timeline management
+- Lab network system
+- Resource sharing framework
+- Global marketplace infrastructure
+- Marketplace interface
+- Community feed module
+- Community moderation tools
+- Database migrations with Alembic
+- Basic authorization checks for inventory actions
+- Granular RBAC for teams and projects
+- Route security audit enforcing authentication
+- Unique constraint on field definitions
+- Hierarchical location management
+- Notebook entry signing and versioning
+- Equipment operations module (maintenance, SOPs, training)
+- Inventory faceted search
+- Protocol variables and conditional workflows
+- Structured notebook blocks
+- Service marketplace for CRO offerings
+- Public protocol sharing
+- Protocol merge request system
+- Intelligent assistant inventory forecasting
+- Predictive inventory alerts
+- Assistant protocol suggestions
+- Assistant experiment design helper
+- Service result delivery & payment tracking
+- Trending protocol analytics
+- Trending knowledge article analytics
+- Trending item analytics
+- Trending thread analytics
+- Trending analytics UI integration
+- Analytics timeframe filter
+- Knowledge article comments & public sharing
+- Protocol diff viewer page
+- Community forum module
+- Post like system and trending posts analytics
+- Trending ranking improvements
+- Protocol star system and analytics
+- Knowledge article star system and analytics
+- Article comment analytics
