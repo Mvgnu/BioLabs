@@ -447,6 +447,38 @@ class BookingOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ExperimentStepStatus(BaseModel):
+    index: int
+    instruction: str
+    status: Literal["pending", "in_progress", "completed", "skipped"] = "pending"
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class ExperimentExecutionSessionCreate(BaseModel):
+    template_id: UUID
+    title: Optional[str] = None
+    inventory_item_ids: list[UUID] = Field(default_factory=list)
+    booking_ids: list[UUID] = Field(default_factory=list)
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    auto_create_notebook: bool = True
+
+
+class ExperimentStepStatusUpdate(BaseModel):
+    status: Literal["pending", "in_progress", "completed", "skipped"]
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+
+class ExperimentExecutionSessionOut(BaseModel):
+    execution: "ProtocolExecutionOut"
+    protocol: "ProtocolTemplateOut"
+    notebook_entries: list["NotebookEntryOut"]
+    inventory_items: list["InventoryItemOut"]
+    bookings: list["BookingOut"]
+    steps: list[ExperimentStepStatus]
+
+
 class NotificationCreate(BaseModel):
     user_id: UUID
     message: str
@@ -1145,3 +1177,6 @@ class ItemTypeOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+ExperimentExecutionSessionOut.model_rebuild()

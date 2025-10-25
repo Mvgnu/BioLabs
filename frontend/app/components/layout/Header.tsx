@@ -41,6 +41,9 @@ export default function Header() {
             <Link href="/protocols" className="px-3 py-2 text-sm font-medium text-neutral-700 hover:text-primary-600 hover:bg-primary-50 rounded-md transition-colors">
               Protocols
             </Link>
+            <Link href="/experiment-console" className="px-3 py-2 text-sm font-medium text-neutral-700 hover:text-primary-600 hover:bg-primary-50 rounded-md transition-colors">
+              Experiment Console
+            </Link>
             <Link href="/notebook" className="px-3 py-2 text-sm font-medium text-neutral-700 hover:text-primary-600 hover:bg-primary-50 rounded-md transition-colors">
               Notebook
             </Link>
@@ -110,6 +113,9 @@ export default function Header() {
               </Link>
               <Link href="/protocols" className="px-3 py-2 text-sm font-medium text-neutral-700 hover:text-primary-600 hover:bg-primary-50 rounded-md transition-colors">
                 Protocols
+              </Link>
+              <Link href="/experiment-console" className="px-3 py-2 text-sm font-medium text-neutral-700 hover:text-primary-600 hover:bg-primary-50 rounded-md transition-colors">
+                Experiment Console
               </Link>
               <Link href="/notebook" className="px-3 py-2 text-sm font-medium text-neutral-700 hover:text-primary-600 hover:bg-primary-50 rounded-md transition-colors">
                 Notebook

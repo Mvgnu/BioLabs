@@ -23,6 +23,7 @@ modules = [
     'analytics',
     'audit',
     'equipment',
+    'experiment_console',
     'compliance',
     'external',
     'data_analysis',
