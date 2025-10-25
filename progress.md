@@ -118,6 +118,12 @@
 - Updated project plan with new async analysis feature
 
 ## 2025-07-02
+- Delivered experiment execution console API aggregating protocols, notebook entries, inventory, and bookings
+- Added FastAPI endpoints for session creation, retrieval, and step status tracking with metadata tags
+- Implemented React workspace with live step controls, resource panels, and launch form for new sessions
+- Updated navigation, command palette, README, and hooks to expose the console across the UI
+
+## 2025-07-02
 - Added sequence alignment endpoint using Biopython pairwise2
 - Created schemas for alignment input and output
 - Added tests covering alignment API

@@ -63,6 +63,10 @@ export function useCommandPalette(): UseCommandPaletteReturn {
               window.location.href = '/inventory'
             }
             break
+          case 'e':
+            event.preventDefault()
+            window.location.href = '/experiment-console'
+            break
           case 'p':
             if (event.shiftKey) {
               event.preventDefault()

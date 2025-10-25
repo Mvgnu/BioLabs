@@ -42,6 +42,7 @@ from .routes import (
     community,
     compliance,
     equipment,
+    experiment_console,
     external,
     data_analysis,
     knowledge,
@@ -118,6 +119,7 @@ app.include_router(forum.router)
 app.include_router(community.router)
 app.include_router(compliance.router)
 app.include_router(equipment.router)
+app.include_router(experiment_console.router)
 app.include_router(external.router)
 app.include_router(data_analysis.router)
 app.include_router(knowledge.router)

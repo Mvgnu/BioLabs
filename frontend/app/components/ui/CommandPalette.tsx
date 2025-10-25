@@ -80,6 +80,20 @@ const CommandPalette: React.FC<CommandPaletteProps> = ({
       )
     },
     {
+      id: 'nav-experiment-console',
+      title: 'Experiment Console',
+      subtitle: 'Unified execution workspace',
+      keywords: ['execution', 'workspace', 'experiment', 'live'],
+      category: 'navigation',
+      href: '/experiment-console',
+      shortcut: '⌘E',
+      icon: (
+        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3.75 5.25h16.5M3.75 9h10.5M3.75 18.75h16.5m-16.5-3.75h10.5" />
+        </svg>
+      )
+    },
+    {
       id: 'nav-notebook',
       title: 'Lab Notebook',
       subtitle: 'Digital notebook and documentation',

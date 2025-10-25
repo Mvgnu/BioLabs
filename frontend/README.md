@@ -21,4 +21,6 @@ Notebook entries can be managed from the **Notebook** page.
 Sequence annotation files (GenBank) can be uploaded on the **Sequence** page to
 view parsed features in a table. Interact with the lab buddy AI assistant from
 the **Assistant** page to get project and inventory summaries.
+Launch guided experiment runs through the **Experiment Console**, which unifies protocol steps, live logging, inventory pulls,
+and equipment bookings into a single execution workspace.
 Use the **Search** page to quickly locate items by name.

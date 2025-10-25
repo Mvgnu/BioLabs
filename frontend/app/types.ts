@@ -216,6 +216,16 @@ export interface CalendarEvent {
   created_at: string
 }
 
+export interface Booking {
+  id: string
+  resource_id: string
+  user_id: string
+  start_time: string
+  end_time: string
+  notes?: string | null
+  created_at: string
+}
+
 export interface Lab {
   id: string
   name: string
@@ -290,4 +300,38 @@ export interface TrendingThread {
 
 export interface ProtocolDiff {
   diff: string
+}
+
+export type ExperimentStepState = 'pending' | 'in_progress' | 'completed' | 'skipped'
+
+export interface ExperimentStepStatus {
+  index: number
+  instruction: string
+  status: ExperimentStepState
+  started_at?: string | null
+  completed_at?: string | null
+}
+
+export interface ExperimentExecutionSession {
+  execution: ProtocolExecution
+  protocol: ProtocolTemplate
+  notebook_entries: NotebookEntry[]
+  inventory_items: InventoryItem[]
+  bookings: Booking[]
+  steps: ExperimentStepStatus[]
+}
+
+export interface ExperimentExecutionSessionCreate {
+  template_id: string
+  title?: string
+  inventory_item_ids?: string[]
+  booking_ids?: string[]
+  parameters?: Record<string, any>
+  auto_create_notebook?: boolean
+}
+
+export interface ExperimentStepStatusUpdate {
+  status: ExperimentStepState
+  started_at?: string | null
+  completed_at?: string | null
 }
