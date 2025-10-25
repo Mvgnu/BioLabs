@@ -59,20 +59,10 @@ export interface NotificationCreate {
 }
 
 export interface NotificationSettings {
-  email_enabled: boolean
-  push_enabled: boolean
-  in_app_enabled: boolean
   digest_frequency: 'immediate' | 'hourly' | 'daily' | 'weekly'
-  quiet_hours: {
-    enabled: boolean
-    start: string
-    end: string
-  }
-  categories: Record<string, {
-    email: boolean
-    push: boolean
-    in_app: boolean
-  }>
+  quiet_hours_enabled: boolean
+  quiet_hours_start?: string | null
+  quiet_hours_end?: string | null
 }
 
 // Real-time event types

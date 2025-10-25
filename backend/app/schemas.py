@@ -1,5 +1,5 @@
-from datetime import datetime
-from typing import Optional, Any, Dict
+from datetime import datetime, time
+from typing import Optional, Any, Dict, Literal
 from pydantic import BaseModel, EmailStr, ConfigDict, Field
 from uuid import UUID
 
@@ -480,6 +480,20 @@ class NotificationPreferenceOut(BaseModel):
     channel: str
     enabled: bool
     model_config = ConfigDict(from_attributes=True)
+
+
+class NotificationSettingsOut(BaseModel):
+    digest_frequency: Literal["immediate", "hourly", "daily", "weekly"]
+    quiet_hours_enabled: bool
+    quiet_hours_start: Optional[time] = None
+    quiet_hours_end: Optional[time] = None
+
+
+class NotificationSettingsUpdate(BaseModel):
+    digest_frequency: Optional[Literal["immediate", "hourly", "daily", "weekly"]] = None
+    quiet_hours_enabled: Optional[bool] = None
+    quiet_hours_start: Optional[time] = None
+    quiet_hours_end: Optional[time] = None
 
 
 class SequenceRead(BaseModel):

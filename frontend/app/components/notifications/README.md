@@ -17,6 +17,8 @@
    - Provides bulk actions (mark-all-read, clear filters) and detail views per notification.
 3. **NotificationBell / ToastContainer**
    - Exposes global entry points for the center and surfaces lightweight real-time alerts.
+4. **NotificationSettingsPanel**
+   - Provides digest cadence controls, quiet hour scheduling, and per-category channel routing backed by `/api/notifications/settings` and `/api/notifications/preferences`.
 
 ## Integration Notes
 - Ensure `NotificationProvider` is mounted once inside `layout.tsx` after the `QueryClientProvider` so React Query hooks have access to the shared client.

@@ -8,7 +8,8 @@ import type {
   NotificationStats,
   NotificationFilters,
   RealTimeNotification,
-  NotificationEvent
+  NotificationEvent,
+  NotificationSettings
 } from '../types/notifications'
 
 interface NotificationState {
@@ -24,6 +25,7 @@ interface NotificationState {
   // Filters and Settings
   filters: NotificationFilters
   preferences: NotificationPreference[]
+  settings: NotificationSettings
   
   // Stats
   stats: NotificationStats
@@ -49,6 +51,8 @@ interface NotificationState {
   
   // Preferences
   setPreferences: (preferences: NotificationPreference[]) => void
+  setSettings: (settings: NotificationSettings) => void
+  updateSettings: (settings: Partial<NotificationSettings>) => void
   updatePreference: (prefType: string, channel: string, enabled: boolean) => void
   
   // Stats
@@ -70,6 +74,13 @@ const defaultFilters: NotificationFilters = {
   priority: undefined,
   date_from: undefined,
   date_to: undefined,
+}
+
+const defaultSettings: NotificationSettings = {
+  digest_frequency: 'daily',
+  quiet_hours_enabled: false,
+  quiet_hours_start: null,
+  quiet_hours_end: null,
 }
 
 const createEmptyStats = (): NotificationStats => ({
@@ -125,6 +136,7 @@ export const useNotifications = create<NotificationState>()(
     error: null,
     filters: defaultFilters,
     preferences: [],
+    settings: defaultSettings,
     stats: defaultStats,
 
     // UI Actions
@@ -219,6 +231,13 @@ export const useNotifications = create<NotificationState>()(
 
     // Preferences
     setPreferences: (preferences) => set({ preferences }),
+
+    setSettings: (settings) => set({ settings }),
+
+    updateSettings: (settings) =>
+      set((state) => ({
+        settings: { ...state.settings, ...settings },
+      })),
     
     updatePreference: (prefType, channel, enabled) =>
       set((state) => {
@@ -303,12 +322,17 @@ export const useNotifications = create<NotificationState>()(
 
 // Subscribe to changes for persistence
 useNotifications.subscribe(
-  (state) => ({ notifications: state.notifications, preferences: state.preferences }),
+  (state) => ({
+    notifications: state.notifications,
+    preferences: state.preferences,
+    settings: state.settings,
+  }),
   (state) => {
     // Persist to localStorage
     if (typeof window !== 'undefined') {
       localStorage.setItem('biolab-notifications', JSON.stringify(state.notifications))
       localStorage.setItem('biolab-notification-preferences', JSON.stringify(state.preferences))
+      localStorage.setItem('biolab-notification-settings', JSON.stringify(state.settings))
     }
   }
 )
@@ -331,7 +355,13 @@ if (typeof window !== 'undefined') {
       const preferences = JSON.parse(savedPreferences)
       useNotifications.setState({ preferences })
     }
+
+    const savedSettings = localStorage.getItem('biolab-notification-settings')
+    if (savedSettings) {
+      const settings = JSON.parse(savedSettings)
+      useNotifications.setState({ settings })
+    }
   } catch (error) {
     console.error('Failed to load notifications from localStorage:', error)
   }
-} 
+}

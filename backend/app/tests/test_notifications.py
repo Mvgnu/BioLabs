@@ -1,6 +1,7 @@
 import json
 import uuid
 import os
+from datetime import time
 from .conftest import client, TestingSessionLocal
 from app import notify, models, tasks, auth
 
@@ -117,6 +118,24 @@ def test_daily_digest(client):
     assert "First" in body and "Second" in body
 
 
+def test_daily_digest_respects_quiet_hours(client):
+    notify.EMAIL_OUTBOX.clear()
+    email = f"{uuid.uuid4()}@ex.com"
+    create_user(client, email)
+    db = TestingSessionLocal()
+    user = db.query(models.User).filter_by(email=email).first()
+    user.quiet_hours_enabled = True
+    user.quiet_hours_start = time(0, 0)
+    user.quiet_hours_end = time(23, 59)
+    db.add(user)
+    db.add(models.Notification(user_id=user.id, message="Should wait"))
+    db.commit()
+    notify.send_daily_digest(db)
+    db.close()
+    entries = [e for e in notify.EMAIL_OUTBOX if e[0] == email]
+    assert len(entries) == 0
+
+
 def test_inventory_alert_task(client, monkeypatch):
     os.environ["INVENTORY_WARNING_DAYS"] = "7"
     notify.EMAIL_OUTBOX.clear()
@@ -164,6 +183,47 @@ def test_preference_unique(client):
     db.close()
     # only one preference row should exist
     assert len(prefs) == 1
+
+
+def test_notification_settings_endpoints(client):
+    headers = create_user(client, f"{uuid.uuid4()}@ex.com")
+    get_resp = client.get("/api/notifications/settings", headers=headers)
+    assert get_resp.status_code == 200
+    assert get_resp.json()["digest_frequency"] == "daily"
+
+    update_resp = client.put(
+        "/api/notifications/settings",
+        json={
+            "digest_frequency": "weekly",
+            "quiet_hours_enabled": True,
+            "quiet_hours_start": "20:00",
+            "quiet_hours_end": "06:00",
+        },
+        headers=headers,
+    )
+    assert update_resp.status_code == 200
+    data = update_resp.json()
+    assert data["digest_frequency"] == "weekly"
+    assert data["quiet_hours_enabled"] is True
+    assert data["quiet_hours_start"].startswith("20:00")
+    assert data["quiet_hours_end"].startswith("06:00")
+
+    client.put(
+        "/api/notifications/settings",
+        json={
+            "quiet_hours_enabled": False,
+            "quiet_hours_start": None,
+            "quiet_hours_end": None,
+        },
+        headers=headers,
+    )
+
+    bad_resp = client.put(
+        "/api/notifications/settings",
+        json={"quiet_hours_enabled": True, "quiet_hours_start": "08:00"},
+        headers=headers,
+    )
+    assert bad_resp.status_code == 400
 
 
 def test_notification_events_published(client):

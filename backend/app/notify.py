@@ -41,6 +41,9 @@ def send_daily_digest(db):
     for user in users:
         if not user.email:
             continue
+
+        if user.digest_frequency and user.digest_frequency != "daily":
+            continue
         since = user.last_digest
         notifs = (
             db.query(models.Notification)
@@ -49,6 +52,21 @@ def send_daily_digest(db):
             .all()
         )
         if notifs:
+            if (
+                user.quiet_hours_enabled
+                and user.quiet_hours_start
+                and user.quiet_hours_end
+            ):
+                current_time = now.time()
+                start = user.quiet_hours_start
+                end = user.quiet_hours_end
+                in_quiet_window = False
+                if start <= end:
+                    in_quiet_window = start <= current_time < end
+                else:
+                    in_quiet_window = current_time >= start or current_time < end
+                if in_quiet_window:
+                    continue
             content = "\n".join(n.message for n in notifs)
             send_email(user.email, "Daily Notification Digest", content)
             user.last_digest = now

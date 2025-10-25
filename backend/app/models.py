@@ -1,6 +1,6 @@
 import uuid
 import sqlalchemy as sa
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, JSON, Integer
+from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, JSON, Integer, Time
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -21,6 +21,10 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     last_digest = Column(DateTime, default=datetime.now(timezone.utc))
+    digest_frequency = Column(String, default="daily", nullable=False)
+    quiet_hours_enabled = Column(Boolean, default=False, nullable=False)
+    quiet_hours_start = Column(Time, nullable=True)
+    quiet_hours_end = Column(Time, nullable=True)
 
     teams = relationship("TeamMember", back_populates="user")
     notifications = relationship(
