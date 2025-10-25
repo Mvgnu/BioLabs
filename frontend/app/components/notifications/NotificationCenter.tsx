@@ -22,10 +22,10 @@ import {
   AlertCircle
 } from 'lucide-react'
 import { useNotifications } from '../../store/useNotifications'
-import { useNotifications as useNotificationsAPI, useMarkAllNotificationsRead } from '../../hooks/useNotificationAPI'
+import { useMarkAllNotificationsRead } from '../../hooks/useNotificationAPI'
 import { NotificationItem } from './NotificationItem'
 import { cn } from '../../utils/cn'
-import type { Notification, NotificationCategory, NotificationFilters } from '../../types/notifications'
+import type { Notification, NotificationCategory } from '../../types/notifications'
 
 interface NotificationCenterProps {
   className?: string
@@ -46,20 +46,20 @@ const categoryOptions: { value: NotificationCategory; label: string; icon: React
 export const NotificationCenter: React.FC<NotificationCenterProps> = ({
   className
 }) => {
-  const { 
-    isOpen, 
-    setOpen, 
-    filters, 
-    setFilters, 
+  const {
+    isOpen,
+    setOpen,
+    filters,
+    setFilters,
     clearFilters,
     markAllAsRead,
     clearAll,
     getFilteredNotifications,
     getUnreadCount,
-    stats
+    stats,
+    isLoading,
+    error
   } = useNotifications()
-
-  const { data: notifications = [], isLoading, error } = useNotificationsAPI(filters)
   const markAllAsReadMutation = useMarkAllNotificationsRead()
   
   const [searchTerm, setSearchTerm] = useState('')

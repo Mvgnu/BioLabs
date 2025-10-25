@@ -207,3 +207,51 @@ def test_notification_events_published(client):
         deleted_event = json.loads(websocket.receive_text())
         assert deleted_event["type"] == "notification_deleted"
         assert deleted_event["data"]["id"] == notif_id
+
+
+def test_notification_events_multiteam_stream(client):
+    email = f"{uuid.uuid4()}@ex.com"
+    headers = create_user(client, email)
+
+    team_ids = []
+    for name in ("Alpha", "Beta"):
+        resp = client.post("/api/teams/", json={"name": f"{name} Team"}, headers=headers)
+        assert resp.status_code == 200
+        team_ids.append(resp.json()["id"])
+
+    db = TestingSessionLocal()
+    user = db.query(models.User).filter_by(email=email).first()
+    db.close()
+
+    with client.websocket_connect(f"/ws/{team_ids[0]}") as primary_ws:
+        with client.websocket_connect(f"/ws/{team_ids[1]}") as secondary_ws:
+            create_resp = client.post(
+                "/api/notifications/create",
+                json={
+                    "user_id": str(user.id),
+                    "message": "Cross-team alert",
+                    "title": "Multi-team",
+                },
+                headers=headers,
+            )
+            assert create_resp.status_code == 200
+
+            created_primary = json.loads(primary_ws.receive_text())
+            created_secondary = json.loads(secondary_ws.receive_text())
+            assert created_primary["type"] == "notification_created"
+            assert created_secondary == created_primary
+            notif_id = created_primary["data"]["id"]
+
+            mark_resp = client.post(f"/api/notifications/{notif_id}/read", headers=headers)
+            assert mark_resp.status_code == 200
+            read_primary = json.loads(primary_ws.receive_text())
+            read_secondary = json.loads(secondary_ws.receive_text())
+            assert read_primary["type"] == "notification_read"
+            assert read_secondary == read_primary
+
+            delete_resp = client.delete(f"/api/notifications/{notif_id}", headers=headers)
+            assert delete_resp.status_code == 200
+            deleted_primary = json.loads(primary_ws.receive_text())
+            deleted_secondary = json.loads(secondary_ws.receive_text())
+            assert deleted_primary["type"] == "notification_deleted"
+            assert deleted_secondary == deleted_primary

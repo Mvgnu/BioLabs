@@ -1,16 +1,42 @@
 import { useEffect } from 'react'
 
-export function useWebSocket(teamId: string, onMessage: (data: any) => void) {
+type MessageHandler = (data: any, context: { teamId: string }) => void
+
+const normalizeTeamIds = (teamIds: string | string[]): string[] => {
+  const rawIds = Array.isArray(teamIds) ? teamIds : [teamIds]
+  const filtered = rawIds.filter(
+    (value): value is string => typeof value === 'string' && value.trim().length > 0
+  )
+  return Array.from(new Set(filtered))
+}
+
+export function useWebSocket(teamIds: string | string[], onMessage: MessageHandler) {
+  const subscriptionKey = Array.isArray(teamIds)
+    ? [...teamIds].sort().join(',')
+    : teamIds ?? ''
+
   useEffect(() => {
-    if (!teamId) return
-    const ws = new WebSocket(`ws://localhost:8000/ws/${teamId}`)
-    ws.onmessage = (ev) => {
-      try {
-        onMessage(JSON.parse(ev.data))
-      } catch {
-        onMessage(ev.data)
+    const normalized = normalizeTeamIds(teamIds)
+    if (normalized.length === 0) {
+      return
+    }
+
+    const sockets = normalized.map((teamId) => {
+      const ws = new WebSocket(`ws://localhost:8000/ws/${teamId}`)
+      ws.onmessage = (ev) => {
+        try {
+          onMessage(JSON.parse(ev.data), { teamId })
+        } catch {
+          onMessage(ev.data, { teamId })
+        }
+      }
+      return ws
+    })
+
+    return () => {
+      for (const ws of sockets) {
+        ws.close()
       }
     }
-    return () => ws.close()
-  }, [teamId, onMessage])
+  }, [subscriptionKey, onMessage])
 }
