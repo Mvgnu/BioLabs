@@ -24,6 +24,7 @@ import {
 import { useNotifications } from '../../store/useNotifications'
 import { useMarkAllNotificationsRead } from '../../hooks/useNotificationAPI'
 import { NotificationItem } from './NotificationItem'
+import { NotificationSettingsPanel } from './NotificationSettingsPanel'
 import { cn } from '../../utils/cn'
 import type { Notification, NotificationCategory } from '../../types/notifications'
 
@@ -61,10 +62,11 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
     error
   } = useNotifications()
   const markAllAsReadMutation = useMarkAllNotificationsRead()
-  
+
   const [searchTerm, setSearchTerm] = useState('')
   const [showFilters, setShowFilters] = useState(false)
   const [selectedCategory, setSelectedCategory] = useState<NotificationCategory | undefined>(filters.category)
+  const [showSettings, setShowSettings] = useState(false)
 
   const unreadCount = getUnreadCount()
   const filteredNotifications = getFilteredNotifications()
@@ -119,9 +121,13 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
       
       {/* Notification Center */}
       <div className={cn(
-        'absolute right-4 top-16 w-96 max-h-[calc(100vh-6rem)] bg-white rounded-lg shadow-xl border border-neutral-200 flex flex-col notification-center',
+        'absolute right-4 top-16 w-96 max-h-[calc(100vh-6rem)] bg-white rounded-lg shadow-xl border border-neutral-200 flex flex-col notification-center relative overflow-hidden',
         className
       )}>
+        {showSettings && (
+          <NotificationSettingsPanel onClose={() => setShowSettings(false)} />
+        )}
+        <div className={cn('flex h-full flex-col', showSettings ? 'hidden' : '')}>
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-neutral-200">
           <div className="flex items-center space-x-2">
@@ -301,7 +307,7 @@ export const NotificationCenter: React.FC<NotificationCenterProps> = ({
             </div>
             
             <button
-              onClick={() => {/* TODO: Open notification settings */}}
+              onClick={() => setShowSettings(true)}
               className="flex items-center space-x-1 text-neutral-600 hover:text-neutral-800 transition-colors"
             >
               <Settings className="w-4 h-4" />

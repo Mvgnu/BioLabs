@@ -5,7 +5,8 @@ import type {
   Notification,
   NotificationPreference,
   NotificationStats,
-  NotificationFilters
+  NotificationFilters,
+  NotificationSettings
 } from '../types/notifications'
 
 // Fetch notifications
@@ -70,6 +71,17 @@ export const useNotificationPreferences = () => {
   })
 }
 
+export const useNotificationSettings = () => {
+  return useQuery({
+    queryKey: ['notification-settings'],
+    queryFn: async () => {
+      const response = await api.get('/api/notifications/settings')
+      return response.data as NotificationSettings
+    },
+    staleTime: 5 * 60 * 1000,
+  })
+}
+
 // Update notification preference
 export const useUpdateNotificationPreference = () => {
   const queryClient = useQueryClient()
@@ -106,6 +118,22 @@ export const useUpdateNotificationPreference = () => {
           return [...oldData, updatedPreference]
         }
       })
+    },
+  })
+}
+
+export const useUpdateNotificationSettings = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: async (
+      settings: Partial<NotificationSettings>
+    ) => {
+      const response = await api.put('/api/notifications/settings', settings)
+      return response.data as NotificationSettings
+    },
+    onSuccess: (updatedSettings) => {
+      queryClient.setQueryData(['notification-settings'], updatedSettings)
     },
   })
 }

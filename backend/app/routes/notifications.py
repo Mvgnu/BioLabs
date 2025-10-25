@@ -26,6 +26,16 @@ async def _publish_notification_event(
     for team_id in team_ids:
         await pubsub.publish_team_event(str(team_id), event)
 
+
+def _settings_from_user(user: models.User) -> schemas.NotificationSettingsOut:
+    return schemas.NotificationSettingsOut(
+        digest_frequency=user.digest_frequency or "daily",
+        quiet_hours_enabled=bool(user.quiet_hours_enabled),
+        quiet_hours_start=user.quiet_hours_start,
+        quiet_hours_end=user.quiet_hours_end,
+    )
+
+
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
 @router.get("/", response_model=list[schemas.NotificationOut])
@@ -217,6 +227,47 @@ async def set_preference(
     db.commit()
     db.refresh(obj)
     return obj
+
+
+@router.get("/settings", response_model=schemas.NotificationSettingsOut)
+async def get_settings(
+    current_user: models.User = Depends(get_current_user),
+):
+    return _settings_from_user(current_user)
+
+
+@router.put("/settings", response_model=schemas.NotificationSettingsOut)
+async def update_settings(
+    payload: schemas.NotificationSettingsUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user),
+):
+    updates = payload.model_dump(exclude_unset=True)
+
+    if "digest_frequency" in updates:
+        current_user.digest_frequency = updates["digest_frequency"]
+
+    if "quiet_hours_enabled" in updates:
+        current_user.quiet_hours_enabled = updates["quiet_hours_enabled"]
+
+    if "quiet_hours_start" in updates:
+        current_user.quiet_hours_start = updates["quiet_hours_start"]
+
+    if "quiet_hours_end" in updates:
+        current_user.quiet_hours_end = updates["quiet_hours_end"]
+
+    if current_user.quiet_hours_enabled and (
+        current_user.quiet_hours_start is None or current_user.quiet_hours_end is None
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Quiet hours require both start and end times when enabled",
+        )
+
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return _settings_from_user(current_user)
 
 
 @router.post("/create", response_model=schemas.NotificationOut)

@@ -10,6 +10,7 @@ import {
   useNotifications as useNotificationsQuery,
   useNotificationStats,
   useNotificationPreferences,
+  useNotificationSettings,
 } from '../../hooks/useNotificationAPI'
 import { useWebSocket } from '../../hooks/useWebSocket'
 import type {
@@ -43,6 +44,7 @@ export const NotificationProvider: React.FC = () => {
     setNotifications,
     updateStats,
     setPreferences,
+    setSettings,
     handleNotificationEvent,
     setLoading,
     setError,
@@ -53,6 +55,7 @@ export const NotificationProvider: React.FC = () => {
     setNotifications: state.setNotifications,
     updateStats: state.updateStats,
     setPreferences: state.setPreferences,
+    setSettings: state.setSettings,
     handleNotificationEvent: state.handleNotificationEvent,
     setLoading: state.setLoading,
     setError: state.setError,
@@ -69,6 +72,7 @@ export const NotificationProvider: React.FC = () => {
     data: preferencesData,
     refetch: refetchPreferences,
   } = useNotificationPreferences()
+  const { data: settingsData, refetch: refetchSettings } = useNotificationSettings()
 
   useEffect(() => {
     if (notificationsData) {
@@ -104,6 +108,20 @@ export const NotificationProvider: React.FC = () => {
       setPreferences(preferencesData)
     }
   }, [preferencesData, setPreferences])
+
+  useEffect(() => {
+    if (settingsData) {
+      setSettings({
+        ...settingsData,
+        quiet_hours_start: settingsData.quiet_hours_start
+          ? settingsData.quiet_hours_start.slice(0, 5)
+          : null,
+        quiet_hours_end: settingsData.quiet_hours_end
+          ? settingsData.quiet_hours_end.slice(0, 5)
+          : null,
+      })
+    }
+  }, [settingsData, setSettings])
 
   const { data: teamsData } = useQuery({
     queryKey: ['teams'],
@@ -208,7 +226,8 @@ export const NotificationProvider: React.FC = () => {
     resetProcessedEvents()
     void refetchNotifications()
     void refetchStats()
-  }, [refetchNotifications, refetchStats, resetProcessedEvents])
+    void refetchSettings()
+  }, [refetchNotifications, refetchSettings, refetchStats, resetProcessedEvents])
 
   useEffect(() => {
     const previousTeamIds = previousTeamIdsRef.current
@@ -220,10 +239,11 @@ export const NotificationProvider: React.FC = () => {
     if (membershipChanged) {
       replayFromSource()
       void refetchPreferences()
+      void refetchSettings()
     }
 
     previousTeamIdsRef.current = teamIds
-  }, [teamIds, replayFromSource, refetchPreferences])
+  }, [teamIds, replayFromSource, refetchPreferences, refetchSettings])
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof document === 'undefined') {
@@ -233,6 +253,7 @@ export const NotificationProvider: React.FC = () => {
     const handleResume = () => {
       replayFromSource()
       void refetchPreferences()
+      void refetchSettings()
     }
 
     const handleVisibility = () => {
@@ -250,7 +271,7 @@ export const NotificationProvider: React.FC = () => {
       window.removeEventListener('online', handleResume)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [replayFromSource, refetchPreferences])
+  }, [replayFromSource, refetchPreferences, refetchSettings])
 
 
   return (

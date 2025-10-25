@@ -30,6 +30,12 @@ const resetStore = () => {
       date_to: undefined,
     },
     preferences: [],
+    settings: {
+      digest_frequency: 'daily',
+      quiet_hours_enabled: false,
+      quiet_hours_start: null,
+      quiet_hours_end: null,
+    },
     stats: {
       total: 0,
       unread: 0,
@@ -119,5 +125,30 @@ describe('useNotifications store', () => {
     expect(notifications).toHaveLength(0)
     expect(stats.total).toBe(0)
     expect(stats.unread).toBe(0)
+  })
+
+  it('updates preferences immutably when toggling a new channel', () => {
+    const { updatePreference } = useNotifications.getState()
+    updatePreference('booking', 'email', false)
+
+    const { preferences } = useNotifications.getState()
+    expect(preferences).toHaveLength(1)
+    expect(preferences[0]).toMatchObject({
+      pref_type: 'booking',
+      channel: 'email',
+      enabled: false,
+    })
+  })
+
+  it('merges notification settings when partial updates arrive', () => {
+    const { updateSettings } = useNotifications.getState()
+    updateSettings({ digest_frequency: 'weekly', quiet_hours_enabled: true })
+    updateSettings({ quiet_hours_start: '21:00', quiet_hours_end: '06:00' })
+
+    const { settings } = useNotifications.getState()
+    expect(settings.digest_frequency).toBe('weekly')
+    expect(settings.quiet_hours_enabled).toBe(true)
+    expect(settings.quiet_hours_start).toBe('21:00')
+    expect(settings.quiet_hours_end).toBe('06:00')
   })
 })
