@@ -32,6 +32,9 @@ type TeamSummary = {
   name: string
 }
 
+const MAX_PROCESSED_EVENTS = 200
+const PROCESSED_EVENT_TTL_MS = 5 * 60 * 1000
+
 export const NotificationProvider: React.FC = () => {
   const {
     realTimeNotifications,
@@ -59,9 +62,13 @@ export const NotificationProvider: React.FC = () => {
     data: notificationsData,
     isFetching: notificationsFetching,
     error: notificationsError,
+    refetch: refetchNotifications,
   } = useNotificationsQuery()
-  const { data: statsData } = useNotificationStats()
-  const { data: preferencesData } = useNotificationPreferences()
+  const { data: statsData, refetch: refetchStats } = useNotificationStats()
+  const {
+    data: preferencesData,
+    refetch: refetchPreferences,
+  } = useNotificationPreferences()
 
   useEffect(() => {
     if (notificationsData) {
@@ -105,6 +112,8 @@ export const NotificationProvider: React.FC = () => {
       return response.data as TeamSummary[]
     },
     staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
   })
 
   const teamIds = useMemo(
@@ -113,21 +122,50 @@ export const NotificationProvider: React.FC = () => {
   )
 
   const processedEventKeys = useRef<Map<string, number>>(new Map())
+  const previousTeamIdsRef = useRef<string[]>([])
 
-  const shouldProcessEvent = useCallback((key: string) => {
+  const resetProcessedEvents = useCallback(() => {
+    processedEventKeys.current.clear()
+  }, [])
+
+  const pruneProcessedEvents = useCallback(() => {
     const store = processedEventKeys.current
-    if (store.has(key)) {
-      return false
-    }
-    store.set(key, Date.now())
-    if (store.size > 200) {
-      const oldestKey = store.keys().next().value as string | undefined
-      if (oldestKey) {
-        store.delete(oldestKey)
+    const expiryThreshold = Date.now() - PROCESSED_EVENT_TTL_MS
+    for (const [key, recordedAt] of store.entries()) {
+      if (recordedAt < expiryThreshold) {
+        store.delete(key)
       }
     }
-    return true
   }, [])
+
+  const shouldProcessEvent = useCallback(
+    (key: string, occurredAt?: string) => {
+      const store = processedEventKeys.current
+      pruneProcessedEvents()
+      if (store.has(key)) {
+        return false
+      }
+
+      const recordedAt = occurredAt ? new Date(occurredAt).getTime() || Date.now() : Date.now()
+      store.set(key, recordedAt)
+
+      if (store.size > MAX_PROCESSED_EVENTS) {
+        let oldestKey: string | undefined
+        let oldestTimestamp = Number.POSITIVE_INFINITY
+        for (const [existingKey, timestamp] of store.entries()) {
+          if (timestamp < oldestTimestamp) {
+            oldestTimestamp = timestamp
+            oldestKey = existingKey
+          }
+        }
+        if (oldestKey) {
+          store.delete(oldestKey)
+        }
+      }
+      return true
+    },
+    [pruneProcessedEvents]
+  )
 
   const handleSocketMessage = useCallback(
     (message: WebSocketMessage, _context: { teamId: string }) => {
@@ -143,7 +181,7 @@ export const NotificationProvider: React.FC = () => {
         }
 
         const eventKey = `${event.type}:${event.data?.id ?? ''}:${event.timestamp}`
-        if (!shouldProcessEvent(eventKey)) {
+        if (!shouldProcessEvent(eventKey, event.timestamp)) {
           return
         }
         handleNotificationEvent(event)
@@ -165,6 +203,55 @@ export const NotificationProvider: React.FC = () => {
   )
 
   useWebSocket(teamIds, handleSocketMessage)
+
+  const replayFromSource = useCallback(() => {
+    resetProcessedEvents()
+    void refetchNotifications()
+    void refetchStats()
+  }, [refetchNotifications, refetchStats, resetProcessedEvents])
+
+  useEffect(() => {
+    const previousTeamIds = previousTeamIdsRef.current
+    const membershipChanged =
+      previousTeamIds.length > 0 &&
+      (teamIds.some((id) => !previousTeamIds.includes(id)) ||
+        previousTeamIds.some((id) => !teamIds.includes(id)))
+
+    if (membershipChanged) {
+      replayFromSource()
+      void refetchPreferences()
+    }
+
+    previousTeamIdsRef.current = teamIds
+  }, [teamIds, replayFromSource, refetchPreferences])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+      return undefined
+    }
+
+    const handleResume = () => {
+      replayFromSource()
+      void refetchPreferences()
+    }
+
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        handleResume()
+      }
+    }
+
+    window.addEventListener('focus', handleResume)
+    window.addEventListener('online', handleResume)
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      window.removeEventListener('focus', handleResume)
+      window.removeEventListener('online', handleResume)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [replayFromSource, refetchPreferences])
+
 
   return (
     <ToastContainer
