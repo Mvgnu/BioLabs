@@ -1,5 +1,6 @@
 from datetime import datetime, timezone, timedelta
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from .conftest import TestingSessionLocal
 from app import models
@@ -93,3 +94,77 @@ def test_create_and_update_execution_session(client):
     updated = update_resp.json()
     assert updated["steps"][0]["status"] == "completed"
     assert updated["execution"]["status"] in {"in_progress", "completed"}
+
+
+def test_step_gating_blocks_progress(client):
+    headers = get_headers(client)
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Gated Protocol", "content": "Stage 1\nStage 2"},
+        headers=headers,
+    ).json()
+
+    inventory = client.post(
+        "/api/inventory/items",
+        json={"item_type": "reagent", "name": "Buffer A"},
+        headers=headers,
+    ).json()
+
+    client.put(
+        f"/api/inventory/items/{inventory['id']}",
+        json={"status": "consumed"},
+        headers=headers,
+    )
+
+    now = datetime.now(timezone.utc)
+
+    created = client.post(
+        "/api/experiment-console/sessions",
+        json={
+            "template_id": template["id"],
+            "inventory_item_ids": [inventory["id"]],
+            "booking_ids": [],
+        },
+        headers=headers,
+    )
+
+    assert created.status_code == 200
+    session_payload = created.json()
+    step_state = session_payload["steps"][0]
+    assert step_state["blocked_reason"]
+    assert any(action.startswith("inventory:restore") for action in step_state["required_actions"])
+
+    exec_id = session_payload["execution"]["id"]
+
+    forced_update = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/steps/0",
+        json={"status": "in_progress", "started_at": now.isoformat()},
+        headers=headers,
+    )
+    assert forced_update.status_code == 409
+    blocked_detail = forced_update.json()["detail"]
+    assert blocked_detail["blocked_reason"]
+
+    advance_attempt = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/steps/0/advance",
+        headers=headers,
+    )
+    assert advance_attempt.status_code == 409
+    advance_detail = advance_attempt.json()["detail"]
+    assert advance_detail["blocked_reason"]
+
+    client.put(
+        f"/api/inventory/items/{inventory['id']}",
+        json={"status": "available"},
+        headers=headers,
+    )
+
+    advance_success = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/steps/0/advance",
+        headers=headers,
+    )
+    assert advance_success.status_code == 200
+    after_payload = advance_success.json()
+    assert after_payload["steps"][0]["status"] == "in_progress"
+    assert after_payload["steps"][0]["blocked_reason"] is None

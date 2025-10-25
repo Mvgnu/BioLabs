@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 from uuid import UUID
 
@@ -80,29 +80,317 @@ def _extract_steps(content: str) -> list[str]:
 def _build_step_states(
     execution: models.ProtocolExecution,
     instructions: list[str],
+    gate_context: dict[str, Any],
 ) -> list[schemas.ExperimentStepStatus]:
     """Combine instructions with persisted execution progress."""
 
     # purpose: align persisted step status metadata with derived instructions
-    # inputs: execution record, list of instruction strings
-    # outputs: ExperimentStepStatus objects representing current progress
-    # status: production
+    # inputs: execution record, list of instruction strings, gating context for readiness checks
+    # outputs: ExperimentStepStatus objects representing current progress and gating metadata
+    # status: pilot
     result_payload = execution.result or {}
     stored_steps = result_payload.get("steps", {}) if isinstance(result_payload, dict) else {}
     step_statuses: list[schemas.ExperimentStepStatus] = []
 
     for index, instruction in enumerate(instructions):
         stored = stored_steps.get(str(index), {}) if isinstance(stored_steps, dict) else {}
+        status = stored.get("status", "pending")
+        started_at = _coerce_datetime(stored.get("started_at"))
+        completed_at = _coerce_datetime(stored.get("completed_at"))
+
+        if status in {"completed", "skipped"}:
+            blocked_reason: str | None = None
+            required_actions: list[str] = []
+            auto_triggers: list[str] = []
+        else:
+            blocked_reason, required_actions, auto_triggers = _evaluate_step_gate(
+                index, gate_context, status
+            )
+
         step_statuses.append(
             schemas.ExperimentStepStatus(
                 index=index,
                 instruction=instruction,
-                status=stored.get("status", "pending"),
-                started_at=_coerce_datetime(stored.get("started_at")),
-                completed_at=_coerce_datetime(stored.get("completed_at")),
+                status=status,
+                started_at=started_at,
+                completed_at=completed_at,
+                blocked_reason=blocked_reason,
+                required_actions=required_actions,
+                auto_triggers=auto_triggers,
             )
         )
     return step_statuses
+
+
+def _prepare_step_gate_context(
+    db: Session,
+    execution: models.ProtocolExecution,
+    inventory_items: Sequence[models.InventoryItem],
+    bookings: Sequence[models.Booking],
+) -> dict[str, Any]:
+    """Aggregate resource metadata for gating evaluations."""
+
+    # purpose: centralize readiness signals for orchestration engine
+    # inputs: database session, execution record, hydrated inventory & booking rows
+    # outputs: dictionary containing maps/sets leveraged during gating checks
+    # status: pilot
+    params = execution.params or {}
+    step_requirements_raw = params.get("step_requirements", {})
+    if not isinstance(step_requirements_raw, dict):
+        step_requirements_raw = {}
+
+    default_inventory_ids = set(_parse_uuid_list(params.get("inventory_item_ids", [])))
+    default_booking_ids = set(_parse_uuid_list(params.get("booking_ids", [])))
+    default_equipment_ids = set(_parse_uuid_list(params.get("equipment_ids", [])))
+
+    additional_inventory_ids: set[UUID] = set()
+    additional_booking_ids: set[UUID] = set()
+    additional_equipment_ids: set[UUID] = set()
+    for config in step_requirements_raw.values():
+        if not isinstance(config, dict):
+            continue
+        additional_inventory_ids.update(
+            _parse_uuid_list(config.get("required_inventory_ids", []))
+        )
+        additional_booking_ids.update(
+            _parse_uuid_list(config.get("required_booking_ids", []))
+        )
+        additional_equipment_ids.update(
+            _parse_uuid_list(config.get("required_equipment_ids", []))
+        )
+
+    inventory_map = {item.id: item for item in inventory_items}
+    missing_inventory_ids = (default_inventory_ids | additional_inventory_ids) - set(
+        inventory_map
+    )
+    if missing_inventory_ids:
+        fetched_items = (
+            db.query(models.InventoryItem)
+            .filter(models.InventoryItem.id.in_(list(missing_inventory_ids)))
+            .all()
+        )
+        for item in fetched_items:
+            inventory_map[item.id] = item
+
+    booking_map = {booking.id: booking for booking in bookings}
+    missing_booking_ids = (default_booking_ids | additional_booking_ids) - set(
+        booking_map
+    )
+    if missing_booking_ids:
+        fetched_bookings = (
+            db.query(models.Booking)
+            .filter(models.Booking.id.in_(list(missing_booking_ids)))
+            .all()
+        )
+        for booking in fetched_bookings:
+            booking_map[booking.id] = booking
+
+    equipment_ids = default_equipment_ids | additional_equipment_ids
+    equipment_rows: list[models.Equipment] = []
+    if equipment_ids:
+        equipment_rows = (
+            db.query(models.Equipment)
+            .filter(models.Equipment.id.in_(list(equipment_ids)))
+            .all()
+        )
+    equipment_map = {equipment.id: equipment for equipment in equipment_rows}
+
+    maintenance_map: dict[UUID, list[models.EquipmentMaintenance]] = {}
+    if equipment_ids:
+        maintenance_rows = (
+            db.query(models.EquipmentMaintenance)
+            .filter(models.EquipmentMaintenance.equipment_id.in_(list(equipment_ids)))
+            .all()
+        )
+        for task in maintenance_rows:
+            maintenance_map.setdefault(task.equipment_id, []).append(task)
+
+    result_payload = execution.result if isinstance(execution.result, dict) else {}
+    compliance_payload = (
+        result_payload.get("compliance", {}) if isinstance(result_payload, dict) else {}
+    )
+    granted_approvals = set()
+    if isinstance(compliance_payload, dict):
+        raw_approvals = compliance_payload.get("approvals", [])
+        if isinstance(raw_approvals, (list, tuple, set)):
+            granted_approvals = {str(value) for value in raw_approvals}
+
+    global_required_approvals = set()
+    raw_required = params.get("required_approvals", [])
+    if isinstance(raw_required, (list, tuple, set)):
+        global_required_approvals = {str(value) for value in raw_required}
+
+    return {
+        "inventory": inventory_map,
+        "bookings": booking_map,
+        "equipment": equipment_map,
+        "maintenance": maintenance_map,
+        "step_requirements": step_requirements_raw,
+        "default_inventory_ids": list(default_inventory_ids),
+        "default_booking_ids": list(default_booking_ids),
+        "default_equipment_ids": list(default_equipment_ids),
+        "granted_approvals": granted_approvals,
+        "global_required_approvals": global_required_approvals,
+        "now": datetime.now(timezone.utc),
+    }
+
+
+def _evaluate_step_gate(
+    step_index: int,
+    gate_context: dict[str, Any],
+    current_status: str,
+) -> tuple[str | None, list[str], list[str]]:
+    """Evaluate whether a step is blocked by resource or compliance gates."""
+
+    # purpose: derive orchestrator feedback describing blockers and remediation paths
+    # inputs: step index, aggregated gate context, current status string
+    # outputs: tuple of blocked reason, required actions, and auto trigger hints
+    # status: pilot
+    step_requirements = gate_context.get("step_requirements", {}) or {}
+    raw_config = step_requirements.get(str(step_index)) or step_requirements.get(step_index)
+    step_config = raw_config if isinstance(raw_config, dict) else {}
+
+    blocked_messages: list[str] = []
+    required_actions: list[str] = []
+    auto_triggers: list[str] = []
+    now = gate_context.get("now", datetime.now(timezone.utc))
+
+    def _collect_ids(
+        config_key: str, default_ids: list[UUID], fallback_flag: str | None = None
+    ) -> list[UUID]:
+        if config_key in step_config:
+            return _parse_uuid_list(step_config.get(config_key, []))
+        if fallback_flag and step_config.get(fallback_flag):
+            return default_ids
+        return default_ids
+
+    inventory_map: dict[UUID, models.InventoryItem] = gate_context.get("inventory", {})
+    booking_map: dict[UUID, models.Booking] = gate_context.get("bookings", {})
+    equipment_map: dict[UUID, models.Equipment] = gate_context.get("equipment", {})
+    maintenance_map: dict[UUID, list[models.EquipmentMaintenance]] = gate_context.get(
+        "maintenance", {}
+    )
+
+    required_inventory_ids = _collect_ids(
+        "required_inventory_ids", gate_context.get("default_inventory_ids", [])
+    )
+    for inventory_id in required_inventory_ids:
+        item = inventory_map.get(inventory_id)
+        if not item:
+            blocked_messages.append(
+                f"Inventory {inventory_id} is not linked to this execution"
+            )
+            required_actions.append(f"inventory:link:{inventory_id}")
+            continue
+        status = (item.status or "").lower()
+        if status not in {"available", "reserved"}:
+            blocked_messages.append(
+                f"Inventory {item.name} unavailable (status: {item.status})"
+            )
+            required_actions.append(f"inventory:restore:{inventory_id}")
+            auto_triggers.append(f"inventory:auto_reserve:{inventory_id}")
+
+    required_booking_ids = _collect_ids(
+        "required_booking_ids", gate_context.get("default_booking_ids", [])
+    )
+    for booking_id in required_booking_ids:
+        booking = booking_map.get(booking_id)
+        if not booking:
+            blocked_messages.append(f"Booking {booking_id} missing for execution")
+            required_actions.append(f"booking:create:{booking_id}")
+            continue
+        start_time = booking.start_time
+        end_time = booking.end_time
+        if start_time and start_time.tzinfo is None:
+            start_time = start_time.replace(tzinfo=timezone.utc)
+        if end_time and end_time.tzinfo is None:
+            end_time = end_time.replace(tzinfo=timezone.utc)
+        if end_time is None:
+            blocked_messages.append("Booking end time missing for execution")
+            required_actions.append(f"booking:adjust:{booking_id}")
+            continue
+        if not (start_time <= now <= end_time):
+            blocked_messages.append(
+                "Active booking window not aligned with current time"
+            )
+            required_actions.append(f"booking:adjust:{booking_id}")
+
+    required_equipment_ids = _collect_ids(
+        "required_equipment_ids", gate_context.get("default_equipment_ids", [])
+    )
+    for equipment_id in required_equipment_ids:
+        equipment = equipment_map.get(equipment_id)
+        if not equipment:
+            blocked_messages.append(f"Equipment {equipment_id} not registered")
+            required_actions.append(f"equipment:register:{equipment_id}")
+            continue
+        overdue = False
+        for task in maintenance_map.get(equipment_id, []):
+            due_date = task.due_date
+            if due_date and due_date.tzinfo is None:
+                due_date = due_date.replace(tzinfo=timezone.utc)
+            if task.completed_at is None and due_date and due_date < now:
+                overdue = True
+                break
+        if overdue:
+            blocked_messages.append(
+                f"Equipment {equipment.name} has overdue calibration"
+            )
+            required_actions.append(f"equipment:calibrate:{equipment_id}")
+            auto_triggers.append(f"equipment:maintenance_request:{equipment_id}")
+
+    granted = gate_context.get("granted_approvals", set())
+    global_required = gate_context.get("global_required_approvals", set())
+    step_required = set(step_config.get("required_approvals", []) or [])
+    missing_approvals = {str(value) for value in step_required | global_required} - granted
+    if missing_approvals and current_status == "pending":
+        blocked_messages.append(
+            "Pending approvals required: " + ", ".join(sorted(missing_approvals))
+        )
+        for approval in sorted(missing_approvals):
+            required_actions.append(f"compliance:approve:{approval}")
+            auto_triggers.append(f"notify:approver:{approval}")
+
+    dedup_required = list(dict.fromkeys(required_actions))
+    dedup_triggers = list(dict.fromkeys(auto_triggers))
+
+    blocked_reason = " | ".join(blocked_messages) if blocked_messages else None
+    return blocked_reason, dedup_required, dedup_triggers
+
+
+def _store_step_progress(
+    execution: models.ProtocolExecution,
+    step_index: int,
+    update: schemas.ExperimentStepStatusUpdate,
+) -> None:
+    """Persist step progress metadata and update execution status."""
+
+    # purpose: encapsulate storage of step progression details for reuse across endpoints
+    # inputs: execution model, target step index, ExperimentStepStatusUpdate payload
+    # outputs: mutates execution.result/status in-place prior to DB flush
+    # status: pilot
+    execution_result_raw = execution.result if isinstance(execution.result, dict) else {}
+    steps_payload = (
+        execution_result_raw.get("steps", {})
+        if isinstance(execution_result_raw, dict)
+        else {}
+    )
+    steps_payload = dict(steps_payload)
+    steps_payload[str(step_index)] = {
+        "status": update.status,
+        "started_at": _iso_or_none(update.started_at),
+        "completed_at": _iso_or_none(update.completed_at),
+    }
+    execution_result = dict(execution_result_raw)
+    execution_result["steps"] = steps_payload
+
+    statuses = {payload.get("status", "pending") for payload in steps_payload.values()}
+    if statuses and all(status == "completed" for status in statuses):
+        execution.status = "completed"
+    elif "in_progress" in statuses or update.status == "in_progress":
+        execution.status = "in_progress"
+
+    execution.result = execution_result
 
 
 def _normalize_stream_topics(connection_info: dict[str, Any]) -> list[str]:
@@ -306,7 +594,8 @@ def _assemble_session(
         )
 
     instructions = _extract_steps(template.content)
-    steps = _build_step_states(execution, instructions)
+    gate_context = _prepare_step_gate_context(db, execution, inventory_items, bookings)
+    steps = _build_step_states(execution, instructions, gate_context)
     telemetry_channels, anomaly_events, auto_logs = _collect_equipment_channels(
         db, equipment_ids
     )
@@ -411,6 +700,110 @@ async def create_execution_session(
     return _assemble_session(db, execution)
 
 
+@router.post(
+    "/sessions/{execution_id}/steps/{step_index}/advance",
+    response_model=schemas.ExperimentExecutionSessionOut,
+)
+async def advance_step_status(
+    execution_id: str,
+    step_index: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Attempt to advance a step using orchestration gates."""
+
+    # purpose: provide rule-driven progression that respects resource readiness
+    # inputs: execution identifier, target step index
+    # outputs: ExperimentExecutionSessionOut reflecting any progression or blockers
+    # status: pilot
+    if step_index < 0:
+        raise HTTPException(status_code=400, detail="Step index must be non-negative")
+
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    template = (
+        db.query(models.ProtocolTemplate)
+        .filter(models.ProtocolTemplate.id == execution.template_id)
+        .first()
+    )
+    if not template:
+        raise HTTPException(status_code=404, detail="Linked protocol template not found")
+
+    params = execution.params or {}
+    inventory_ids = _parse_uuid_list(params.get("inventory_item_ids", []))
+    inventory_items = []
+    if inventory_ids:
+        inventory_items = (
+            db.query(models.InventoryItem)
+            .filter(models.InventoryItem.id.in_(inventory_ids))
+            .all()
+        )
+
+    booking_ids = _parse_uuid_list(params.get("booking_ids", []))
+    bookings = []
+    if booking_ids:
+        bookings = (
+            db.query(models.Booking)
+            .filter(models.Booking.id.in_(booking_ids))
+            .all()
+        )
+
+    instructions = _extract_steps(template.content)
+    if step_index >= len(instructions):
+        raise HTTPException(status_code=404, detail="Step not found for template")
+
+    gate_context = _prepare_step_gate_context(db, execution, inventory_items, bookings)
+    step_states = _build_step_states(execution, instructions, gate_context)
+    target_state = step_states[step_index]
+
+    if target_state.blocked_reason and target_state.status == "pending":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Step is blocked by orchestration rules",
+                "blocked_reason": target_state.blocked_reason,
+                "required_actions": target_state.required_actions,
+                "auto_triggers": target_state.auto_triggers,
+            },
+        )
+
+    if target_state.status not in {"pending", "in_progress"}:
+        return _assemble_session(db, execution)
+
+    now = datetime.now(timezone.utc)
+    if target_state.status == "pending":
+        update_payload = schemas.ExperimentStepStatusUpdate(
+            status="in_progress",
+            started_at=now,
+            completed_at=None,
+        )
+    else:
+        update_payload = schemas.ExperimentStepStatusUpdate(
+            status="completed",
+            started_at=target_state.started_at,
+            completed_at=now,
+        )
+
+    _store_step_progress(execution, step_index, update_payload)
+
+    db.add(execution)
+    db.commit()
+    db.refresh(execution)
+
+    return _assemble_session(db, execution)
+
+
 @router.get(
     "/sessions/{execution_id}",
     response_model=schemas.ExperimentExecutionSessionOut,
@@ -483,32 +876,48 @@ async def update_step_status(
     if not template:
         raise HTTPException(status_code=404, detail="Linked protocol template not found")
 
+    params = execution.params or {}
+    inventory_ids = _parse_uuid_list(params.get("inventory_item_ids", []))
+    inventory_items = []
+    if inventory_ids:
+        inventory_items = (
+            db.query(models.InventoryItem)
+            .filter(models.InventoryItem.id.in_(inventory_ids))
+            .all()
+        )
+
+    booking_ids = _parse_uuid_list(params.get("booking_ids", []))
+    bookings = []
+    if booking_ids:
+        bookings = (
+            db.query(models.Booking)
+            .filter(models.Booking.id.in_(booking_ids))
+            .all()
+        )
+
     instructions = _extract_steps(template.content)
     if step_index >= len(instructions):
         raise HTTPException(status_code=404, detail="Step not found for template")
 
-    execution_result_raw = execution.result if isinstance(execution.result, dict) else {}
-    steps_payload = (
-        execution_result_raw.get("steps", {})
-        if isinstance(execution_result_raw, dict)
-        else {}
-    )
-    steps_payload = dict(steps_payload)
-    steps_payload[str(step_index)] = {
-        "status": update.status,
-        "started_at": _iso_or_none(update.started_at),
-        "completed_at": _iso_or_none(update.completed_at),
-    }
-    execution_result = dict(execution_result_raw)
-    execution_result["steps"] = steps_payload
+    gate_context = _prepare_step_gate_context(db, execution, inventory_items, bookings)
+    step_states = _build_step_states(execution, instructions, gate_context)
+    target_state = step_states[step_index]
+    if (
+        target_state.blocked_reason
+        and target_state.status == "pending"
+        and update.status in {"in_progress", "completed"}
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Step is blocked by orchestration rules",
+                "blocked_reason": target_state.blocked_reason,
+                "required_actions": target_state.required_actions,
+                "auto_triggers": target_state.auto_triggers,
+            },
+        )
 
-    statuses = {payload.get("status", "pending") for payload in steps_payload.values()}
-    if statuses and all(status == "completed" for status in statuses):
-        execution.status = "completed"
-    elif "in_progress" in statuses or update.status == "in_progress":
-        execution.status = "in_progress"
-
-    execution.result = execution_result
+    _store_step_progress(execution, step_index, update)
     db.add(execution)
     db.commit()
     db.refresh(execution)

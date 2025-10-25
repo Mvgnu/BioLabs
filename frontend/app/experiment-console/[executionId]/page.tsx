@@ -1,8 +1,13 @@
 'use client'
 
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useParams } from 'next/navigation'
-import { useExperimentSession, useUpdateExperimentStep } from '../../hooks/useExperimentConsole'
+import {
+  useAdvanceExperimentStep,
+  useExperimentSession,
+  useUpdateExperimentStep,
+} from '../../hooks/useExperimentConsole'
+import api from '../../api/client'
 
 const statusColors: Record<string, string> = {
   pending: 'bg-neutral-200 text-neutral-800',
@@ -49,6 +54,22 @@ const summarizeTelemetryData = (payload?: Record<string, any> | null) => {
     .join(' • ')
 }
 
+const formatActionLabel = (action: string) => {
+  const [domain = '', verb = '', identifier = ''] = action.split(':')
+  if (domain === 'inventory' && verb === 'restore') return 'Restore Inventory Availability'
+  if (domain === 'inventory' && verb === 'link') return 'Link Inventory Item'
+  if (domain === 'equipment' && verb === 'calibrate') return 'Confirm Calibration'
+  if (domain === 'equipment' && verb === 'maintenance_request') return 'Submit Maintenance Request'
+  if (domain === 'booking' && verb === 'adjust') return 'Adjust Booking Window'
+  if (domain === 'compliance' && verb === 'approve') {
+    return identifier ? `Record Approval: ${identifier}` : 'Record Compliance Approval'
+  }
+  if (domain === 'notify' && verb === 'approver') {
+    return identifier ? `Notify Approver ${identifier}` : 'Notify Approver'
+  }
+  return action.replace(/[:_]/g, ' ')
+}
+
 export default function ExperimentConsolePage() {
   const params = useParams<{ executionId: string }>()
   const executionId = useMemo(() => {
@@ -58,6 +79,8 @@ export default function ExperimentConsolePage() {
 
   const sessionQuery = useExperimentSession(executionId ?? null)
   const stepMutation = useUpdateExperimentStep(executionId ?? null)
+  const advanceMutation = useAdvanceExperimentStep(executionId ?? null)
+  const [pendingAction, setPendingAction] = useState<string | null>(null)
 
   if (!executionId) {
     return (
@@ -99,6 +122,78 @@ export default function ExperimentConsolePage() {
           ? { status, started_at: timestamp }
           : { status, completed_at: timestamp },
     })
+  }
+
+  const handleAdvance = async (stepIndex: number) => {
+    try {
+      await advanceMutation.mutateAsync({ stepIndex })
+    } catch (error: any) {
+      const detail = error?.response?.data
+      const message =
+        detail?.blocked_reason || detail?.detail || detail?.message || error?.message || 'Unable to advance step'
+      if (typeof window !== 'undefined') {
+        window.alert(`Unable to advance step: ${message}`)
+      }
+    }
+  }
+
+  const handleAction = async (action: string) => {
+    let shouldRefresh = false
+    setPendingAction(action)
+    try {
+      const [domain = '', verb = '', identifier = ''] = action.split(':')
+      if (domain === 'inventory' && verb === 'restore' && identifier) {
+        await api.put(`/api/inventory/items/${identifier}`, { status: 'available' })
+        shouldRefresh = true
+        window.alert('Inventory item restored to available')
+        return
+      }
+      if (domain === 'equipment' && verb === 'calibrate' && identifier) {
+        const dueDate = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
+        await api.post('/api/equipment/maintenance', {
+          equipment_id: identifier,
+          due_date: dueDate,
+          task_type: 'calibration',
+          description: 'Calibration confirmed from console orchestration',
+        })
+        shouldRefresh = true
+        window.alert('Calibration workflow logged for equipment')
+        return
+      }
+      if (domain === 'equipment' && verb === 'maintenance_request' && identifier) {
+        const dueDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+        await api.post('/api/equipment/maintenance', {
+          equipment_id: identifier,
+          due_date: dueDate,
+          task_type: 'maintenance',
+          description: 'Auto-generated maintenance request from orchestrator',
+        })
+        shouldRefresh = true
+        window.alert('Maintenance request submitted')
+        return
+      }
+      if (domain === 'booking') {
+        window.open('/schedule', '_blank', 'noopener')
+        return
+      }
+      if (domain === 'compliance') {
+        window.open('/compliance', '_blank', 'noopener')
+        return
+      }
+      if (domain === 'notify') {
+        window.alert(formatActionLabel(action))
+        return
+      }
+      window.alert(`No automated handler for ${formatActionLabel(action)} yet.`)
+    } catch (error) {
+      console.error('Failed to execute required action', error)
+      window.alert('Unable to perform the requested action. Check console for details.')
+    } finally {
+      setPendingAction(null)
+      if (shouldRefresh) {
+        sessionQuery.refetch()
+      }
+    }
   }
 
     return (
@@ -175,56 +270,106 @@ export default function ExperimentConsolePage() {
           <div className="xl:col-span-2 space-y-4">
             <h2 className="text-xl font-semibold">Protocol Steps</h2>
             <div className="space-y-4">
-              {session.steps.map((step) => (
-              <article
-                key={step.index}
-                className="border border-neutral-200 rounded-lg p-4 bg-white shadow-sm"
-              >
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <h3 className="text-lg font-medium">Step {step.index + 1}</h3>
-                    <p className="text-neutral-600 whitespace-pre-wrap mt-1">
-                      {step.instruction}
-                    </p>
-                  </div>
-                  <span
-                    className={`text-xs font-semibold px-3 py-1 rounded-full ${
-                      statusColors[step.status] ?? statusColors.pending
-                    }`}
+              {session.steps.map((step) => {
+                const isStepBlocked = Boolean(step.blocked_reason && step.status === 'pending')
+                const isTerminal = step.status === 'completed' || step.status === 'skipped'
+                const isInProgress = step.status === 'in_progress'
+                return (
+                  <article
+                    key={step.index}
+                    className="border border-neutral-200 rounded-lg p-4 bg-white shadow-sm"
                   >
-                    {step.status.replace('_', ' ')}
-                  </span>
-                </div>
-                <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-neutral-600">
-                  <div>
-                    <dt className="font-medium text-neutral-500">Started</dt>
-                    <dd>{formatDateTime(step.started_at ?? undefined)}</dd>
-                  </div>
-                  <div>
-                    <dt className="font-medium text-neutral-500">Completed</dt>
-                    <dd>{formatDateTime(step.completed_at ?? undefined)}</dd>
-                  </div>
-                </dl>
-                <div className="flex flex-wrap gap-3 mt-4">
-                  <button
-                    onClick={() => updateStep(step.index, 'in_progress')}
-                    disabled={stepMutation.isPending}
-                    className="text-sm px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
-                  >
-                    Mark In Progress
-                  </button>
-                  <button
-                    onClick={() => updateStep(step.index, 'completed')}
-                    disabled={stepMutation.isPending}
-                    className="text-sm px-3 py-2 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-colors disabled:opacity-60"
-                  >
-                    Mark Complete
-                  </button>
-                </div>
-              </article>
-            ))}
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h3 className="text-lg font-medium">Step {step.index + 1}</h3>
+                        <p className="text-neutral-600 whitespace-pre-wrap mt-1">
+                          {step.instruction}
+                        </p>
+                      </div>
+                      <span
+                        className={`text-xs font-semibold px-3 py-1 rounded-full ${
+                          statusColors[step.status] ?? statusColors.pending
+                        }`}
+                      >
+                        {step.status.replace('_', ' ')}
+                      </span>
+                    </div>
+                    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm text-neutral-600">
+                      <div>
+                        <dt className="font-medium text-neutral-500">Started</dt>
+                        <dd>{formatDateTime(step.started_at ?? undefined)}</dd>
+                      </div>
+                      <div>
+                        <dt className="font-medium text-neutral-500">Completed</dt>
+                        <dd>{formatDateTime(step.completed_at ?? undefined)}</dd>
+                      </div>
+                    </dl>
+                    {isStepBlocked && (
+                      <div className="mt-4 border border-rose-200 bg-rose-50 rounded-md p-3 space-y-2">
+                        <p className="text-sm font-semibold text-rose-700">Blocked by orchestration</p>
+                        <p className="text-sm text-rose-600">{step.blocked_reason}</p>
+                        {step.required_actions.length > 0 && (
+                          <div className="space-y-2">
+                            <p className="text-xs uppercase tracking-wide text-rose-500">Required Actions</p>
+                            <div className="flex flex-wrap gap-2">
+                              {step.required_actions.map((action) => (
+                                <button
+                                  key={action}
+                                  onClick={() => handleAction(action)}
+                                  disabled={pendingAction === action}
+                                  className="text-xs font-medium px-3 py-2 rounded-md border border-rose-200 bg-white text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-60"
+                                >
+                                  {formatActionLabel(action)}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {step.auto_triggers.length > 0 && (
+                      <div className="mt-3 space-y-1">
+                        <p className="text-xs uppercase tracking-wide text-blue-500">Suggested Automations</p>
+                        <div className="flex flex-wrap gap-2">
+                          {step.auto_triggers.map((trigger) => (
+                            <span
+                              key={trigger}
+                              className="text-xs font-medium px-2 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200"
+                            >
+                              {formatActionLabel(trigger)}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap gap-3 mt-4">
+                      <button
+                        onClick={() => updateStep(step.index, 'in_progress')}
+                        disabled={stepMutation.isPending || isStepBlocked || step.status !== 'pending'}
+                        className="text-sm px-3 py-2 rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
+                      >
+                        Mark In Progress
+                      </button>
+                      <button
+                        onClick={() => updateStep(step.index, 'completed')}
+                        disabled={stepMutation.isPending || !isInProgress}
+                        className="text-sm px-3 py-2 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 transition-colors disabled:opacity-60"
+                      >
+                        Mark Complete
+                      </button>
+                      <button
+                        onClick={() => handleAdvance(step.index)}
+                        disabled={advanceMutation.isPending || isStepBlocked || isTerminal}
+                        className="text-sm px-3 py-2 rounded-md border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 transition-colors disabled:opacity-60"
+                      >
+                        Attempt Orchestrated Advance
+                      </button>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
           </div>
-        </div>
 
           <aside className="space-y-6">
             <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-3">
