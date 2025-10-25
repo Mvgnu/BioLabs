@@ -327,6 +327,9 @@ export interface ExperimentStepStatus {
   status: ExperimentStepState
   started_at?: string | null
   completed_at?: string | null
+  blocked_reason?: string | null
+  required_actions: string[]
+  auto_triggers: string[]
 }
 
 export type ExperimentAnomalySeverity = 'info' | 'warning' | 'critical'

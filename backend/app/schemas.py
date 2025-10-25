@@ -453,6 +453,9 @@ class ExperimentStepStatus(BaseModel):
     status: Literal["pending", "in_progress", "completed", "skipped"] = "pending"
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    blocked_reason: Optional[str] = None
+    required_actions: list[str] = Field(default_factory=list)
+    auto_triggers: list[str] = Field(default_factory=list)
 
 
 class ExperimentExecutionSessionCreate(BaseModel):

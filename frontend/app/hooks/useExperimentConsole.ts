@@ -56,3 +56,22 @@ export const useUpdateExperimentStep = (executionId: string | null) => {
     },
   })
 }
+
+export const useAdvanceExperimentStep = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: { stepIndex: number }) => {
+      if (!executionId) {
+        throw new Error('Execution id required for orchestration advance')
+      }
+      const resp = await api.post(
+        `/api/experiment-console/sessions/${executionId}/steps/${vars.stepIndex}/advance`,
+        {},
+      )
+      return resp.data as ExperimentExecutionSession
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(sessionKey(executionId), data)
+    },
+  })
+}
