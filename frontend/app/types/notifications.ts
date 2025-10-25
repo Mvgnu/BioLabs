@@ -44,6 +44,7 @@ export interface NotificationStats {
 export interface NotificationFilters {
   is_read?: boolean
   category?: string
+  priority?: string
   date_from?: string
   date_to?: string
 }

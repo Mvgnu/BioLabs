@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import api from '../../api/client'
@@ -21,8 +21,8 @@ import type {
 
 // biolab-meta:
 // purpose: Bridge API data and WebSocket events into the notification store while rendering global toasts
-// inputs: React Query notification datasets, WebSocket messages scoped by team
-// outputs: Zustand store hydration, Notification toast rendering
+// inputs: React Query notification datasets, WebSocket messages scoped by teams
+// outputs: Zustand store hydration, Notification toast rendering, deduplicated lifecycle events
 // status: active
 // depends_on: frontend/app/store/useNotifications.ts, frontend/app/hooks/useNotificationAPI.ts, frontend/app/hooks/useWebSocket.ts
 // related_docs: frontend/app/components/notifications/README.md
@@ -41,6 +41,8 @@ export const NotificationProvider: React.FC = () => {
     updateStats,
     setPreferences,
     handleNotificationEvent,
+    setLoading,
+    setError,
   } = useNotificationStore((state) => ({
     realTimeNotifications: state.realTimeNotifications,
     addRealTimeNotification: state.addRealTimeNotification,
@@ -49,9 +51,15 @@ export const NotificationProvider: React.FC = () => {
     updateStats: state.updateStats,
     setPreferences: state.setPreferences,
     handleNotificationEvent: state.handleNotificationEvent,
+    setLoading: state.setLoading,
+    setError: state.setError,
   }))
 
-  const { data: notificationsData } = useNotificationsQuery()
+  const {
+    data: notificationsData,
+    isFetching: notificationsFetching,
+    error: notificationsError,
+  } = useNotificationsQuery()
   const { data: statsData } = useNotificationStats()
   const { data: preferencesData } = useNotificationPreferences()
 
@@ -60,6 +68,23 @@ export const NotificationProvider: React.FC = () => {
       setNotifications(notificationsData)
     }
   }, [notificationsData, setNotifications])
+
+  useEffect(() => {
+    setLoading(Boolean(notificationsFetching))
+  }, [notificationsFetching, setLoading])
+
+  useEffect(() => {
+    if (!notificationsError) {
+      setError(null)
+      return
+    }
+
+    if (notificationsError instanceof Error) {
+      setError(notificationsError.message)
+    } else {
+      setError('Failed to load notifications')
+    }
+  }, [notificationsError, setError])
 
   useEffect(() => {
     if (statsData) {
@@ -82,10 +107,30 @@ export const NotificationProvider: React.FC = () => {
     staleTime: 5 * 60 * 1000,
   })
 
-  const primaryTeamId = teamsData?.[0]?.id ?? ''
+  const teamIds = useMemo(
+    () => (teamsData ?? []).map((team) => team.id).filter((id): id is string => Boolean(id)),
+    [teamsData]
+  )
+
+  const processedEventKeys = useRef<Map<string, number>>(new Map())
+
+  const shouldProcessEvent = useCallback((key: string) => {
+    const store = processedEventKeys.current
+    if (store.has(key)) {
+      return false
+    }
+    store.set(key, Date.now())
+    if (store.size > 200) {
+      const oldestKey = store.keys().next().value as string | undefined
+      if (oldestKey) {
+        store.delete(oldestKey)
+      }
+    }
+    return true
+  }, [])
 
   const handleSocketMessage = useCallback(
-    (message: WebSocketMessage) => {
+    (message: WebSocketMessage, _context: { teamId: string }) => {
       if (!message || typeof message !== 'object' || !message.type) {
         return
       }
@@ -95,6 +140,11 @@ export const NotificationProvider: React.FC = () => {
           type: message.type as NotificationEvent['type'],
           data: message.data as Notification,
           timestamp: message.timestamp ?? new Date().toISOString(),
+        }
+
+        const eventKey = `${event.type}:${event.data?.id ?? ''}:${event.timestamp}`
+        if (!shouldProcessEvent(eventKey)) {
+          return
         }
         handleNotificationEvent(event)
 
@@ -111,10 +161,10 @@ export const NotificationProvider: React.FC = () => {
         }
       }
     },
-    [addRealTimeNotification, handleNotificationEvent]
+    [addRealTimeNotification, handleNotificationEvent, shouldProcessEvent]
   )
 
-  useWebSocket(primaryTeamId, handleSocketMessage)
+  useWebSocket(teamIds, handleSocketMessage)
 
   return (
     <ToastContainer
