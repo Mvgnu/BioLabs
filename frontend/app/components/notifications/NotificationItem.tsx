@@ -126,19 +126,19 @@ export const NotificationItem: React.FC<NotificationItemProps> = ({
               </p>
               
               {/* Metadata */}
-              {notification.metadata && (
+              {notification.meta && (
                 <div className="mt-1 flex items-center space-x-2 text-xs text-neutral-500">
-                  {notification.metadata.priority && (
+                  {notification.meta.priority && (
                     <span className={cn(
                       'px-2 py-0.5 rounded-full text-xs font-medium',
                       {
-                        'bg-green-100 text-green-800': notification.metadata.priority === 'low',
-                        'bg-yellow-100 text-yellow-800': notification.metadata.priority === 'medium',
-                        'bg-orange-100 text-orange-800': notification.metadata.priority === 'high',
-                        'bg-red-100 text-red-800': notification.metadata.priority === 'urgent',
+                        'bg-green-100 text-green-800': notification.meta.priority === 'low',
+                        'bg-yellow-100 text-yellow-800': notification.meta.priority === 'medium',
+                        'bg-orange-100 text-orange-800': notification.meta.priority === 'high',
+                        'bg-red-100 text-red-800': notification.meta.priority === 'urgent',
                       }
                     )}>
-                      {notification.metadata.priority}
+                      {notification.meta.priority}
                     </span>
                   )}
                   

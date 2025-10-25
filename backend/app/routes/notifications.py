@@ -1,13 +1,30 @@
 from uuid import UUID
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
 from ..database import get_db
 from ..auth import get_current_user
-from .. import models, schemas
+from .. import models, schemas, pubsub
+
+
+async def _publish_notification_event(
+    user: models.User, event_type: str, payload: dict
+) -> None:
+    """Publish a notification lifecycle event to all of the user's teams."""
+    team_ids = [membership.team_id for membership in user.teams if membership.team_id]
+    if not team_ids:
+        return
+    event = {
+        "type": event_type,
+        "data": payload,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    for team_id in team_ids:
+        await pubsub.publish_team_event(str(team_id), event)
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
 
@@ -61,6 +78,10 @@ async def mark_read(
     notif.is_read = True
     db.commit()
     db.refresh(notif)
+    payload = jsonable_encoder(
+        schemas.NotificationOut.model_validate(notif)
+    )
+    await _publish_notification_event(user, "notification_read", payload)
     return notif
 
 
@@ -70,13 +91,26 @@ async def mark_all_read(
     user: models.User = Depends(get_current_user),
 ):
     """Mark all unread notifications as read"""
-    db.query(models.Notification).filter(
-        and_(
-            models.Notification.user_id == user.id,
-            models.Notification.is_read == False
+    updated = (
+        db.query(models.Notification)
+        .filter(
+            and_(
+                models.Notification.user_id == user.id,
+                models.Notification.is_read == False
+            )
         )
-    ).update({"is_read": True})
+        .all()
+    )
+    for notif in updated:
+        notif.is_read = True
     db.commit()
+    if updated:
+        payloads = [
+            jsonable_encoder(schemas.NotificationOut.model_validate(notif))
+            for notif in updated
+        ]
+        for payload in payloads:
+            await _publish_notification_event(user, "notification_read", payload)
     return {"message": "All notifications marked as read"}
 
 
@@ -95,8 +129,12 @@ async def delete_notification(
     if not notif:
         raise HTTPException(status_code=404, detail="Notification not found")
     
+    payload = jsonable_encoder(
+        schemas.NotificationOut.model_validate(notif)
+    )
     db.delete(notif)
     db.commit()
+    await _publish_notification_event(user, "notification_deleted", payload)
     return {"message": "Notification deleted"}
 
 
@@ -196,4 +234,10 @@ async def create_notification(
     db.add(db_notification)
     db.commit()
     db.refresh(db_notification)
+    target_user = db.query(models.User).filter_by(id=db_notification.user_id).first()
+    if target_user:
+        payload = jsonable_encoder(
+            schemas.NotificationOut.model_validate(db_notification)
+        )
+        await _publish_notification_event(target_user, "notification_created", payload)
     return db_notification
