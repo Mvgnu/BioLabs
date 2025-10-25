@@ -226,6 +226,23 @@ export interface Booking {
   created_at: string
 }
 
+export interface Equipment {
+  id: string
+  name: string
+  eq_type: string
+  connection_info: Record<string, any>
+  status: string
+  team_id?: string | null
+  created_by?: string | null
+  created_at: string
+}
+
+export interface EquipmentReading {
+  id: string
+  timestamp: string
+  data: Record<string, any>
+}
+
 export interface Lab {
   id: string
   name: string
@@ -312,6 +329,30 @@ export interface ExperimentStepStatus {
   completed_at?: string | null
 }
 
+export type ExperimentAnomalySeverity = 'info' | 'warning' | 'critical'
+
+export interface EquipmentTelemetryChannel {
+  equipment: Equipment
+  status?: string | null
+  stream_topics: string[]
+  latest_reading?: EquipmentReading | null
+}
+
+export interface ExperimentAnomalySignal {
+  equipment_id: string
+  channel: string
+  message: string
+  severity: ExperimentAnomalySeverity
+  timestamp: string
+}
+
+export interface ExperimentAutoLogEntry {
+  source: string
+  title: string
+  body?: string | null
+  created_at: string
+}
+
 export interface ExperimentExecutionSession {
   execution: ProtocolExecution
   protocol: ProtocolTemplate
@@ -319,6 +360,9 @@ export interface ExperimentExecutionSession {
   inventory_items: InventoryItem[]
   bookings: Booking[]
   steps: ExperimentStepStatus[]
+  telemetry_channels: EquipmentTelemetryChannel[]
+  anomaly_events: ExperimentAnomalySignal[]
+  auto_log_entries: ExperimentAutoLogEntry[]
 }
 
 export interface ExperimentExecutionSessionCreate {

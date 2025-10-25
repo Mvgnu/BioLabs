@@ -11,6 +11,12 @@ const statusColors: Record<string, string> = {
   skipped: 'bg-amber-100 text-amber-700',
 }
 
+const anomalyBadges: Record<string, string> = {
+  info: 'bg-sky-100 text-sky-700',
+  warning: 'bg-amber-100 text-amber-700',
+  critical: 'bg-rose-100 text-rose-700',
+}
+
 const formatDateTime = (value?: string | null) => {
   if (!value) return '—'
   try {
@@ -21,6 +27,26 @@ const formatDateTime = (value?: string | null) => {
   } catch (error) {
     return value
   }
+}
+
+const summarizeTelemetryData = (payload?: Record<string, any> | null) => {
+  if (!payload) return '—'
+  const entries = Object.entries(payload)
+  if (entries.length === 0) return '—'
+  return entries
+    .slice(0, 4)
+    .map(([key, val]) => {
+      if (val === null || val === undefined) return `${key}: —`
+      if (typeof val === 'object') {
+        try {
+          return `${key}: ${JSON.stringify(val)}`
+        } catch (error) {
+          return `${key}: [object]`
+        }
+      }
+      return `${key}: ${val}`
+    })
+    .join(' • ')
 }
 
 export default function ExperimentConsolePage() {
@@ -75,30 +101,81 @@ export default function ExperimentConsolePage() {
     })
   }
 
-  return (
-    <div className="p-8 space-y-8">
-      <header className="flex flex-col gap-2">
-        <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-semibold">{session.protocol.name}</h1>
-          <span
-            className={`text-xs font-medium px-3 py-1 rounded-full ${
-              statusColors[session.execution.status] ?? statusColors.pending
-            }`}
-          >
-            {session.execution.status.replace('_', ' ')}
-          </span>
-        </div>
-        <p className="text-neutral-600">
-          Version {session.protocol.version} • Started{' '}
-          {formatDateTime(session.execution.created_at)}
-        </p>
-      </header>
+    return (
+      <div className="p-8 space-y-8">
+        <header className="flex flex-col gap-2">
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-semibold">{session.protocol.name}</h1>
+            <span
+              className={`text-xs font-medium px-3 py-1 rounded-full ${
+                statusColors[session.execution.status] ?? statusColors.pending
+              }`}
+            >
+              {session.execution.status.replace('_', ' ')}
+            </span>
+          </div>
+          <p className="text-neutral-600">
+            Version {session.protocol.version} • Started{' '}
+            {formatDateTime(session.execution.created_at)}
+          </p>
+        </header>
 
-      <section className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
-        <div className="xl:col-span-2 space-y-4">
-          <h2 className="text-xl font-semibold">Protocol Steps</h2>
-          <div className="space-y-4">
-            {session.steps.map((step) => (
+        {session.telemetry_channels.length > 0 && (
+          <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <h2 className="text-xl font-semibold">Live Instrument Channels</h2>
+              <span className="text-sm text-neutral-500">
+                Auto-logged snapshots refresh with each telemetry ping.
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {session.telemetry_channels.map((channel) => (
+                <article
+                  key={channel.equipment.id}
+                  className="border border-neutral-100 rounded-md p-3 space-y-2"
+                >
+                  <header className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-neutral-800">
+                        {channel.equipment.name}
+                      </p>
+                      <p className="text-xs text-neutral-500 uppercase tracking-wide">
+                        {channel.equipment.eq_type}
+                      </p>
+                    </div>
+                    <span className="text-xs font-medium px-2 py-1 rounded-full border border-neutral-200">
+                      {channel.status ?? 'unknown'}
+                    </span>
+                  </header>
+                  <dl className="space-y-1 text-xs text-neutral-600">
+                    <div>
+                      <dt className="font-medium text-neutral-500">Streams</dt>
+                      <dd>{channel.stream_topics.length ? channel.stream_topics.join(', ') : '—'}</dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-neutral-500">Last Reading</dt>
+                      <dd>
+                        {formatDateTime(channel.latest_reading?.timestamp ?? undefined)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="font-medium text-neutral-500">Snapshot</dt>
+                      <dd className="text-neutral-700">
+                        {summarizeTelemetryData(channel.latest_reading?.data)}
+                      </dd>
+                    </div>
+                  </dl>
+                </article>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+          <div className="xl:col-span-2 space-y-4">
+            <h2 className="text-xl font-semibold">Protocol Steps</h2>
+            <div className="space-y-4">
+              {session.steps.map((step) => (
               <article
                 key={step.index}
                 className="border border-neutral-200 rounded-lg p-4 bg-white shadow-sm"
@@ -149,12 +226,69 @@ export default function ExperimentConsolePage() {
           </div>
         </div>
 
-        <aside className="space-y-6">
-          <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-3">
-            <h2 className="text-lg font-semibold">Inventory Pull Sheet</h2>
-            {session.inventory_items.length === 0 ? (
-              <p className="text-sm text-neutral-600">No inventory linked to this run yet.</p>
-            ) : (
+          <aside className="space-y-6">
+            <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-3">
+              <h2 className="text-lg font-semibold">Telemetry Anomalies</h2>
+              {session.anomaly_events.length === 0 ? (
+                <p className="text-sm text-neutral-600">
+                  No deviations detected in the latest telemetry window.
+                </p>
+              ) : (
+                <ul className="space-y-2 text-sm text-neutral-700">
+                  {session.anomaly_events.map((event, index) => (
+                    <li key={`${event.equipment_id}-${event.timestamp}-${index}`} className="border border-neutral-100 rounded-md p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-medium text-neutral-800">
+                          Channel {event.channel}
+                        </span>
+                        <span
+                          className={`text-xs font-semibold px-2 py-1 rounded-full ${
+                            anomalyBadges[event.severity] ?? anomalyBadges.warning
+                          }`}
+                        >
+                          {event.severity}
+                        </span>
+                      </div>
+                      <p className="text-sm text-neutral-700 mt-1">{event.message}</p>
+                      <p className="text-xs text-neutral-500 mt-1">
+                        Logged {formatDateTime(event.timestamp)}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-3">
+              <h2 className="text-lg font-semibold">Auto Notebook Entries</h2>
+              {session.auto_log_entries.length === 0 ? (
+                <p className="text-sm text-neutral-600">
+                  Telemetry snapshots will appear here for review before publishing to the lab notebook.
+                </p>
+              ) : (
+                <ul className="space-y-2 text-sm text-neutral-700">
+                  {session.auto_log_entries.map((entry, index) => (
+                    <li key={`${entry.source}-${entry.created_at}-${index}`} className="flex flex-col border border-neutral-100 rounded-md p-2">
+                      <span className="font-medium text-neutral-800">{entry.title}</span>
+                      <span className="text-xs text-neutral-500">
+                        {entry.source} • {formatDateTime(entry.created_at)}
+                      </span>
+                      {entry.body && (
+                        <p className="text-sm text-neutral-700 mt-1 whitespace-pre-wrap">
+                          {entry.body}
+                        </p>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+
+            <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-3">
+              <h2 className="text-lg font-semibold">Inventory Pull Sheet</h2>
+              {session.inventory_items.length === 0 ? (
+                <p className="text-sm text-neutral-600">No inventory linked to this run yet.</p>
+              ) : (
               <ul className="space-y-2 text-sm text-neutral-700">
                 {session.inventory_items.map((item) => (
                   <li key={item.id} className="flex flex-col border border-neutral-100 rounded-md p-2">

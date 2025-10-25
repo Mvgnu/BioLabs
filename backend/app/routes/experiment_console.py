@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -105,6 +105,160 @@ def _build_step_states(
     return step_statuses
 
 
+def _normalize_stream_topics(connection_info: dict[str, Any]) -> list[str]:
+    """Derive human friendly telemetry stream names from connection metadata."""
+
+    # purpose: expose instrument channel metadata for live console visualization
+    # inputs: connection_info blob stored on equipment records
+    # outputs: list[str] representing stream/topic identifiers
+    # status: experimental
+    candidates = connection_info.get("channels")
+    if not candidates:
+        candidates = connection_info.get("streams") or connection_info.get("topics")
+    if not candidates:
+        return []
+    if isinstance(candidates, (list, tuple, set)):
+        return [str(item) for item in candidates if item is not None]
+    if isinstance(candidates, dict):
+        return [f"{key}:{value}" for key, value in candidates.items()]
+    return [str(candidates)]
+
+
+def _summarize_reading_payload(data: dict[str, Any]) -> str:
+    """Generate a concise string summary for auto-log hydration."""
+
+    # purpose: translate structured telemetry into notebook-friendly prose
+    # inputs: latest telemetry data payload stored on EquipmentReading
+    # outputs: formatted string summary capturing key-value pairs
+    # status: experimental
+    fragments: list[str] = []
+    for key, value in data.items():
+        if isinstance(value, (dict, list, set, tuple)):
+            fragments.append(f"{key}={value}")
+        else:
+            fragments.append(f"{key}={value}")
+    return " | ".join(fragments)
+
+
+def _derive_anomalies(
+    equipment: models.Equipment,
+    reading: models.EquipmentReading | None,
+    topics: Sequence[str],
+) -> list[schemas.ExperimentAnomalySignal]:
+    """Translate raw telemetry flags into anomaly events."""
+
+    # purpose: surface deviation signals for the experiment console UI
+    # inputs: equipment row, latest reading row, candidate stream topics
+    # outputs: list of ExperimentAnomalySignal derived from telemetry payload
+    # status: experimental
+    if not reading or not isinstance(reading.data, dict):
+        return []
+    data = reading.data or {}
+    timestamp = reading.timestamp
+    channel = topics[0] if topics else equipment.eq_type or "telemetry"
+    events: list[schemas.ExperimentAnomalySignal] = []
+
+    alerts = data.get("alerts")
+    if isinstance(alerts, list):
+        for raw in alerts:
+            if isinstance(raw, dict):
+                severity = str(raw.get("severity", "warning")).lower()
+                message = str(raw.get("message") or raw)
+                channel_override = raw.get("channel")
+            else:
+                severity = "warning"
+                message = str(raw)
+                channel_override = None
+            normalized = severity if severity in {"info", "warning", "critical"} else "warning"
+            events.append(
+                schemas.ExperimentAnomalySignal(
+                    equipment_id=equipment.id,
+                    channel=str(channel_override or channel),
+                    message=message,
+                    severity=normalized,
+                    timestamp=timestamp,
+                )
+            )
+
+    status_flag = data.get("status")
+    if isinstance(status_flag, str):
+        normalized = status_flag.lower()
+        if normalized not in {"ok", "ready", "nominal"}:
+            events.append(
+                schemas.ExperimentAnomalySignal(
+                    equipment_id=equipment.id,
+                    channel=channel,
+                    message=f"Status reported as {status_flag}",
+                    severity="critical" if normalized in {"error", "fault", "offline"} else "warning",
+                    timestamp=timestamp,
+                )
+            )
+
+    return events
+
+
+def _collect_equipment_channels(
+    db: Session, equipment_ids: list[UUID]
+) -> tuple[
+    list[schemas.EquipmentTelemetryChannel],
+    list[schemas.ExperimentAnomalySignal],
+    list[schemas.ExperimentAutoLogEntry],
+]:
+    """Hydrate telemetry channel metadata and derived artifacts for the console."""
+
+    # purpose: enrich experiment session payloads with live device context
+    # inputs: sql session and list of equipment ids tied to execution params
+    # outputs: telemetry channels, anomaly events, auto log entry collection
+    # status: experimental
+    if not equipment_ids:
+        return [], [], []
+
+    equipment_rows = (
+        db.query(models.Equipment).filter(models.Equipment.id.in_(equipment_ids)).all()
+    )
+    if not equipment_rows:
+        return [], [], []
+
+    readings = (
+        db.query(models.EquipmentReading)
+        .filter(models.EquipmentReading.equipment_id.in_(equipment_ids))
+        .order_by(models.EquipmentReading.equipment_id, models.EquipmentReading.timestamp.desc())
+        .all()
+    )
+    latest_by_id: dict[UUID, models.EquipmentReading] = {}
+    for reading in readings:
+        if reading.equipment_id not in latest_by_id:
+            latest_by_id[reading.equipment_id] = reading
+
+    channels: list[schemas.EquipmentTelemetryChannel] = []
+    anomalies: list[schemas.ExperimentAnomalySignal] = []
+    auto_logs: list[schemas.ExperimentAutoLogEntry] = []
+
+    for equipment in equipment_rows:
+        topics = _normalize_stream_topics(equipment.connection_info or {})
+        latest = latest_by_id.get(equipment.id)
+        channels.append(
+            schemas.EquipmentTelemetryChannel(
+                equipment=equipment,
+                status=equipment.status,
+                stream_topics=topics,
+                latest_reading=latest,
+            )
+        )
+        anomalies.extend(_derive_anomalies(equipment, latest, topics))
+        if latest and isinstance(latest.data, dict) and latest.data:
+            auto_logs.append(
+                schemas.ExperimentAutoLogEntry(
+                    source=equipment.name,
+                    title=f"{equipment.name} telemetry snapshot",
+                    body=_summarize_reading_payload(latest.data),
+                    created_at=latest.timestamp,
+                )
+            )
+
+    return channels, anomalies, auto_logs
+
+
 def _assemble_session(
     db: Session,
     execution: models.ProtocolExecution,
@@ -133,6 +287,7 @@ def _assemble_session(
     params = execution.params or {}
     inventory_ids = _parse_uuid_list(params.get("inventory_item_ids", []))
     booking_ids = _parse_uuid_list(params.get("booking_ids", []))
+    equipment_ids = _parse_uuid_list(params.get("equipment_ids", []))
 
     inventory_items = []
     if inventory_ids:
@@ -152,6 +307,9 @@ def _assemble_session(
 
     instructions = _extract_steps(template.content)
     steps = _build_step_states(execution, instructions)
+    telemetry_channels, anomaly_events, auto_logs = _collect_equipment_channels(
+        db, equipment_ids
+    )
 
     return schemas.ExperimentExecutionSessionOut(
         execution=execution,
@@ -160,6 +318,9 @@ def _assemble_session(
         inventory_items=inventory_items,
         bookings=bookings,
         steps=steps,
+        telemetry_channels=telemetry_channels,
+        anomaly_events=anomaly_events,
+        auto_log_entries=auto_logs,
     )
 
 

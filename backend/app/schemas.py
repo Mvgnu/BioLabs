@@ -470,6 +470,34 @@ class ExperimentStepStatusUpdate(BaseModel):
     completed_at: Optional[datetime] = None
 
 
+class EquipmentTelemetryChannel(BaseModel):
+    """Summarized live channel information for an instrument feed."""
+
+    equipment: "EquipmentOut"
+    status: str | None = None
+    stream_topics: list[str] = Field(default_factory=list)
+    latest_reading: Optional["EquipmentReadingOut"] = None
+
+
+class ExperimentAnomalySignal(BaseModel):
+    """Auto-detected deviation captured from incoming telemetry."""
+
+    equipment_id: UUID
+    channel: str
+    message: str
+    severity: Literal["info", "warning", "critical"] = "warning"
+    timestamp: datetime
+
+
+class ExperimentAutoLogEntry(BaseModel):
+    """Notebook-ready log derived from telemetry or rule triggers."""
+
+    source: str
+    title: str
+    body: str | None = None
+    created_at: datetime
+
+
 class ExperimentExecutionSessionOut(BaseModel):
     execution: "ProtocolExecutionOut"
     protocol: "ProtocolTemplateOut"
@@ -477,6 +505,9 @@ class ExperimentExecutionSessionOut(BaseModel):
     inventory_items: list["InventoryItemOut"]
     bookings: list["BookingOut"]
     steps: list[ExperimentStepStatus]
+    telemetry_channels: list[EquipmentTelemetryChannel] = Field(default_factory=list)
+    anomaly_events: list[ExperimentAnomalySignal] = Field(default_factory=list)
+    auto_log_entries: list[ExperimentAutoLogEntry] = Field(default_factory=list)
 
 
 class NotificationCreate(BaseModel):
@@ -1179,4 +1210,5 @@ class ItemTypeOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+EquipmentTelemetryChannel.model_rebuild()
 ExperimentExecutionSessionOut.model_rebuild()
