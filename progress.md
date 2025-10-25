@@ -671,6 +671,11 @@ This implementation elevates BioLab from traditional web application to modern p
   - TimeSeriesChart: Line/area charts for temporal data with tooltips and animations
   - All components follow design system with consistent color schemes and accessibility features
 
+- **Real-Time Notification Hub**: Activated live notification delivery from backend to UI
+  - Backend now emits `notification_created`, `notification_read`, and `notification_deleted` events onto team Redis channels.
+  - Added FastAPI tests to guarantee WebSocket subscribers receive each lifecycle transition.
+  - Introduced a Next.js `NotificationProvider` that hydrates the store via React Query and listens for WebSocket messages.
+  - Mounted the notification center and toast stack globally so users see instant, actionable alerts.
 - **Enhanced Analytics Hooks**: Removed mock data and implemented real backend integration
   - useAdvancedAnalytics: Parallel fetching of all trending data endpoints
   - useLabMetrics: Real-time calculation from actual inventory, projects, protocols, and audit data

@@ -23,6 +23,9 @@ class User(Base):
     last_digest = Column(DateTime, default=datetime.now(timezone.utc))
 
     teams = relationship("TeamMember", back_populates="user")
+    notifications = relationship(
+        "Notification", back_populates="user", cascade="all, delete-orphan"
+    )
 
 class Team(Base):
     __tablename__ = "teams"
@@ -240,8 +243,14 @@ class Notification(Base):
     category = Column(String, nullable=True)  # inventory, protocols, projects, bookings, system, collaboration, compliance, equipment, marketplace
     priority = Column(String, default="medium")  # low, medium, high, urgent
     is_read = Column(Boolean, default=False)
-    meta = Column(JSON, default={})  # Additional data like item_id, action, etc.
+    meta = Column(JSON, default=dict)  # Additional data like item_id, action, etc.
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    user = relationship("User", back_populates="notifications")
+
+    @property
+    def action_url(self) -> str | None:
+        meta = self.meta or {}
+        return meta.get("action_url")
 
 class NotificationPreference(Base):
     __tablename__ = "notification_preferences"

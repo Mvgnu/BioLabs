@@ -15,7 +15,7 @@ interface NotificationState {
   // Notifications
   notifications: Notification[]
   realTimeNotifications: RealTimeNotification[]
-  
+
   // UI State
   isOpen: boolean
   isLoading: boolean
@@ -36,6 +36,8 @@ interface NotificationState {
   // Notification Management
   addNotification: (notification: Notification) => void
   addRealTimeNotification: (notification: RealTimeNotification) => void
+  removeRealTimeNotification: (id: string) => void
+  setNotifications: (notifications: Notification[]) => void
   markAsRead: (id: string) => void
   markAllAsRead: () => void
   deleteNotification: (id: string) => void
@@ -70,7 +72,7 @@ const defaultFilters: NotificationFilters = {
   date_to: undefined,
 }
 
-const defaultStats: NotificationStats = {
+const createEmptyStats = (): NotificationStats => ({
   total: 0,
   unread: 0,
   by_category: {
@@ -90,6 +92,27 @@ const defaultStats: NotificationStats = {
     high: 0,
     urgent: 0,
   },
+})
+
+const defaultStats = createEmptyStats()
+
+const computeStats = (notifications: Notification[]): NotificationStats => {
+  const stats = createEmptyStats()
+  stats.total = notifications.length
+  for (const notification of notifications) {
+    if (!notification.is_read) {
+      stats.unread += 1
+    }
+    const category = (notification.category || 'system') as keyof NotificationStats['by_category']
+    if (stats.by_category[category] !== undefined) {
+      stats.by_category[category] += 1
+    }
+    const priority = notification.priority as keyof NotificationStats['by_priority']
+    if (stats.by_priority[priority] !== undefined) {
+      stats.by_priority[priority] += 1
+    }
+  }
+  return stats
 }
 
 export const useNotifications = create<NotificationState>()(
@@ -111,50 +134,61 @@ export const useNotifications = create<NotificationState>()(
 
     // Notification Management
     addNotification: (notification) =>
-      set((state) => ({
-        notifications: [notification, ...state.notifications],
-        stats: {
-          ...state.stats,
-          total: state.stats.total + 1,
-          unread: state.stats.unread + (notification.is_read ? 0 : 1),
-          by_category: {
-            ...state.stats.by_category,
-            [notification.category || 'system']: 
-              (state.stats.by_category[notification.category || 'system'] || 0) + 1,
-          },
-        },
-      })),
+      set((state) => {
+        const existingIndex = state.notifications.findIndex((n) => n.id === notification.id)
+        let notifications = state.notifications
+        if (existingIndex >= 0) {
+          notifications = state.notifications.slice()
+          notifications[existingIndex] = { ...state.notifications[existingIndex], ...notification }
+        } else {
+          notifications = [notification, ...state.notifications]
+        }
+        return {
+          notifications,
+          stats: computeStats(notifications),
+        }
+      }),
 
     addRealTimeNotification: (notification) =>
+      set((state) => {
+        const existing = state.realTimeNotifications.filter((n) => n.id !== notification.id)
+        const next = [notification, ...existing]
+        return {
+          realTimeNotifications: next.slice(0, 10),
+        }
+      }),
+
+    removeRealTimeNotification: (id) =>
       set((state) => ({
-        realTimeNotifications: [notification, ...state.realTimeNotifications].slice(0, 10), // Keep last 10
+        realTimeNotifications: state.realTimeNotifications.filter((notification) => notification.id !== id),
       })),
+
+    setNotifications: (notifications) =>
+      set({
+        notifications,
+        stats: computeStats(notifications),
+      }),
 
     markAsRead: (id) =>
       set((state) => {
         const updatedNotifications = state.notifications.map((n) =>
           n.id === id ? { ...n, is_read: true } : n
         )
-        
-        const updatedStats = {
-          ...state.stats,
-          unread: Math.max(0, state.stats.unread - 1),
-        }
-        
+
         return {
           notifications: updatedNotifications,
-          stats: updatedStats,
+          stats: computeStats(updatedNotifications),
         }
       }),
 
     markAllAsRead: () =>
-      set((state) => ({
-        notifications: state.notifications.map((n) => ({ ...n, is_read: true })),
-        stats: {
-          ...state.stats,
-          unread: 0,
-        },
-      })),
+      set((state) => {
+        const updatedNotifications = state.notifications.map((n) => ({ ...n, is_read: true }))
+        return {
+          notifications: updatedNotifications,
+          stats: computeStats(updatedNotifications),
+        }
+      }),
 
     deleteNotification: (id) =>
       set((state) => {
@@ -162,20 +196,9 @@ export const useNotifications = create<NotificationState>()(
         if (!notification) return state
 
         const updatedNotifications = state.notifications.filter((n) => n.id !== id)
-        const updatedStats = {
-          ...state.stats,
-          total: Math.max(0, state.stats.total - 1),
-          unread: Math.max(0, state.stats.unread - (notification.is_read ? 0 : 1)),
-          by_category: {
-            ...state.stats.by_category,
-            [notification.category || 'system']: 
-              Math.max(0, (state.stats.by_category[notification.category || 'system'] || 0) - 1),
-          },
-        }
-
         return {
           notifications: updatedNotifications,
-          stats: updatedStats,
+          stats: computeStats(updatedNotifications),
         }
       }),
 
@@ -183,7 +206,7 @@ export const useNotifications = create<NotificationState>()(
       set({
         notifications: [],
         realTimeNotifications: [],
-        stats: defaultStats,
+        stats: createEmptyStats(),
       }),
 
     // Filtering
@@ -229,7 +252,7 @@ export const useNotifications = create<NotificationState>()(
     // Real-time
     handleNotificationEvent: (event) => {
       const { type, data } = event
-      
+
       switch (type) {
         case 'notification_created':
           get().addNotification(data as Notification)
@@ -274,7 +297,7 @@ export const useNotifications = create<NotificationState>()(
       get().notifications.filter((n) => n.category === category),
 
     getNotificationsByPriority: (priority) =>
-      get().notifications.filter((n) => n.metadata?.priority === priority),
+      get().notifications.filter((n) => n.meta?.priority === priority),
   }))
 )
 
@@ -298,7 +321,10 @@ if (typeof window !== 'undefined') {
     
     if (savedNotifications) {
       const notifications = JSON.parse(savedNotifications)
-      useNotifications.setState({ notifications })
+      useNotifications.setState({
+        notifications,
+        stats: computeStats(notifications),
+      })
     }
     
     if (savedPreferences) {

@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Optional, Any, Dict
-from pydantic import BaseModel, EmailStr, ConfigDict
+from pydantic import BaseModel, EmailStr, ConfigDict, Field
 from uuid import UUID
 
 
@@ -453,7 +453,7 @@ class NotificationCreate(BaseModel):
     title: Optional[str] = None
     category: Optional[str] = None
     priority: str = "medium"
-    meta: Dict[str, Any] = {}
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 class NotificationOut(BaseModel):
@@ -464,7 +464,8 @@ class NotificationOut(BaseModel):
     category: Optional[str] = None
     priority: str = "medium"
     is_read: bool
-    meta: Dict[str, Any] = {}
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    action_url: Optional[str] = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 

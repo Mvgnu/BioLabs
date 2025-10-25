@@ -1,16 +1,22 @@
+import json
 import uuid
 import os
 from .conftest import client, TestingSessionLocal
-from app import notify, models, tasks
+from app import notify, models, tasks, auth
 
 
 def create_user(client, email, phone=None):
-    payload = {"email": email, "password": "secret"}
-    if phone:
-        payload["phone_number"] = phone
-    resp = client.post("/api/auth/register", json=payload)
-    assert resp.status_code == 200
-    token = resp.json()["access_token"]
+    db = TestingSessionLocal()
+    user = models.User(
+        email=email,
+        hashed_password="secret",
+        phone_number=phone,
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    db.close()
+    token = auth.create_access_token({"sub": email})
     return {"Authorization": f"Bearer {token}"}
 
 
@@ -97,7 +103,6 @@ def test_daily_digest(client):
     email = f"{uuid.uuid4()}@ex.com"
     create_user(client, email)
     # create notifications directly
-    from .conftest import TestingSessionLocal
     db = TestingSessionLocal()
     user = db.query(models.User).filter_by(email=email).first()
     db.add(models.Notification(user_id=user.id, message="First"))
@@ -159,3 +164,46 @@ def test_preference_unique(client):
     db.close()
     # only one preference row should exist
     assert len(prefs) == 1
+
+
+def test_notification_events_published(client):
+    email = f"{uuid.uuid4()}@ex.com"
+    headers = create_user(client, email)
+
+    team_resp = client.post("/api/teams/", json={"name": "Notify Team"}, headers=headers)
+    assert team_resp.status_code == 200
+    team_id = team_resp.json()["id"]
+
+    db = TestingSessionLocal()
+    user = db.query(models.User).filter_by(email=email).first()
+    db.close()
+
+    with client.websocket_connect(f"/ws/{team_id}") as websocket:
+        create_resp = client.post(
+            "/api/notifications/create",
+            json={
+                "user_id": str(user.id),
+                "message": "Realtime hello",
+                "title": "Greeting",
+                "meta": {"action_url": "https://example.com"},
+            },
+            headers=headers,
+        )
+        assert create_resp.status_code == 200
+        created_event = json.loads(websocket.receive_text())
+        assert created_event["type"] == "notification_created"
+        assert created_event["data"]["message"] == "Realtime hello"
+        notif_id = created_event["data"]["id"]
+
+        mark_resp = client.post(f"/api/notifications/{notif_id}/read", headers=headers)
+        assert mark_resp.status_code == 200
+        read_event = json.loads(websocket.receive_text())
+        assert read_event["type"] == "notification_read"
+        assert read_event["data"]["id"] == notif_id
+        assert read_event["data"]["is_read"] is True
+
+        delete_resp = client.delete(f"/api/notifications/{notif_id}", headers=headers)
+        assert delete_resp.status_code == 200
+        deleted_event = json.loads(websocket.receive_text())
+        assert deleted_event["type"] == "notification_deleted"
+        assert deleted_event["data"]["id"] == notif_id

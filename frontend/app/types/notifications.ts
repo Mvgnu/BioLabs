@@ -8,6 +8,7 @@ export interface Notification {
   is_read: boolean
   meta: Record<string, any>
   created_at: string
+  action_url?: string
 }
 
 export interface NotificationPreference {
@@ -86,10 +87,15 @@ export interface WebSocketMessage {
   timestamp: string
 }
 
+export interface RealTimeNotification extends Notification {
+  type: 'notification' | 'alert' | 'update'
+  timestamp: string
+}
+
 // Contextual notification types
 export interface InventoryNotification extends Notification {
   category: 'inventory'
-  metadata: {
+  meta: {
     item_id?: string
     item_name?: string
     action?: 'low_stock' | 'expired' | 'maintenance_due' | 'location_changed'
@@ -100,7 +106,7 @@ export interface InventoryNotification extends Notification {
 
 export interface ProtocolNotification extends Notification {
   category: 'protocols'
-  metadata: {
+  meta: {
     protocol_id?: string
     protocol_name?: string
     action?: 'execution_completed' | 'execution_failed' | 'merge_request' | 'updated'
@@ -111,7 +117,7 @@ export interface ProtocolNotification extends Notification {
 
 export interface ProjectNotification extends Notification {
   category: 'projects'
-  metadata: {
+  meta: {
     project_id?: string
     project_name?: string
     action?: 'task_assigned' | 'task_completed' | 'deadline_approaching' | 'member_added'
@@ -123,7 +129,7 @@ export interface ProjectNotification extends Notification {
 
 export interface BookingNotification extends Notification {
   category: 'bookings'
-  metadata: {
+  meta: {
     booking_id?: string
     resource_id?: string
     resource_name?: string
@@ -135,7 +141,7 @@ export interface BookingNotification extends Notification {
 
 export interface SystemNotification extends Notification {
   category: 'system'
-  metadata: {
+  meta: {
     action?: 'maintenance' | 'update' | 'backup' | 'error'
     severity?: 'info' | 'warning' | 'error' | 'critical'
     component?: string
@@ -144,7 +150,7 @@ export interface SystemNotification extends Notification {
 
 export interface CollaborationNotification extends Notification {
   category: 'collaboration'
-  metadata: {
+  meta: {
     action?: 'comment' | 'mention' | 'share' | 'invite'
     target_type?: 'item' | 'protocol' | 'project' | 'notebook'
     target_id?: string

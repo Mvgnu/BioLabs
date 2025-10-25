@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { usePathname } from 'next/navigation'
 import Header from './components/layout/Header'
 import Footer from './components/layout/Footer'
+import { NotificationCenter, NotificationProvider } from './components/notifications'
 import { CommandPalette, type CommandItem } from './components/ui'
 import { useCommandPalette } from './hooks/useCommandPalette'
 
@@ -72,6 +73,9 @@ function AppContent({ children }: { children: ReactNode }) {
         recentItems={recentItems}
         customCommands={customCommands}
       />
+
+      <NotificationCenter />
+      <NotificationProvider />
     </>
   )
 }
