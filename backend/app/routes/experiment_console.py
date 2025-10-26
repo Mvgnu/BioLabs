@@ -9,6 +9,7 @@ from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
+from ..narratives import render_execution_narrative
 from ..auth import get_current_user
 from ..database import get_db
 
@@ -1512,6 +1513,79 @@ async def get_execution_timeline(
     ]
 
     return schemas.ExperimentTimelinePage(events=serialized, next_cursor=next_cursor)
+
+
+@router.post(
+    "/sessions/{execution_id}/exports/narrative",
+    response_model=schemas.ExecutionNarrativeExport,
+)
+async def create_execution_narrative_export(
+    execution_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Generate and return a Markdown narrative for a protocol execution."""
+
+    # purpose: expose compliance-ready narrative export for experiment console
+    # inputs: execution identifier path parameter, authenticated user
+    # outputs: ExecutionNarrativeExport payload containing Markdown content
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    template = None
+    if execution.template_id:
+        template = (
+            db.query(models.ProtocolTemplate)
+            .filter(models.ProtocolTemplate.id == execution.template_id)
+            .first()
+        )
+
+    events = (
+        db.query(models.ExecutionEvent)
+        .options(joinedload(models.ExecutionEvent.actor))
+        .filter(models.ExecutionEvent.execution_id == exec_uuid)
+        .order_by(
+            models.ExecutionEvent.created_at.asc(),
+            models.ExecutionEvent.sequence.asc(),
+        )
+        .all()
+    )
+
+    narrative = render_execution_narrative(execution, events, template=template)
+    generated_at = datetime.now(timezone.utc)
+
+    _record_execution_event(
+        db,
+        execution,
+        "narrative_export.created",
+        {
+            "format": "markdown",
+            "generated_at": generated_at.isoformat(),
+            "event_count": len(events),
+        },
+        actor=user,
+    )
+    db.flush()
+    db.commit()
+
+    return schemas.ExecutionNarrativeExport(
+        execution_id=execution.id,
+        format="markdown",
+        generated_at=generated_at,
+        event_count=len(events),
+        content=narrative,
+    )
 
 
 @router.post(
