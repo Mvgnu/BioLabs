@@ -720,3 +720,10 @@ This implementation elevates BioLab from traditional web application to modern p
 
 This implementation establishes BioLab as a data-driven laboratory management platform with enterprise-grade analytics and visualization capabilities, leveraging the full depth of the sophisticated backend infrastructure.
 
+
+## 2025-07-05 - Compliance Narrative Evidence Loop
+
+- Persisted Markdown narrative exports with `execution_narrative_exports` and attachment tables capturing bundled timeline evidence and file references.
+- Added export history, creation, and approval endpoints plus timeline events for creation and decisions.
+- Extended React hooks with export creation, listing, and approval mutations wired into React Query caches.
+- Introduced `ExportsPanel` UI for scientists to bundle evidence, submit exports, and record signatures directly from the experiment console.

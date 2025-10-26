@@ -11,6 +11,7 @@ import {
 } from '../../hooks/useExperimentConsole'
 import type { ExperimentRemediationResult } from '../../types'
 import Timeline from '../components/Timeline'
+import ExportsPanel from '../components/ExportsPanel'
 
 const statusColors: Record<string, string> = {
   pending: 'bg-neutral-200 text-neutral-800',
@@ -364,6 +365,8 @@ export default function ExperimentConsolePage() {
             {formatDateTime(session.execution.created_at)}
           </p>
         </header>
+
+        <ExportsPanel executionId={executionId} timelineEvents={timelineEvents} />
 
         {session.telemetry_channels.length > 0 && (
           <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-4">

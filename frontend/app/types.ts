@@ -1,3 +1,12 @@
+export interface UserIdentity {
+  id: string
+  email: string
+  full_name?: string | null
+  phone_number?: string | null
+  orcid_id?: string | null
+  is_admin?: boolean
+}
+
 export interface InventoryItem {
   id: string
   item_type: string
@@ -384,6 +393,58 @@ export interface ExperimentExecutionSession {
   anomaly_events: ExperimentAnomalySignal[]
   auto_log_entries: ExperimentAutoLogEntry[]
   timeline_preview: ExecutionEvent[]
+}
+
+export interface NarrativeExportAttachmentInput {
+  event_id?: string
+  file_id?: string
+  label?: string | null
+}
+
+export interface ExecutionNarrativeAttachment {
+  id: string
+  evidence_type: 'timeline_event' | 'file'
+  reference_id: string
+  label?: string | null
+  snapshot: Record<string, any>
+  file?: FileMeta | null
+  created_at: string
+}
+
+export interface ExecutionNarrativeExportRecord {
+  id: string
+  execution_id: string
+  version: number
+  format: 'markdown'
+  generated_at: string
+  event_count: number
+  content: string
+  approval_status: 'pending' | 'approved' | 'rejected'
+  approval_signature?: string | null
+  approved_at?: string | null
+  requested_by: UserIdentity
+  approved_by?: UserIdentity | null
+  notes?: string | null
+  attachments: ExecutionNarrativeAttachment[]
+  metadata: Record<string, any>
+  created_at: string
+  updated_at: string
+}
+
+export interface ExecutionNarrativeExportHistory {
+  exports: ExecutionNarrativeExportRecord[]
+}
+
+export interface ExecutionNarrativeExportCreate {
+  notes?: string | null
+  metadata?: Record<string, any>
+  attachments?: NarrativeExportAttachmentInput[]
+}
+
+export interface ExecutionNarrativeApprovalRequest {
+  status: 'approved' | 'rejected'
+  signature: string
+  approver_id?: string | null
 }
 
 export interface ExperimentRemediationResult {

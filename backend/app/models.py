@@ -1,6 +1,16 @@
 import uuid
 import sqlalchemy as sa
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, JSON, Integer, Time
+from sqlalchemy import (
+    Column,
+    String,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    JSON,
+    Integer,
+    Time,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
@@ -178,6 +188,77 @@ class ExecutionEvent(Base):
         sa.UniqueConstraint("execution_id", "sequence", name="uq_execution_event_sequence"),
     )
 
+
+class ExecutionNarrativeExport(Base):
+    __tablename__ = "execution_narrative_exports"
+
+    # purpose: persist serialized narrative exports with approvals and evidence bundles
+    # status: pilot
+    # depends_on: protocol_executions
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(Integer, default=1, nullable=False)
+    format = Column(String, default="markdown", nullable=False)
+    content = Column(Text, nullable=False)
+    event_count = Column(Integer, default=0, nullable=False)
+    generated_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    requested_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    approved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approval_status = Column(String, default="pending", nullable=False)
+    approval_signature = Column(String, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    notes = Column(String, nullable=True)
+    meta = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+    )
+
+    execution = relationship("ProtocolExecution")
+    requested_by = relationship("User", foreign_keys=[requested_by_id])
+    approved_by = relationship("User", foreign_keys=[approved_by_id])
+    attachments = relationship(
+        "ExecutionNarrativeExportAttachment",
+        back_populates="export",
+        cascade="all, delete-orphan",
+    )
+
+
+class ExecutionNarrativeExportAttachment(Base):
+    __tablename__ = "execution_narrative_export_attachments"
+
+    # purpose: associate narrative exports with snapshot evidence references
+    # status: pilot
+    # depends_on: execution_narrative_exports
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    export_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_narrative_exports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    evidence_type = Column(String, nullable=False)
+    reference_id = Column(UUID(as_uuid=True), nullable=False)
+    file_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    label = Column(String, nullable=True)
+    snapshot = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+
+    export = relationship("ExecutionNarrativeExport", back_populates="attachments")
+    file = relationship("File", foreign_keys=[file_id])
 
 class ProtocolMergeRequest(Base):
     __tablename__ = "protocol_merge_requests"

@@ -5,7 +5,7 @@ from typing import Any, Iterable, Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
@@ -1521,6 +1521,7 @@ async def get_execution_timeline(
 )
 async def create_execution_narrative_export(
     execution_id: str,
+    request: schemas.ExecutionNarrativeExportRequest | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -1561,31 +1562,253 @@ async def create_execution_narrative_export(
         )
         .all()
     )
+    event_map = {event.id: event for event in events}
 
+    payload = request or schemas.ExecutionNarrativeExportRequest()
     narrative = render_execution_narrative(execution, events, template=template)
     generated_at = datetime.now(timezone.utc)
+
+    existing_count = (
+        db.query(func.count(models.ExecutionNarrativeExport.id))
+        .filter(models.ExecutionNarrativeExport.execution_id == exec_uuid)
+        .scalar()
+        or 0
+    )
+
+    export_record = models.ExecutionNarrativeExport(
+        execution_id=exec_uuid,
+        version=existing_count + 1,
+        format="markdown",
+        content=narrative,
+        event_count=len(events),
+        generated_at=generated_at,
+        requested_by_id=user.id,
+        notes=payload.notes,
+    )
+    export_record.meta = payload.metadata or {}
+    export_record.requested_by = user
+
+    attachments_summary: list[dict[str, Any]] = []
+    for attachment in payload.attachments:
+        if attachment.event_id:
+            event = event_map.get(attachment.event_id)
+            if not event:
+                event = (
+                    db.query(models.ExecutionEvent)
+                    .options(joinedload(models.ExecutionEvent.actor))
+                    .filter(
+                        models.ExecutionEvent.id == attachment.event_id,
+                        models.ExecutionEvent.execution_id == exec_uuid,
+                    )
+                    .first()
+                )
+            if not event:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Referenced timeline event not found for export attachment",
+                )
+            evidence = models.ExecutionNarrativeExportAttachment(
+                evidence_type="timeline_event",
+                reference_id=event.id,
+                label=attachment.label,
+                snapshot={
+                    "event_type": event.event_type,
+                    "payload": event.payload or {},
+                    "created_at": event.created_at.isoformat(),
+                    "actor_id": str(event.actor_id) if event.actor_id else None,
+                },
+            )
+            export_record.attachments.append(evidence)
+        else:
+            file_obj = (
+                db.query(models.File)
+                .filter(models.File.id == attachment.file_id)
+                .first()
+            )
+            if not file_obj:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Referenced file attachment not found",
+                )
+            evidence = models.ExecutionNarrativeExportAttachment(
+                evidence_type="file",
+                reference_id=file_obj.id,
+                file_id=file_obj.id,
+                label=attachment.label or file_obj.filename,
+                snapshot={
+                    "filename": file_obj.filename,
+                    "file_type": file_obj.file_type,
+                    "file_size": file_obj.file_size,
+                },
+            )
+            evidence.file = file_obj
+            export_record.attachments.append(evidence)
+
+    db.add(export_record)
+    db.flush()
+
+    attachments_summary = [
+        {
+            "type": record.evidence_type,
+            "reference_id": str(record.reference_id),
+            "label": record.label,
+        }
+        for record in export_record.attachments
+    ]
 
     _record_execution_event(
         db,
         execution,
         "narrative_export.created",
         {
-            "format": "markdown",
+            "format": export_record.format,
             "generated_at": generated_at.isoformat(),
-            "event_count": len(events),
+            "event_count": export_record.event_count,
+            "export_id": str(export_record.id),
+            "version": export_record.version,
+            "approval_status": export_record.approval_status,
+            "attachments": attachments_summary,
         },
         actor=user,
     )
-    db.flush()
     db.commit()
 
-    return schemas.ExecutionNarrativeExport(
-        execution_id=execution.id,
-        format="markdown",
-        generated_at=generated_at,
-        event_count=len(events),
-        content=narrative,
+    export_with_relations = (
+        db.query(models.ExecutionNarrativeExport)
+        .options(
+            joinedload(models.ExecutionNarrativeExport.requested_by),
+            joinedload(models.ExecutionNarrativeExport.approved_by),
+            joinedload(models.ExecutionNarrativeExport.attachments).joinedload(
+                models.ExecutionNarrativeExportAttachment.file
+            ),
+        )
+        .filter(models.ExecutionNarrativeExport.id == export_record.id)
+        .first()
     )
+
+    if not export_with_relations:
+        raise HTTPException(status_code=500, detail="Failed to persist narrative export")
+
+    return schemas.ExecutionNarrativeExport.model_validate(export_with_relations)
+
+
+@router.get(
+    "/sessions/{execution_id}/exports/narrative",
+    response_model=schemas.ExecutionNarrativeExportHistory,
+)
+async def list_execution_narrative_exports(
+    execution_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Return persisted narrative exports for a given execution."""
+
+    # purpose: surface export history for experiment console clients
+    # inputs: execution identifier path parameter, authenticated user
+    # outputs: chronological ExecutionNarrativeExport collection
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    del user
+
+    exports = (
+        db.query(models.ExecutionNarrativeExport)
+        .options(
+            joinedload(models.ExecutionNarrativeExport.requested_by),
+            joinedload(models.ExecutionNarrativeExport.approved_by),
+            joinedload(models.ExecutionNarrativeExport.attachments).joinedload(
+                models.ExecutionNarrativeExportAttachment.file
+            ),
+        )
+        .filter(models.ExecutionNarrativeExport.execution_id == exec_uuid)
+        .order_by(models.ExecutionNarrativeExport.generated_at.desc())
+        .all()
+    )
+
+    serialized = [
+        schemas.ExecutionNarrativeExport.model_validate(export) for export in exports
+    ]
+    return schemas.ExecutionNarrativeExportHistory(exports=serialized)
+
+
+@router.post(
+    "/sessions/{execution_id}/exports/narrative/{export_id}/approve",
+    response_model=schemas.ExecutionNarrativeExport,
+)
+async def approve_execution_narrative_export(
+    execution_id: str,
+    export_id: str,
+    approval: schemas.ExecutionNarrativeApprovalRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Record approval or rejection metadata for a narrative export."""
+
+    # purpose: attach compliance signature data to persisted narrative exports
+    # inputs: execution and export identifiers with approval payload
+    # outputs: updated ExecutionNarrativeExport reflecting approval state
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+        export_uuid = UUID(export_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid identifier supplied") from exc
+
+    export_record = (
+        db.query(models.ExecutionNarrativeExport)
+        .options(
+            joinedload(models.ExecutionNarrativeExport.requested_by),
+            joinedload(models.ExecutionNarrativeExport.approved_by),
+            joinedload(models.ExecutionNarrativeExport.attachments).joinedload(
+                models.ExecutionNarrativeExportAttachment.file
+            ),
+            joinedload(models.ExecutionNarrativeExport.execution),
+        )
+        .filter(
+            models.ExecutionNarrativeExport.id == export_uuid,
+            models.ExecutionNarrativeExport.execution_id == exec_uuid,
+        )
+        .first()
+    )
+    if not export_record:
+        raise HTTPException(status_code=404, detail="Narrative export not found")
+
+    approver = user
+    if approval.approver_id and approval.approver_id != user.id:
+        approver = (
+            db.query(models.User)
+            .filter(models.User.id == approval.approver_id)
+            .first()
+        )
+        if not approver:
+            raise HTTPException(status_code=404, detail="Approver not found")
+
+    export_record.approval_status = approval.status
+    export_record.approval_signature = approval.signature
+    export_record.approved_at = datetime.now(timezone.utc)
+    export_record.approved_by_id = approver.id
+    export_record.approved_by = approver
+
+    _record_execution_event(
+        db,
+        export_record.execution,
+        "narrative_export.approved" if approval.status == "approved" else "narrative_export.rejected",
+        {
+            "export_id": str(export_record.id),
+            "status": approval.status,
+            "signature": approval.signature,
+            "approver_id": str(approver.id),
+        },
+        actor=user,
+    )
+
+    db.commit()
+    db.refresh(export_record)
+
+    return schemas.ExecutionNarrativeExport.model_validate(export_record)
 
 
 @router.post(
