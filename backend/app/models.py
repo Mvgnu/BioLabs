@@ -223,6 +223,11 @@ class ExecutionNarrativeExport(Base):
     )
     artifact_checksum = Column(String, nullable=True)
     artifact_error = Column(String, nullable=True)
+    artifact_manifest_digest = Column(String, nullable=True)
+    packaging_attempts = Column(Integer, default=0, nullable=False)
+    packaged_at = Column(DateTime, nullable=True)
+    retired_at = Column(DateTime, nullable=True)
+    retention_expires_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,

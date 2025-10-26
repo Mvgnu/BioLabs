@@ -578,11 +578,24 @@ class ExecutionNarrativeExport(BaseModel):
     notes: str | None = None
     attachments: list[ExecutionNarrativeExportAttachmentOut] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict, validation_alias='meta')
-    artifact_status: Literal["queued", "processing", "ready", "failed"] = "queued"
+    artifact_status: Literal[
+        "queued",
+        "processing",
+        "ready",
+        "retrying",
+        "failed",
+        "expired",
+    ] = "queued"
     artifact_checksum: str | None = None
     artifact_error: str | None = None
     artifact_file: Optional[FileOut] = None
     artifact_download_path: str | None = None
+    artifact_signed_url: str | None = None
+    artifact_manifest_digest: str | None = None
+    packaging_attempts: int = 0
+    packaged_at: datetime | None = None
+    retired_at: datetime | None = None
+    retention_expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
