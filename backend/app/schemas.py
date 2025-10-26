@@ -501,6 +501,28 @@ class ExperimentAutoLogEntry(BaseModel):
     created_at: datetime
 
 
+class ExecutionEventOut(BaseModel):
+    """Serialized execution timeline event for console replay."""
+
+    id: UUID
+    execution_id: UUID
+    event_type: str
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    actor_id: UUID | None = None
+    actor: Optional["UserOut"] = None
+    sequence: int
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExperimentTimelinePage(BaseModel):
+    """Paginated view of execution events for timeline consumption."""
+
+    events: list[ExecutionEventOut] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
 class ExperimentExecutionSessionOut(BaseModel):
     execution: "ProtocolExecutionOut"
     protocol: "ProtocolTemplateOut"
@@ -511,6 +533,7 @@ class ExperimentExecutionSessionOut(BaseModel):
     telemetry_channels: list[EquipmentTelemetryChannel] = Field(default_factory=list)
     anomaly_events: list[ExperimentAnomalySignal] = Field(default_factory=list)
     auto_log_entries: list[ExperimentAutoLogEntry] = Field(default_factory=list)
+    timeline_preview: list[ExecutionEventOut] = Field(default_factory=list)
 
 
 class ExperimentRemediationResult(BaseModel):
@@ -1237,6 +1260,8 @@ class ItemTypeOut(BaseModel):
 
 
 EquipmentTelemetryChannel.model_rebuild()
+ExecutionEventOut.model_rebuild()
+ExperimentTimelinePage.model_rebuild()
 ExperimentExecutionSessionOut.model_rebuild()
 ExperimentRemediationResult.model_rebuild()
 ExperimentRemediationRequest.model_rebuild()

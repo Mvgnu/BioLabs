@@ -71,6 +71,10 @@ def test_create_and_update_execution_session(client):
     assert len(session_payload["steps"]) == 2
     assert session_payload["steps"][0]["status"] == "pending"
     assert session_payload["notebook_entries"]
+    assert any(
+        event["event_type"] == "session.created"
+        for event in session_payload.get("timeline_preview", [])
+    )
 
     exec_id = session_payload["execution"]["id"]
 
@@ -79,6 +83,15 @@ def test_create_and_update_execution_session(client):
     )
     assert fetched.status_code == 200
     assert fetched.json()["execution"]["id"] == exec_id
+
+    timeline_initial = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/timeline",
+        headers=headers,
+    )
+    assert timeline_initial.status_code == 200
+    timeline_payload = timeline_initial.json()
+    assert timeline_payload["events"][0]["event_type"] == "session.created"
+    assert timeline_payload["next_cursor"] is None
 
     update_resp = client.post(
         f"/api/experiment-console/sessions/{exec_id}/steps/0",
@@ -93,6 +106,13 @@ def test_create_and_update_execution_session(client):
     updated = update_resp.json()
     assert updated["steps"][0]["status"] == "completed"
     assert updated["execution"]["status"] in {"in_progress", "completed"}
+
+    timeline_after = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/timeline",
+        headers=headers,
+    ).json()
+    event_types = [event["event_type"] for event in timeline_after["events"]]
+    assert "step.transition" in event_types
 
 
 def test_step_gating_blocks_progress(client):

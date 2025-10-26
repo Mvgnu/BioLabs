@@ -5,10 +5,12 @@ import { useParams } from 'next/navigation'
 import {
   useAdvanceExperimentStep,
   useExperimentSession,
+  useExecutionTimeline,
   useRemediateExperimentStep,
   useUpdateExperimentStep,
 } from '../../hooks/useExperimentConsole'
 import type { ExperimentRemediationResult } from '../../types'
+import Timeline from '../components/Timeline'
 
 const statusColors: Record<string, string> = {
   pending: 'bg-neutral-200 text-neutral-800',
@@ -113,6 +115,12 @@ export default function ExperimentConsolePage() {
   const stepMutation = useUpdateExperimentStep(executionId ?? null)
   const advanceMutation = useAdvanceExperimentStep(executionId ?? null)
   const remediationMutation = useRemediateExperimentStep(executionId ?? null)
+  const [timelineFilters, setTimelineFilters] = useState<string[]>([])
+  const [timelineAnnotations, setTimelineAnnotations] = useState<Record<string, string>>({})
+  const timelineQuery = useExecutionTimeline(executionId ?? null, {
+    eventTypes: timelineFilters,
+    pageSize: 40,
+  })
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [actionStepIndex, setActionStepIndex] = useState<number | null>(null)
   const [actionContext, setActionContext] = useState<Record<string, any>>({})
@@ -120,6 +128,33 @@ export default function ExperimentConsolePage() {
   const [remediationResults, setRemediationResults] = useState<
     Record<number, ExperimentRemediationResult[]>
   >({})
+  const timelineEvents = useMemo(() => {
+    if (timelineQuery.data?.pages) {
+      return timelineQuery.data.pages.flatMap((page) => page.events)
+    }
+    return sessionQuery.data?.timeline_preview ?? []
+  }, [timelineQuery.data, sessionQuery.data])
+
+  const handleTimelineFilterChange = (types: string[]) => {
+    setTimelineFilters(types)
+  }
+
+  const handleTimelineAnnotate = (eventId: string, note: string) => {
+    setTimelineAnnotations((prev) => {
+      if (!note.trim()) {
+        const next = { ...prev }
+        delete next[eventId]
+        return next
+      }
+      return { ...prev, [eventId]: note }
+    })
+  }
+
+  const requestMoreTimeline = () => {
+    if (timelineQuery.hasNextPage) {
+      timelineQuery.fetchNextPage()
+    }
+  }
 
   if (!executionId) {
     return (
@@ -529,6 +564,17 @@ export default function ExperimentConsolePage() {
           </div>
 
           <aside className="space-y-6">
+            <Timeline
+              events={timelineEvents}
+              isLoading={timelineQuery.isLoading && !timelineQuery.data}
+              isFetchingMore={timelineQuery.isFetchingNextPage}
+              hasMore={Boolean(timelineQuery.hasNextPage)}
+              activeTypes={timelineFilters}
+              onTypesChange={handleTimelineFilterChange}
+              onLoadMore={requestMoreTimeline}
+              annotations={timelineAnnotations}
+              onAnnotate={handleTimelineAnnotate}
+            />
             <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-3">
               <h2 className="text-lg font-semibold">Telemetry Anomalies</h2>
               {session.anomaly_events.length === 0 ? (

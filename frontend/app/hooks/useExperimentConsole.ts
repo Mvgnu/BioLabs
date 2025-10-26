@@ -1,6 +1,11 @@
 'use client'
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import api from '../api/client'
 import type {
   ExperimentExecutionSession,
@@ -8,12 +13,23 @@ import type {
   ExperimentRemediationRequest,
   ExperimentRemediationResponse,
   ExperimentStepStatusUpdate,
+  ExperimentTimelinePage,
 } from '../types'
 
 const sessionKey = (executionId: string | null) => [
   'experiment-console',
   'sessions',
   executionId,
+]
+
+const timelineKey = (
+  executionId: string | null,
+  filters?: { eventTypes?: string[] },
+) => [
+  'experiment-console',
+  'timeline',
+  executionId,
+  filters?.eventTypes?.slice().sort().join(','),
 ]
 
 export const useExperimentSession = (executionId: string | null) => {
@@ -97,5 +113,34 @@ export const useRemediateExperimentStep = (executionId: string | null) => {
     onSuccess: (data) => {
       qc.setQueryData(sessionKey(executionId), data.session)
     },
+  })
+}
+
+export const useExecutionTimeline = (
+  executionId: string | null,
+  filters?: { eventTypes?: string[]; pageSize?: number },
+) => {
+  const pageSize = Math.min(Math.max(filters?.pageSize ?? 50, 1), 200)
+  return useInfiniteQuery({
+    queryKey: timelineKey(executionId, filters),
+    enabled: Boolean(executionId),
+    queryFn: async ({ pageParam }): Promise<ExperimentTimelinePage> => {
+      if (!executionId) {
+        throw new Error('Execution id required for timeline queries')
+      }
+      const params: Record<string, any> = { limit: pageSize }
+      if (pageParam) {
+        params.cursor = pageParam
+      }
+      if (filters?.eventTypes?.length) {
+        params.event_types = filters.eventTypes.join(',')
+      }
+      const resp = await api.get(
+        `/api/experiment-console/sessions/${executionId}/timeline`,
+        { params },
+      )
+      return resp.data as ExperimentTimelinePage
+    },
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   })
 }
