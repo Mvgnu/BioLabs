@@ -306,8 +306,14 @@ def test_generate_execution_narrative_export(client):
     assert payload["attachments"][0]["reference_id"] == attachment_event_id
     assert f"execution_id: `{exec_id}`" in payload["content"]
     assert "session.created" in payload["content"]
-    assert payload["artifact_status"] == "queued"
-    assert payload["artifact_download_path"] is None
+    assert payload["artifact_status"] in {"queued", "processing", "ready"}
+    if payload["artifact_status"] == "ready":
+        assert payload["artifact_download_path"]
+        assert payload["artifact_signed_url"]
+        assert payload["packaging_attempts"] >= 1
+    else:
+        assert payload["artifact_download_path"] is None
+        assert payload["artifact_signed_url"] is None
 
     history = client.get(
         f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
@@ -321,6 +327,9 @@ def test_generate_execution_narrative_export(client):
     assert exports[0]["artifact_file"] is not None
     assert exports[0]["artifact_checksum"]
     assert exports[0]["artifact_download_path"]
+    assert exports[0]["artifact_signed_url"]
+    assert exports[0]["packaged_at"]
+    assert exports[0]["retention_expires_at"]
 
     artifact_resp = client.get(exports[0]["artifact_download_path"], headers=headers)
     assert artifact_resp.status_code == 200
@@ -333,7 +342,7 @@ def test_generate_execution_narrative_export(client):
         headers=headers,
     ).json()
     assert second_export["version"] == 2
-    assert second_export["artifact_status"] == "queued"
+    assert second_export["artifact_status"] in {"queued", "processing", "ready"}
 
     approval_resp = client.post(
         f"/api/experiment-console/sessions/{exec_id}/exports/narrative/{second_export['id']}/approve",
@@ -346,6 +355,8 @@ def test_generate_execution_narrative_export(client):
     assert approved_payload["approval_signature"] == "QA ✅"
     assert approved_payload["approved_at"] is not None
     assert approved_payload["artifact_download_path"]
+    if approved_payload["artifact_status"] == "ready":
+        assert approved_payload["artifact_signed_url"]
 
     timeline = client.get(
         f"/api/experiment-console/sessions/{exec_id}/timeline",
@@ -354,3 +365,10 @@ def test_generate_execution_narrative_export(client):
     assert any(event["event_type"] == "narrative_export.created" for event in timeline["events"])
     assert any(event["event_type"].startswith("narrative_export.packaging") for event in timeline["events"])
     assert any(event["event_type"] == "narrative_export.approved" for event in timeline["events"])
+
+    jobs_snapshot = client.get(
+        "/api/experiment-console/exports/narrative/jobs",
+        headers=headers,
+    ).json()
+    assert "queue" in jobs_snapshot
+    assert "status_counts" in jobs_snapshot

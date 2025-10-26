@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import re
+from datetime import timedelta
 from typing import Optional
 from uuid import uuid4
 
@@ -63,29 +65,58 @@ def _ensure_minio_client() -> Optional["Minio"]:
     return _MINIO_CLIENT
 
 
-def save_binary_payload(data: bytes, filename: str, content_type: str = "application/octet-stream") -> tuple[str, int]:
+def _build_object_name(namespace: str | None, filename: str) -> str:
+    """Construct a normalized storage object key within an optional namespace."""
+
+    # purpose: enforce deterministic naming for stored artifacts across backends
+    # inputs: namespace path fragment and raw filename
+    # outputs: sanitized object key safe for filesystem and S3 storage
+    # status: pilot
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", filename) or "artifact.bin"
+    if not namespace:
+        return f"{uuid4()}_{safe_name}"
+    clean_namespace = re.sub(r"[^A-Za-z0-9/_.-]", "_", namespace).strip("/")
+    return f"{clean_namespace}/{uuid4()}_{safe_name}"
+
+
+def save_binary_payload(
+    data: bytes,
+    filename: str,
+    *,
+    content_type: str = "application/octet-stream",
+    namespace: str | None = None,
+    encrypt: bool = False,
+) -> tuple[str, int]:
     """Persist binary data using configured storage backend."""
 
     # purpose: write generated artifacts to durable storage
     # inputs: binary payload, logical filename, optional MIME type
     # outputs: tuple of storage path identifier and payload size in bytes
     # status: pilot
-    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", filename) or "artifact.bin"
-    object_suffix = f"{uuid4()}_{safe_name}"
+    object_suffix = _build_object_name(namespace, filename)
     client = _ensure_minio_client()
     if client:
         bucket = os.getenv("MINIO_BUCKET", "uploads")
+        extra_headers = None
+        if encrypt:
+            extra_headers = {"X-Amz-Server-Side-Encryption": "AES256"}
         client.put_object(
             bucket,
             object_suffix,
             io.BytesIO(data),
             length=len(data),
             content_type=content_type,
+            metadata=extra_headers,
         )
         return f"s3://{bucket}/{object_suffix}", len(data)
 
     upload_dir = _get_upload_dir()
-    storage_path = os.path.join(upload_dir, object_suffix)
+    if namespace:
+        namespace_dir = os.path.join(upload_dir, *namespace.strip("/").split("/"))
+        os.makedirs(namespace_dir, exist_ok=True)
+        storage_path = os.path.join(namespace_dir, os.path.basename(object_suffix))
+    else:
+        storage_path = os.path.join(upload_dir, os.path.basename(object_suffix))
     with open(storage_path, "wb") as handle:
         handle.write(data)
     return storage_path, len(data)
@@ -115,3 +146,35 @@ def load_binary_payload(storage_path: str) -> bytes:
 
     with open(storage_path, "rb") as handle:
         return handle.read()
+
+
+def generate_signed_download_url(storage_path: str, expires_in: int = 3600) -> str:
+    """Produce a signed URL for downloading stored artifacts when supported."""
+
+    # purpose: safely expose time-bound download access for stored artifacts
+    # inputs: persisted storage path and expiration window in seconds
+    # outputs: signed URL string or direct storage path when signing unavailable
+    # status: pilot
+    if storage_path.startswith("s3://"):
+        client = _ensure_minio_client()
+        if not client:
+            raise FileNotFoundError("Object storage client unavailable for presigned URL")
+        _, bucket, *key_parts = storage_path.split("/", 3)
+        object_name = key_parts[-1] if key_parts else ""
+        if not object_name:
+            raise FileNotFoundError("Invalid s3 storage path for presigned URL")
+        return client.presigned_get_object(bucket, object_name, expires=timedelta(seconds=expires_in))
+    return storage_path
+
+
+def validate_checksum(storage_path: str, expected_checksum: str, algorithm: str = "sha256") -> bool:
+    """Verify stored artifact integrity by comparing the computed checksum."""
+
+    # purpose: detect tampering or drift of stored artifacts during lifecycle audits
+    # inputs: storage locator, expected checksum string, hashing algorithm identifier
+    # outputs: boolean result of checksum comparison
+    # status: pilot
+    data = load_binary_payload(storage_path)
+    hasher = hashlib.new(algorithm)
+    hasher.update(data)
+    return hasher.hexdigest() == expected_checksum
