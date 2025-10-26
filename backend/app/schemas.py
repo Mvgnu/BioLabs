@@ -171,7 +171,7 @@ class FileUpload(BaseModel):
     filename: str
     file_type: str
     file_size: int
-    item_id: UUID
+    item_id: UUID | None = None
     meta: Dict[str, Any] = {}
 
 
@@ -578,6 +578,11 @@ class ExecutionNarrativeExport(BaseModel):
     notes: str | None = None
     attachments: list[ExecutionNarrativeExportAttachmentOut] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict, validation_alias='meta')
+    artifact_status: Literal["queued", "processing", "ready", "failed"] = "queued"
+    artifact_checksum: str | None = None
+    artifact_error: str | None = None
+    artifact_file: Optional[FileOut] = None
+    artifact_download_path: str | None = None
     created_at: datetime
     updated_at: datetime
 
