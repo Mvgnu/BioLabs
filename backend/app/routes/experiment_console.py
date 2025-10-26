@@ -1,19 +1,38 @@
 from __future__ import annotations
 
+import hashlib
+import io
+import json
+import re
+import zipfile
 from datetime import datetime, timezone, timedelta
 from typing import Any, Iterable, Sequence
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from ..narratives import render_execution_narrative
 from ..auth import get_current_user
-from ..database import get_db
+from ..database import SessionLocal, get_db
+from ..storage import load_binary_payload, save_binary_payload
 
 router = APIRouter(prefix="/api/experiment-console", tags=["experiment-console"])
+
+
+def _build_artifact_download_path(execution_id: UUID, export_id: UUID) -> str:
+    """Construct the relative API path for retrieving packaged exports."""
+
+    # purpose: centralize artifact download URL construction
+    # inputs: execution and export identifiers
+    # outputs: API path string for download endpoint consumption
+    # status: pilot
+    return (
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative/{export_id}/artifact"
+    )
 
 
 def _parse_uuid_list(values: Iterable[Any]) -> list[UUID]:
@@ -1521,6 +1540,7 @@ async def get_execution_timeline(
 )
 async def create_execution_narrative_export(
     execution_id: str,
+    background_tasks: BackgroundTasks,
     request: schemas.ExecutionNarrativeExportRequest | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
@@ -1673,11 +1693,14 @@ async def create_execution_narrative_export(
     )
     db.commit()
 
+    background_tasks.add_task(_package_execution_narrative_export, export_record.id)
+
     export_with_relations = (
         db.query(models.ExecutionNarrativeExport)
         .options(
             joinedload(models.ExecutionNarrativeExport.requested_by),
             joinedload(models.ExecutionNarrativeExport.approved_by),
+            joinedload(models.ExecutionNarrativeExport.artifact_file),
             joinedload(models.ExecutionNarrativeExport.attachments).joinedload(
                 models.ExecutionNarrativeExportAttachment.file
             ),
@@ -1689,7 +1712,17 @@ async def create_execution_narrative_export(
     if not export_with_relations:
         raise HTTPException(status_code=500, detail="Failed to persist narrative export")
 
-    return schemas.ExecutionNarrativeExport.model_validate(export_with_relations)
+    response_payload = schemas.ExecutionNarrativeExport.model_validate(
+        export_with_relations
+    )
+    if response_payload.artifact_status == "ready":
+        response_payload.artifact_download_path = _build_artifact_download_path(
+            response_payload.execution_id, response_payload.id
+        )
+    else:
+        response_payload.artifact_download_path = None
+
+    return response_payload
 
 
 @router.get(
@@ -1719,6 +1752,7 @@ async def list_execution_narrative_exports(
         .options(
             joinedload(models.ExecutionNarrativeExport.requested_by),
             joinedload(models.ExecutionNarrativeExport.approved_by),
+            joinedload(models.ExecutionNarrativeExport.artifact_file),
             joinedload(models.ExecutionNarrativeExport.attachments).joinedload(
                 models.ExecutionNarrativeExportAttachment.file
             ),
@@ -1728,9 +1762,16 @@ async def list_execution_narrative_exports(
         .all()
     )
 
-    serialized = [
-        schemas.ExecutionNarrativeExport.model_validate(export) for export in exports
-    ]
+    serialized: list[schemas.ExecutionNarrativeExport] = []
+    for export in exports:
+        payload = schemas.ExecutionNarrativeExport.model_validate(export)
+        if payload.artifact_status == "ready":
+            payload.artifact_download_path = _build_artifact_download_path(
+                payload.execution_id, payload.id
+            )
+        else:
+            payload.artifact_download_path = None
+        serialized.append(payload)
     return schemas.ExecutionNarrativeExportHistory(exports=serialized)
 
 
@@ -1762,6 +1803,7 @@ async def approve_execution_narrative_export(
         .options(
             joinedload(models.ExecutionNarrativeExport.requested_by),
             joinedload(models.ExecutionNarrativeExport.approved_by),
+            joinedload(models.ExecutionNarrativeExport.artifact_file),
             joinedload(models.ExecutionNarrativeExport.attachments).joinedload(
                 models.ExecutionNarrativeExportAttachment.file
             ),
@@ -1808,7 +1850,247 @@ async def approve_execution_narrative_export(
     db.commit()
     db.refresh(export_record)
 
-    return schemas.ExecutionNarrativeExport.model_validate(export_record)
+    payload = schemas.ExecutionNarrativeExport.model_validate(export_record)
+    if payload.artifact_status == "ready":
+        payload.artifact_download_path = _build_artifact_download_path(
+            payload.execution_id, payload.id
+        )
+    else:
+        payload.artifact_download_path = None
+
+    return payload
+
+
+@router.get(
+    "/sessions/{execution_id}/exports/narrative/{export_id}/artifact",
+)
+async def download_execution_narrative_export_artifact(
+    execution_id: str,
+    export_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Stream the packaged dossier for a narrative export."""
+
+    # purpose: deliver durable export packages for console downloads
+    # inputs: execution identifier, export identifier, authenticated user
+    # outputs: zipped dossier containing Markdown and bundled evidence
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+        export_uuid = UUID(export_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid identifier supplied") from exc
+
+    export_record = (
+        db.query(models.ExecutionNarrativeExport)
+        .options(
+            joinedload(models.ExecutionNarrativeExport.artifact_file),
+            joinedload(models.ExecutionNarrativeExport.execution),
+        )
+        .filter(
+            models.ExecutionNarrativeExport.id == export_uuid,
+            models.ExecutionNarrativeExport.execution_id == exec_uuid,
+        )
+        .first()
+    )
+    if not export_record:
+        raise HTTPException(status_code=404, detail="Narrative export not found")
+
+    if export_record.artifact_status != "ready" or not export_record.artifact_file:
+        raise HTTPException(status_code=409, detail="Narrative export artifact not ready")
+
+    try:
+        data = load_binary_payload(export_record.artifact_file.storage_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail="Artifact payload is unavailable") from exc
+
+    filename = (
+        export_record.artifact_file.filename
+        or f"execution-{execution_id}-narrative-v{export_record.version}.zip"
+    )
+    response = StreamingResponse(io.BytesIO(data), media_type="application/zip")
+    response.headers["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return response
+
+
+def _package_execution_narrative_export(export_identifier: UUID | str) -> None:
+    """Generate zipped dossier artifact for a persisted narrative export."""
+
+    # purpose: asynchronously materialize Markdown exports with bundled evidence
+    # inputs: export identifier scheduled via FastAPI background task
+    # outputs: updates ExecutionNarrativeExport artifact metadata and timeline events
+    # status: pilot
+    try:
+        export_uuid = UUID(str(export_identifier))
+    except ValueError:
+        return
+
+    db = SessionLocal()
+    try:
+        export = (
+            db.query(models.ExecutionNarrativeExport)
+            .options(
+                joinedload(models.ExecutionNarrativeExport.execution),
+                joinedload(models.ExecutionNarrativeExport.requested_by),
+                joinedload(models.ExecutionNarrativeExport.attachments).joinedload(
+                    models.ExecutionNarrativeExportAttachment.file
+                ),
+            )
+            .filter(models.ExecutionNarrativeExport.id == export_uuid)
+            .first()
+        )
+        if not export:
+            return
+
+        export.artifact_status = "processing"
+        export.artifact_error = None
+        _record_execution_event(
+            db,
+            export.execution,
+            "narrative_export.packaging.started",
+            {
+                "export_id": str(export.id),
+                "version": export.version,
+                "event_count": export.event_count,
+            },
+            actor=export.requested_by,
+        )
+        db.commit()
+
+        try:
+            archive_bytes, manifest = _build_export_artifact_payload(export, db)
+            storage_path, file_size = save_binary_payload(
+                archive_bytes,
+                f"execution-{export.execution_id}-narrative-v{export.version}.zip",
+                content_type="application/zip",
+            )
+            checksum = hashlib.sha256(archive_bytes).hexdigest()
+
+            artifact_file = models.File(
+                id=uuid4(),
+                filename=f"execution_{export.execution_id}_narrative_v{export.version}.zip",
+                file_type="application/zip",
+                file_size=file_size,
+                storage_path=storage_path,
+                uploaded_by=export.requested_by_id,
+            )
+            artifact_file.meta = {
+                "source": "execution_narrative_export",
+                "export_id": str(export.id),
+                "version": export.version,
+                "attachments": manifest,
+            }
+
+            export.artifact_file_id = artifact_file.id
+            export.artifact_checksum = checksum
+            export.artifact_status = "ready"
+            export.artifact_error = None
+            export.artifact_file = artifact_file
+
+            db.add(artifact_file)
+            _record_execution_event(
+                db,
+                export.execution,
+                "narrative_export.packaging.ready",
+                {
+                    "export_id": str(export.id),
+                    "version": export.version,
+                    "artifact_file_id": str(artifact_file.id),
+                    "checksum": checksum,
+                },
+                actor=export.requested_by,
+            )
+            db.commit()
+        except Exception as exc:  # pragma: no cover - error path validated via unit tests
+            export.artifact_status = "failed"
+            export.artifact_error = str(exc)
+            _record_execution_event(
+                db,
+                export.execution,
+                "narrative_export.packaging.failed",
+                {
+                    "export_id": str(export.id),
+                    "version": export.version,
+                    "error": str(exc),
+                },
+                actor=export.requested_by,
+            )
+            db.commit()
+    finally:
+        db.close()
+
+
+def _build_export_artifact_payload(
+    export: models.ExecutionNarrativeExport, db: Session
+) -> tuple[bytes, list[dict[str, Any]]]:
+    """Return zipped dossier bytes and manifest for a narrative export."""
+
+    # purpose: assemble Markdown narrative, metadata, and evidence snapshots
+    # inputs: export ORM instance with attachments and DB session for lazy loads
+    # outputs: tuple of (zip archive bytes, manifest list describing attachments)
+    # status: pilot
+    archive = io.BytesIO()
+    attachments_manifest: list[dict[str, Any]] = []
+
+    export_metadata = {
+        "export_id": str(export.id),
+        "execution_id": str(export.execution_id),
+        "version": export.version,
+        "generated_at": export.generated_at.isoformat(),
+        "event_count": export.event_count,
+        "notes": export.notes,
+        "metadata": export.meta or {},
+        "requested_by": str(export.requested_by_id),
+    }
+
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("narrative.md", export.content)
+        bundle.writestr(
+            "export.json",
+            json.dumps(export_metadata, indent=2, default=str),
+        )
+
+        for index, attachment in enumerate(export.attachments, start=1):
+            manifest_entry: dict[str, Any] = {
+                "id": str(attachment.id),
+                "type": attachment.evidence_type,
+                "reference_id": str(attachment.reference_id),
+                "label": attachment.label,
+                "snapshot": attachment.snapshot or {},
+            }
+            if attachment.evidence_type == "file" and attachment.file_id:
+                file_obj = attachment.file
+                if not file_obj:
+                    file_obj = (
+                        db.query(models.File)
+                        .filter(models.File.id == attachment.file_id)
+                        .first()
+                    )
+                if not file_obj:
+                    raise FileNotFoundError(
+                        "Attachment file missing for export packaging"
+                    )
+                file_bytes = load_binary_payload(file_obj.storage_path)
+                safe_label = attachment.label or file_obj.filename or f"attachment-{index}"
+                safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", safe_label) or f"attachment-{index}.bin"
+                file_path = f"attachments/files/{index:02d}-{safe_name}"
+                bundle.writestr(file_path, file_bytes)
+                manifest_entry["file"] = {
+                    "id": str(file_obj.id),
+                    "filename": file_obj.filename,
+                    "path": file_path,
+                    "size": file_obj.file_size,
+                    "type": file_obj.file_type,
+                }
+            attachments_manifest.append(manifest_entry)
+
+        bundle.writestr(
+            "attachments.json",
+            json.dumps(attachments_manifest, indent=2, default=str),
+        )
+
+    return archive.getvalue(), attachments_manifest
 
 
 @router.post(

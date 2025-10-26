@@ -215,6 +215,14 @@ class ExecutionNarrativeExport(Base):
     approved_at = Column(DateTime, nullable=True)
     notes = Column(String, nullable=True)
     meta = Column("metadata", JSON, default=dict)
+    artifact_status = Column(String, default="queued", nullable=False)
+    artifact_file_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("files.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    artifact_checksum = Column(String, nullable=True)
+    artifact_error = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,
@@ -225,6 +233,7 @@ class ExecutionNarrativeExport(Base):
     execution = relationship("ProtocolExecution")
     requested_by = relationship("User", foreign_keys=[requested_by_id])
     approved_by = relationship("User", foreign_keys=[approved_by_id])
+    artifact_file = relationship("File", foreign_keys=[artifact_file_id])
     attachments = relationship(
         "ExecutionNarrativeExportAttachment",
         back_populates="export",

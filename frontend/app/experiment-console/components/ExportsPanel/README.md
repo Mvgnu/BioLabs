@@ -12,3 +12,4 @@
   - Shows up to ten recent timeline events as selectable evidence to bundle with new exports.
   - Provides inline approval form and disables decisions once an export is no longer pending.
   - Surfaces API errors inline for both export creation and approval flows to keep scientists informed.
+  - Displays artifact packaging progress, download links for ready dossiers, and checksum metadata sourced from backend export records.

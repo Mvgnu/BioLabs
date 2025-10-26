@@ -18,6 +18,26 @@ const statusBadge: Record<string, string> = {
   rejected: 'bg-rose-100 text-rose-700 border-rose-200',
 }
 
+const artifactStatusBadge: Record<
+  ExecutionNarrativeExportRecord['artifact_status'],
+  string
+> = {
+  queued: 'bg-neutral-100 text-neutral-600 border-neutral-200',
+  processing: 'bg-blue-100 text-blue-700 border-blue-200',
+  ready: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  failed: 'bg-rose-100 text-rose-700 border-rose-200',
+}
+
+const artifactStatusLabel: Record<
+  ExecutionNarrativeExportRecord['artifact_status'],
+  string
+> = {
+  queued: 'Queued',
+  processing: 'Packaging',
+  ready: 'Ready',
+  failed: 'Failed',
+}
+
 const formatDateTime = (value?: string | null) => {
   if (!value) return '—'
   try {
@@ -278,6 +298,51 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                     {record.content}
                   </pre>
                 </details>
+
+                <div className="flex flex-col gap-1 text-xs text-neutral-600">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-neutral-700">Artifact status</span>
+                    <span
+                      className={`px-2 py-1 rounded-full border ${artifactStatusBadge[record.artifact_status]}`}
+                    >
+                      {artifactStatusLabel[record.artifact_status]}
+                    </span>
+                    {record.artifact_status === 'ready' && record.artifact_download_path ? (
+                      <a
+                        href={record.artifact_download_path}
+                        className="text-blue-600 hover:text-blue-700"
+                      >
+                        Download dossier
+                      </a>
+                    ) : record.artifact_status === 'failed' ? (
+                      <span className="text-rose-600">
+                        {record.artifact_error ?? 'Packaging failed. Generate a new export to retry.'}
+                      </span>
+                    ) : (
+                      <span className="text-neutral-500">
+                        {record.artifact_status === 'processing'
+                          ? 'Packaging in progress…'
+                          : 'Queued for packaging'}
+                      </span>
+                    )}
+                  </div>
+                  {record.artifact_status === 'ready' && record.artifact_checksum && (
+                    <span className="font-mono text-neutral-400">
+                      checksum {record.artifact_checksum.slice(0, 8)}…
+                      {record.artifact_checksum.slice(-4)}
+                    </span>
+                  )}
+                  {record.artifact_status === 'ready' && record.artifact_file?.filename && (
+                    <span className="text-neutral-500">
+                      File: {record.artifact_file.filename} •{' '}
+                      {Math.max(
+                        1,
+                        Math.round((record.artifact_file?.file_size ?? 0) / 1024),
+                      )}{' '}
+                      KB
+                    </span>
+                  )}
+                </div>
 
                 <div className="text-xs text-neutral-600">
                   <p className="font-medium text-neutral-700">Bundled evidence</p>

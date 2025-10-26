@@ -306,6 +306,8 @@ def test_generate_execution_narrative_export(client):
     assert payload["attachments"][0]["reference_id"] == attachment_event_id
     assert f"execution_id: `{exec_id}`" in payload["content"]
     assert "session.created" in payload["content"]
+    assert payload["artifact_status"] == "queued"
+    assert payload["artifact_download_path"] is None
 
     history = client.get(
         f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
@@ -315,6 +317,15 @@ def test_generate_execution_narrative_export(client):
     exports = history.json()["exports"]
     assert len(exports) == 1
     assert exports[0]["id"] == payload["id"]
+    assert exports[0]["artifact_status"] == "ready"
+    assert exports[0]["artifact_file"] is not None
+    assert exports[0]["artifact_checksum"]
+    assert exports[0]["artifact_download_path"]
+
+    artifact_resp = client.get(exports[0]["artifact_download_path"], headers=headers)
+    assert artifact_resp.status_code == 200
+    assert artifact_resp.headers["content-type"] == "application/zip"
+    assert artifact_resp.content.startswith(b"PK"), "expected zip file signature"
 
     second_export = client.post(
         f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
@@ -322,6 +333,7 @@ def test_generate_execution_narrative_export(client):
         headers=headers,
     ).json()
     assert second_export["version"] == 2
+    assert second_export["artifact_status"] == "queued"
 
     approval_resp = client.post(
         f"/api/experiment-console/sessions/{exec_id}/exports/narrative/{second_export['id']}/approve",
@@ -333,10 +345,12 @@ def test_generate_execution_narrative_export(client):
     assert approved_payload["approval_status"] == "approved"
     assert approved_payload["approval_signature"] == "QA ✅"
     assert approved_payload["approved_at"] is not None
+    assert approved_payload["artifact_download_path"]
 
     timeline = client.get(
         f"/api/experiment-console/sessions/{exec_id}/timeline",
         headers=headers,
     ).json()
     assert any(event["event_type"] == "narrative_export.created" for event in timeline["events"])
+    assert any(event["event_type"].startswith("narrative_export.packaging") for event in timeline["events"])
     assert any(event["event_type"] == "narrative_export.approved" for event in timeline["events"])

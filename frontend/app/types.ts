@@ -43,7 +43,7 @@ export interface FileMeta {
   file_type: string
   file_size: number
   storage_path: string
-  item_id: string
+  item_id: string | null
   uploaded_by: string
   created_at: string
 }
@@ -427,6 +427,11 @@ export interface ExecutionNarrativeExportRecord {
   notes?: string | null
   attachments: ExecutionNarrativeAttachment[]
   metadata: Record<string, any>
+  artifact_status: 'queued' | 'processing' | 'ready' | 'failed'
+  artifact_checksum?: string | null
+  artifact_error?: string | null
+  artifact_file?: FileMeta | null
+  artifact_download_path?: string | null
   created_at: string
   updated_at: string
 }
