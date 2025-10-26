@@ -513,6 +513,29 @@ class ExperimentExecutionSessionOut(BaseModel):
     auto_log_entries: list[ExperimentAutoLogEntry] = Field(default_factory=list)
 
 
+class ExperimentRemediationResult(BaseModel):
+    """Outcome metadata for a single remediation action."""
+
+    action: str
+    status: Literal["executed", "scheduled", "skipped", "failed"]
+    message: str | None = None
+
+
+class ExperimentRemediationRequest(BaseModel):
+    """Request payload describing orchestrator-driven remediation."""
+
+    actions: list[str] = Field(default_factory=list)
+    auto: bool = False
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExperimentRemediationResponse(BaseModel):
+    """Wrapper delivering remediation results alongside refreshed session state."""
+
+    session: ExperimentExecutionSessionOut
+    results: list[ExperimentRemediationResult] = Field(default_factory=list)
+
+
 class NotificationCreate(BaseModel):
     user_id: UUID
     message: str
@@ -1215,3 +1238,6 @@ class ItemTypeOut(BaseModel):
 
 EquipmentTelemetryChannel.model_rebuild()
 ExperimentExecutionSessionOut.model_rebuild()
+ExperimentRemediationResult.model_rebuild()
+ExperimentRemediationRequest.model_rebuild()
+ExperimentRemediationResponse.model_rebuild()

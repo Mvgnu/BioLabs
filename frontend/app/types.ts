@@ -368,6 +368,23 @@ export interface ExperimentExecutionSession {
   auto_log_entries: ExperimentAutoLogEntry[]
 }
 
+export interface ExperimentRemediationResult {
+  action: string
+  status: 'executed' | 'scheduled' | 'skipped' | 'failed'
+  message?: string | null
+}
+
+export interface ExperimentRemediationResponse {
+  session: ExperimentExecutionSession
+  results: ExperimentRemediationResult[]
+}
+
+export interface ExperimentRemediationRequest {
+  actions?: string[]
+  auto?: boolean
+  context?: Record<string, any>
+}
+
 export interface ExperimentExecutionSessionCreate {
   template_id: string
   title?: string

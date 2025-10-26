@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Iterable, Sequence
 from uuid import UUID
 
@@ -356,6 +356,372 @@ def _evaluate_step_gate(
 
     blocked_reason = " | ".join(blocked_messages) if blocked_messages else None
     return blocked_reason, dedup_required, dedup_triggers
+
+
+def _apply_remediation_actions(
+    db: Session,
+    execution: models.ProtocolExecution,
+    step_index: int,
+    actions: Sequence[str],
+    gate_context: dict[str, Any],
+    user: models.User,
+    request_context: dict[str, Any] | None = None,
+) -> list[schemas.ExperimentRemediationResult]:
+    """Execute orchestrator remediation flows for the requested step."""
+
+    # purpose: convert orchestration-required actions into transactional state updates
+    # inputs: database session, execution record, target step index, candidate action codes,
+    #         aggregated gate context, acting user, optional contextual hints
+    # outputs: list of ExperimentRemediationResult summarizing execution outcomes
+    # status: pilot
+    if not actions:
+        return []
+
+    now = datetime.now(timezone.utc)
+    context = request_context or {}
+
+    execution_result_raw = execution.result if isinstance(execution.result, dict) else {}
+    execution_result = dict(execution_result_raw)
+    params = dict(execution.params or {})
+
+    locks_payload = dict(execution_result.get("locks") or {})
+    followups_payload = list(execution_result.get("followups") or [])
+    remediation_log = list(execution_result.get("remediation_log") or [])
+
+    results: list[schemas.ExperimentRemediationResult] = []
+    step_key = str(step_index)
+    mutated_execution = False
+    mutated_params = False
+
+    def _register_lock(lock_type: str, target: str, state: str) -> None:
+        """Ensure the remediation lock ledger reflects the latest resource state."""
+
+        nonlocal mutated_execution
+        lock_entries = list(locks_payload.get(step_key, []))
+        payload = {
+            "type": lock_type,
+            "target": target,
+            "state": state,
+            "execution_id": str(execution.id),
+            "step_index": step_index,
+            "timestamp": now.isoformat(),
+        }
+        for entry in lock_entries:
+            if entry.get("type") == lock_type and entry.get("target") == target:
+                entry.update(payload)
+                break
+        else:
+            lock_entries.append(payload)
+        locks_payload[step_key] = lock_entries
+        mutated_execution = True
+
+    def _register_followup(
+        followup_type: str,
+        target: str,
+        message: str,
+        status: str = "scheduled",
+        eta: datetime | None = None,
+    ) -> None:
+        """Track scheduled remediation follow-ups for transparency."""
+
+        nonlocal mutated_execution
+        payload = {
+            "type": followup_type,
+            "target": target,
+            "status": status,
+            "message": message,
+            "step_index": step_index,
+            "created_at": now.isoformat(),
+        }
+        if eta:
+            payload["eta"] = eta.isoformat()
+        for entry in followups_payload:
+            if (
+                entry.get("type") == followup_type
+                and entry.get("target") == target
+                and entry.get("step_index") == step_index
+            ):
+                entry.update(payload)
+                break
+        else:
+            followups_payload.append(payload)
+        mutated_execution = True
+
+    def _result(action: str, status: str, message: str | None = None) -> None:
+        results.append(
+            schemas.ExperimentRemediationResult(action=action, status=status, message=message)
+        )
+
+    for action in actions:
+        normalized = (action or "").strip()
+        if not normalized:
+            continue
+        parts = normalized.split(":")
+        domain = parts[0] if parts else ""
+        verb = parts[1] if len(parts) > 1 else ""
+        identifier = parts[2] if len(parts) > 2 else ""
+
+        if domain == "inventory" and verb in {"restore", "auto_reserve"}:
+            try:
+                inventory_uuid = UUID(str(identifier))
+            except ValueError:
+                _result(normalized, "failed", "Invalid inventory identifier")
+                continue
+            item = (
+                db.query(models.InventoryItem)
+                .filter(models.InventoryItem.id == inventory_uuid)
+                .first()
+            )
+            if not item:
+                _result(normalized, "failed", "Inventory item not found")
+                continue
+            custom_data = dict(item.custom_data or {})
+            reservation_entry = {
+                "execution_id": str(execution.id),
+                "step_index": step_index,
+                "user_id": str(user.id),
+                "timestamp": now.isoformat(),
+            }
+            history = list(custom_data.get("reservation_history") or [])
+            history.append(reservation_entry)
+            custom_data["reservation_history"] = history[-20:]
+            if verb == "auto_reserve":
+                item.status = "reserved"
+                custom_data["reserved_for_execution"] = str(execution.id)
+                _register_lock("inventory", str(inventory_uuid), "locked")
+                message = f"Inventory {item.name} reserved for execution"
+            else:
+                item.status = "available"
+                if custom_data.get("reserved_for_execution") == str(execution.id):
+                    custom_data.pop("reserved_for_execution", None)
+                _register_lock("inventory", str(inventory_uuid), "released")
+                message = f"Inventory {item.name} restored to available"
+            item.custom_data = custom_data
+            mutated_execution = True
+            _result(normalized, "executed", message)
+            continue
+
+        if domain == "booking" and verb in {"adjust", "create"}:
+            bookings_context = context.get("booking") or {}
+            booking_context = {}
+            if isinstance(bookings_context, dict):
+                booking_context = bookings_context.get(identifier) or {}
+            start_override = _coerce_datetime(booking_context.get("start_time"))
+            end_override = _coerce_datetime(booking_context.get("end_time"))
+            duration_minutes = booking_context.get("duration_minutes")
+            if duration_minutes is not None:
+                try:
+                    duration_minutes = max(15, int(duration_minutes))
+                except (TypeError, ValueError):
+                    duration_minutes = None
+            start_time = start_override or now
+            computed_end = end_override
+            if not computed_end:
+                minutes = duration_minutes or 60
+                computed_end = start_time + timedelta(minutes=minutes)
+
+            if verb == "adjust":
+                try:
+                    booking_uuid = UUID(str(identifier))
+                except ValueError:
+                    _result(normalized, "failed", "Invalid booking identifier")
+                    continue
+                booking = (
+                    db.query(models.Booking)
+                    .filter(models.Booking.id == booking_uuid)
+                    .first()
+                )
+                if not booking:
+                    _result(normalized, "failed", "Booking not found")
+                    continue
+                booking.start_time = start_time
+                booking.end_time = computed_end
+                note_suffix = f"Auto-adjusted for execution {execution.id}"
+                booking.notes = (
+                    f"{booking.notes}\n{note_suffix}" if booking.notes else note_suffix
+                )
+                _register_lock("booking", str(booking.id), "locked")
+                _result(
+                    normalized,
+                    "executed",
+                    "Booking window aligned with current step",
+                )
+                continue
+
+            resource_hint = booking_context.get("resource_id")
+            if not resource_hint:
+                _register_followup(
+                    "booking",
+                    identifier or "unspecified",
+                    "Insufficient context to auto-create booking",
+                )
+                _result(
+                    normalized,
+                    "scheduled",
+                    "Follow-up scheduled for booking creation",
+                )
+                continue
+            try:
+                resource_uuid = UUID(str(resource_hint))
+            except ValueError:
+                _result(normalized, "failed", "Invalid resource identifier for booking")
+                continue
+            new_booking = models.Booking(
+                resource_id=resource_uuid,
+                user_id=user.id,
+                start_time=start_time,
+                end_time=computed_end,
+                notes=booking_context.get(
+                    "notes", f"Auto-reservation for execution {execution.id}"
+                ),
+            )
+            db.add(new_booking)
+            db.flush()
+            existing_booking_ids = _parse_uuid_list(params.get("booking_ids", []))
+            if new_booking.id not in existing_booking_ids:
+                existing_booking_ids.append(new_booking.id)
+                params["booking_ids"] = [str(value) for value in existing_booking_ids]
+                mutated_params = True
+            _register_lock("booking", str(new_booking.id), "locked")
+            _result(
+                normalized,
+                "executed",
+                "Booking created and attached to execution",
+            )
+            continue
+
+        if domain == "equipment" and verb in {"calibrate", "maintenance_request"}:
+            try:
+                equipment_uuid = UUID(str(identifier))
+            except ValueError:
+                _result(normalized, "failed", "Invalid equipment identifier")
+                continue
+            if verb == "calibrate":
+                existing_task = (
+                    db.query(models.EquipmentMaintenance)
+                    .filter(models.EquipmentMaintenance.equipment_id == equipment_uuid)
+                    .filter(models.EquipmentMaintenance.completed_at.is_(None))
+                    .order_by(models.EquipmentMaintenance.due_date.asc())
+                    .first()
+                )
+                if existing_task:
+                    existing_task.completed_at = now
+                    existing_task.description = (
+                        existing_task.description
+                        or "Calibration resolved via orchestrator"
+                    )
+                else:
+                    db.add(
+                        models.EquipmentMaintenance(
+                            equipment_id=equipment_uuid,
+                            due_date=now,
+                            completed_at=now,
+                            task_type="calibration",
+                            description=f"Calibration confirmed during execution {execution.id}",
+                        )
+                    )
+                _register_lock("equipment", str(equipment_uuid), "released")
+                _result(normalized, "executed", "Calibration confirmed and logged")
+                continue
+            if verb == "maintenance_request":
+                maintenance_context = context.get("maintenance") or {}
+                equipment_context = {}
+                if isinstance(maintenance_context, dict):
+                    equipment_context = maintenance_context.get(identifier) or {}
+                due_days = equipment_context.get("due_in_days", 7)
+                try:
+                    due_days = max(1, int(due_days))
+                except (TypeError, ValueError):
+                    due_days = 7
+                due_date = now + timedelta(days=due_days)
+                description = equipment_context.get(
+                    "description",
+                    f"Auto-generated maintenance request for execution {execution.id}",
+                )
+                db.add(
+                    models.EquipmentMaintenance(
+                        equipment_id=equipment_uuid,
+                        due_date=due_date,
+                        task_type="maintenance",
+                        description=description,
+                    )
+                )
+                _register_followup(
+                    "equipment",
+                    str(equipment_uuid),
+                    "Maintenance request logged for scheduling",
+                    eta=due_date,
+                )
+                _register_lock("equipment", str(equipment_uuid), "pending")
+                _result(normalized, "executed", "Maintenance request submitted")
+                continue
+
+        if domain == "compliance" and verb == "approve":
+            approval_id = identifier or "unspecified"
+            compliance_payload = dict(execution_result.get("compliance") or {})
+            approvals = set(str(value) for value in compliance_payload.get("approvals", []))
+            approvals.add(str(approval_id))
+            compliance_payload["approvals"] = sorted(approvals)
+            compliance_payload["updated_at"] = now.isoformat()
+            execution_result["compliance"] = compliance_payload
+            _register_lock("compliance", str(approval_id), "released")
+            _result(normalized, "executed", "Approval recorded for execution gate")
+            mutated_execution = True
+            continue
+
+        if domain == "notify" and verb == "approver":
+            message = (
+                f"Approval required: {identifier or 'unspecified'} for execution {execution.id}"
+            )
+            notification = models.Notification(
+                user_id=user.id,
+                message=message,
+                title="Approval follow-up",
+                category="compliance",
+                priority="high",
+                meta={
+                    "execution_id": str(execution.id),
+                    "step_index": step_index,
+                    "approval": identifier or "unspecified",
+                },
+            )
+            db.add(notification)
+            _register_followup(
+                "compliance",
+                identifier or "approver",
+                "Approver notification queued",
+            )
+            _result(normalized, "scheduled", "Approver notification enqueued")
+            continue
+
+        # Default path for unhandled actions
+        _register_followup(
+            domain or "general",
+            identifier or normalized,
+            "No automated remediation implemented",
+        )
+        _result(normalized, "skipped", "Action requires manual intervention")
+
+    execution_result["locks"] = locks_payload
+    execution_result["followups"] = followups_payload
+    if results:
+        remediation_log.append(
+            {
+                "step_index": step_index,
+                "timestamp": now.isoformat(),
+                "actions": list(actions),
+                "results": [result.model_dump() for result in results],
+            }
+        )
+        execution_result["remediation_log"] = remediation_log
+        mutated_execution = True
+
+    if mutated_execution:
+        execution.result = execution_result
+    if mutated_params:
+        execution.params = params
+
+    return results
 
 
 def _store_step_progress(
@@ -802,6 +1168,112 @@ async def advance_step_status(
     db.refresh(execution)
 
     return _assemble_session(db, execution)
+
+
+@router.post(
+    "/sessions/{execution_id}/steps/{step_index}/remediate",
+    response_model=schemas.ExperimentRemediationResponse,
+)
+async def remediate_step_blockers(
+    execution_id: str,
+    step_index: int,
+    payload: schemas.ExperimentRemediationRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Execute orchestrator-driven remediation and return refreshed session state."""
+
+    # purpose: close orchestration feedback loop by invoking transactional remediation
+    # inputs: execution identifier, target step index, remediation request payload
+    # outputs: ExperimentRemediationResponse with execution session and action outcomes
+    # status: pilot
+    if step_index < 0:
+        raise HTTPException(status_code=400, detail="Step index must be non-negative")
+
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    template = (
+        db.query(models.ProtocolTemplate)
+        .filter(models.ProtocolTemplate.id == execution.template_id)
+        .first()
+    )
+    if not template:
+        raise HTTPException(status_code=404, detail="Linked protocol template not found")
+
+    params = execution.params or {}
+    inventory_ids = _parse_uuid_list(params.get("inventory_item_ids", []))
+    booking_ids = _parse_uuid_list(params.get("booking_ids", []))
+
+    inventory_items = []
+    if inventory_ids:
+        inventory_items = (
+            db.query(models.InventoryItem)
+            .filter(models.InventoryItem.id.in_(inventory_ids))
+            .all()
+        )
+
+    bookings = []
+    if booking_ids:
+        bookings = (
+            db.query(models.Booking)
+            .filter(models.Booking.id.in_(booking_ids))
+            .all()
+        )
+
+    instructions = _extract_steps(template.content)
+    if step_index >= len(instructions):
+        raise HTTPException(status_code=404, detail="Step not found for template")
+
+    gate_context = _prepare_step_gate_context(db, execution, inventory_items, bookings)
+    step_states = _build_step_states(execution, instructions, gate_context)
+    target_state = step_states[step_index]
+
+    requested_actions = list(payload.actions or [])
+    if payload.auto:
+        requested_actions = list(target_state.auto_triggers)
+        if not requested_actions:
+            requested_actions = list(target_state.required_actions)
+    elif not requested_actions:
+        requested_actions = list(target_state.required_actions) + list(
+            target_state.auto_triggers
+        )
+
+    ordered_actions: list[str] = []
+    seen: set[str] = set()
+    for action in requested_actions:
+        normalized = (action or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered_actions.append(normalized)
+
+    results = _apply_remediation_actions(
+        db,
+        execution,
+        step_index,
+        ordered_actions,
+        gate_context,
+        user,
+        payload.context,
+    )
+
+    db.add(execution)
+    db.commit()
+    db.refresh(execution)
+
+    refreshed = _assemble_session(db, execution)
+    return schemas.ExperimentRemediationResponse(session=refreshed, results=results)
 
 
 @router.get(

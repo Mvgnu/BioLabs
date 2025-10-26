@@ -1,6 +1,5 @@
 from datetime import datetime, timezone, timedelta
 import uuid
-from datetime import datetime, timedelta, timezone
 
 from .conftest import TestingSessionLocal
 from app import models
@@ -168,3 +167,62 @@ def test_step_gating_blocks_progress(client):
     after_payload = advance_success.json()
     assert after_payload["steps"][0]["status"] == "in_progress"
     assert after_payload["steps"][0]["blocked_reason"] is None
+
+
+def test_step_remediation_auto_executes_inventory(client):
+    headers = get_headers(client)
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Remediation Protocol", "content": "Prep"},
+        headers=headers,
+    ).json()
+
+    inventory = client.post(
+        "/api/inventory/items",
+        json={"item_type": "reagent", "name": "Buffer B"},
+        headers=headers,
+    ).json()
+
+    client.put(
+        f"/api/inventory/items/{inventory['id']}",
+        json={"status": "consumed"},
+        headers=headers,
+    )
+
+    created = client.post(
+        "/api/experiment-console/sessions",
+        json={
+            "template_id": template["id"],
+            "inventory_item_ids": [inventory["id"]],
+            "booking_ids": [],
+        },
+        headers=headers,
+    )
+    assert created.status_code == 200
+    exec_id = created.json()["execution"]["id"]
+
+    remediation = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/steps/0/remediate",
+        json={"auto": True},
+        headers=headers,
+    )
+
+    assert remediation.status_code == 200
+    payload = remediation.json()
+    assert payload["results"]
+    assert any(result["status"] == "executed" for result in payload["results"])
+    session = payload["session"]
+    assert session["steps"][0]["blocked_reason"] is None
+
+    db = TestingSessionLocal()
+    try:
+        refreshed_item = (
+            db.query(models.InventoryItem)
+            .filter(models.InventoryItem.id == uuid.UUID(inventory["id"]))
+            .first()
+        )
+        assert refreshed_item is not None
+        assert refreshed_item.status == "reserved"
+    finally:
+        db.close()

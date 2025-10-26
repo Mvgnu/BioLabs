@@ -5,6 +5,8 @@ import api from '../api/client'
 import type {
   ExperimentExecutionSession,
   ExperimentExecutionSessionCreate,
+  ExperimentRemediationRequest,
+  ExperimentRemediationResponse,
   ExperimentStepStatusUpdate,
 } from '../types'
 
@@ -72,6 +74,28 @@ export const useAdvanceExperimentStep = (executionId: string | null) => {
     },
     onSuccess: (data) => {
       qc.setQueryData(sessionKey(executionId), data)
+    },
+  })
+}
+
+export const useRemediateExperimentStep = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      stepIndex: number
+      request?: ExperimentRemediationRequest
+    }) => {
+      if (!executionId) {
+        throw new Error('Execution id required for remediation')
+      }
+      const resp = await api.post(
+        `/api/experiment-console/sessions/${executionId}/steps/${vars.stepIndex}/remediate`,
+        vars.request ?? {},
+      )
+      return resp.data as ExperimentRemediationResponse
+    },
+    onSuccess: (data) => {
+      qc.setQueryData(sessionKey(executionId), data.session)
     },
   })
 }
