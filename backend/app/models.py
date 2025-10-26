@@ -147,6 +147,37 @@ class ProtocolExecution(Base):
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
 
+    events = relationship(
+        "ExecutionEvent",
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="ExecutionEvent.sequence",
+    )
+
+
+class ExecutionEvent(Base):
+    __tablename__ = "execution_events"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    event_type = Column(String, nullable=False)
+    payload = Column(JSON, default=dict)
+    actor_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    sequence = Column(Integer, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+
+    execution = relationship("ProtocolExecution", back_populates="events")
+    actor = relationship("User")
+
+    __table_args__ = (
+        sa.UniqueConstraint("execution_id", "sequence", name="uq_execution_event_sequence"),
+    )
+
 
 class ProtocolMergeRequest(Base):
     __tablename__ = "protocol_merge_requests"

@@ -95,6 +95,23 @@ export interface ProtocolExecution {
   updated_at: string
 }
 
+export interface TimelineActor {
+  id: string
+  email: string
+  full_name?: string | null
+}
+
+export interface ExecutionEvent {
+  id: string
+  execution_id: string
+  event_type: string
+  payload: Record<string, any>
+  actor_id?: string | null
+  actor?: TimelineActor | null
+  sequence: number
+  created_at: string
+}
+
 export interface NotebookEntry {
   id: string
   title: string
@@ -366,6 +383,7 @@ export interface ExperimentExecutionSession {
   telemetry_channels: EquipmentTelemetryChannel[]
   anomaly_events: ExperimentAnomalySignal[]
   auto_log_entries: ExperimentAutoLogEntry[]
+  timeline_preview: ExecutionEvent[]
 }
 
 export interface ExperimentRemediationResult {
@@ -398,4 +416,9 @@ export interface ExperimentStepStatusUpdate {
   status: ExperimentStepState
   started_at?: string | null
   completed_at?: string | null
+}
+
+export interface ExperimentTimelinePage {
+  events: ExecutionEvent[]
+  next_cursor?: string | null
 }

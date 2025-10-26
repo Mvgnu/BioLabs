@@ -10,5 +10,8 @@
   - Guided wizard collects context for booking creation/adjustments and equipment maintenance requests before invoking remediation.
   - Automatic remediation results (executed, scheduled, skipped, failed) are surfaced beneath the step banner with semantic colour coding.
   - Manual redirects now occur only when the backend reports an unsupported action.
+- **Timeline intelligence**:
+  - The `Timeline` component under `components/Timeline` virtualises event rows, fetches paginated history via `useExecutionTimeline`, and supports type filtering plus inline annotations stored client-side for coaching notes.
+  - When the dedicated timeline endpoint is still loading the initial page, the UI hydrates using `timeline_preview` from the session payload to keep the narrative responsive.
 
 Update this README whenever step gating semantics or CTA routing logic changes.

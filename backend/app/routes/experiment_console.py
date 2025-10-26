@@ -5,7 +5,8 @@ from typing import Any, Iterable, Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
+from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
 from ..auth import get_current_user
@@ -721,6 +722,19 @@ def _apply_remediation_actions(
     if mutated_params:
         execution.params = params
 
+    if results:
+        _record_execution_event(
+            db,
+            execution,
+            "remediation.execute",
+            {
+                "step_index": step_index,
+                "actions": list(actions),
+                "results": [result.model_dump() for result in results],
+            },
+            user,
+        )
+
     return results
 
 
@@ -757,6 +771,75 @@ def _store_step_progress(
         execution.status = "in_progress"
 
     execution.result = execution_result
+
+
+def _record_execution_event(
+    db: Session,
+    execution: models.ProtocolExecution,
+    event_type: str,
+    payload: dict[str, Any],
+    actor: models.User | None = None,
+) -> models.ExecutionEvent:
+    """Persist a structured execution event for timeline replay."""
+
+    # purpose: capture chronological experiment telemetry for auditing & UI timelines
+    # inputs: db session, execution model, event type string, payload metadata, optional actor
+    # outputs: ExecutionEvent instance persisted with sequential ordering
+    # status: pilot
+    payload_dict = payload if isinstance(payload, dict) else {}
+    latest = (
+        db.query(models.ExecutionEvent)
+        .filter(models.ExecutionEvent.execution_id == execution.id)
+        .order_by(models.ExecutionEvent.sequence.desc())
+        .first()
+    )
+    next_sequence = 1 if latest is None else latest.sequence + 1
+    event = models.ExecutionEvent(
+        execution_id=execution.id,
+        event_type=event_type,
+        payload=payload_dict,
+        actor_id=getattr(actor, "id", None),
+        sequence=next_sequence,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(event)
+    return event
+
+
+def _encode_timeline_cursor(event: models.ExecutionEvent) -> str:
+    """Generate opaque cursor token anchored to created_at and sequence."""
+
+    # purpose: support stable pagination for execution timeline queries
+    # inputs: execution event row persisted in the database
+    # outputs: token string safe for round-trip via API query params
+    # status: pilot
+    created_at = event.created_at
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    return f"{created_at.isoformat()}|{event.sequence}"
+
+
+def _parse_timeline_cursor(token: str | None) -> tuple[datetime, int] | None:
+    """Decode timeline cursor tokens, returning timestamp and sequence pair."""
+
+    # purpose: safely decode pagination tokens received from clients
+    # inputs: raw cursor string from query params
+    # outputs: tuple of datetime and sequence or None when invalid
+    # status: pilot
+    if not token:
+        return None
+    try:
+        timestamp_part, sequence_part = token.split("|", 1)
+    except ValueError:
+        return None
+    timestamp = _coerce_datetime(timestamp_part)
+    if timestamp is None:
+        return None
+    try:
+        sequence = int(sequence_part)
+    except (TypeError, ValueError):
+        return None
+    return timestamp, sequence
 
 
 def _normalize_stream_topics(connection_info: dict[str, Any]) -> list[str]:
@@ -966,6 +1049,21 @@ def _assemble_session(
         db, equipment_ids
     )
 
+    recent_events = (
+        db.query(models.ExecutionEvent)
+        .options(joinedload(models.ExecutionEvent.actor))
+        .filter(models.ExecutionEvent.execution_id == execution.id)
+        .order_by(
+            models.ExecutionEvent.created_at.desc(),
+            models.ExecutionEvent.sequence.desc(),
+        )
+        .limit(10)
+        .all()
+    )
+    timeline_preview = [
+        schemas.ExecutionEventOut.model_validate(event) for event in recent_events
+    ]
+
     return schemas.ExperimentExecutionSessionOut(
         execution=execution,
         protocol=template,
@@ -976,6 +1074,7 @@ def _assemble_session(
         telemetry_channels=telemetry_channels,
         anomaly_events=anomaly_events,
         auto_log_entries=auto_logs,
+        timeline_preview=timeline_preview,
     )
 
 
@@ -1048,6 +1147,19 @@ async def create_execution_session(
     )
     db.add(execution)
     db.flush()
+
+    _record_execution_event(
+        db,
+        execution,
+        "session.created",
+        {
+            "title": payload.title or template.name,
+            "template_id": str(template.id),
+            "inventory_item_ids": [str(item_id) for item_id in inventory_ids],
+            "booking_ids": [str(booking_id) for booking_id in booking_ids],
+        },
+        user,
+    )
 
     if payload.auto_create_notebook:
         notebook_entry = models.NotebookEntry(
@@ -1162,6 +1274,20 @@ async def advance_step_status(
         )
 
     _store_step_progress(execution, step_index, update_payload)
+
+    _record_execution_event(
+        db,
+        execution,
+        "step.transition",
+        {
+            "step_index": step_index,
+            "instruction": instructions[step_index],
+            "from_status": target_state.status,
+            "to_status": update_payload.status,
+            "auto": True,
+        },
+        user,
+    )
 
     db.add(execution)
     db.commit()
@@ -1307,6 +1433,87 @@ async def get_execution_session(
     return _assemble_session(db, execution)
 
 
+@router.get(
+    "/sessions/{execution_id}/timeline",
+    response_model=schemas.ExperimentTimelinePage,
+)
+async def get_execution_timeline(
+    execution_id: str,
+    limit: int = 50,
+    cursor: str | None = None,
+    event_types: str | None = None,
+    db: Session = Depends(get_db),
+    _user: models.User = Depends(get_current_user),
+):
+    """Return paginated execution events for timeline rendering."""
+
+    # purpose: expose durable experiment narrative for UI timeline surfaces
+    # inputs: execution identifier, optional limit/cursor and filters
+    # outputs: ExperimentTimelinePage containing ordered events and pagination token
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    max_page = min(max(limit, 1), 200)
+    query = (
+        db.query(models.ExecutionEvent)
+        .options(joinedload(models.ExecutionEvent.actor))
+        .filter(models.ExecutionEvent.execution_id == exec_uuid)
+    )
+
+    if event_types:
+        normalized_types = {
+            value.strip() for value in event_types.split(",") if value.strip()
+        }
+        if normalized_types:
+            query = query.filter(models.ExecutionEvent.event_type.in_(normalized_types))
+
+    cursor_params = _parse_timeline_cursor(cursor)
+    if cursor_params:
+        cursor_timestamp, cursor_sequence = cursor_params
+        query = query.filter(
+            or_(
+                models.ExecutionEvent.created_at < cursor_timestamp,
+                and_(
+                    models.ExecutionEvent.created_at == cursor_timestamp,
+                    models.ExecutionEvent.sequence < cursor_sequence,
+                ),
+            )
+        )
+
+    rows = (
+        query.order_by(
+            models.ExecutionEvent.created_at.desc(),
+            models.ExecutionEvent.sequence.desc(),
+        )
+        .limit(max_page + 1)
+        .all()
+    )
+
+    events = rows[:max_page]
+    next_cursor = None
+    if len(rows) > max_page and events:
+        anchor = events[-1]
+        next_cursor = _encode_timeline_cursor(anchor)
+
+    serialized = [
+        schemas.ExecutionEventOut.model_validate(event)
+        for event in events
+    ]
+
+    return schemas.ExperimentTimelinePage(events=serialized, next_cursor=next_cursor)
+
+
 @router.post(
     "/sessions/{execution_id}/steps/{step_index}",
     response_model=schemas.ExperimentExecutionSessionOut,
@@ -1390,6 +1597,20 @@ async def update_step_status(
         )
 
     _store_step_progress(execution, step_index, update)
+
+    _record_execution_event(
+        db,
+        execution,
+        "step.transition",
+        {
+            "step_index": step_index,
+            "instruction": instructions[step_index],
+            "from_status": target_state.status,
+            "to_status": update.status,
+            "auto": False,
+        },
+        user,
+    )
     db.add(execution)
     db.commit()
     db.refresh(execution)
