@@ -276,19 +276,67 @@ def test_generate_execution_narrative_export(client):
         headers=headers,
     )
 
+    timeline_seed = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/timeline",
+        headers=headers,
+    ).json()
+    assert timeline_seed["events"], "expected initial timeline events for attachment selection"
+    attachment_event_id = timeline_seed["events"][0]["id"]
+
     export_resp = client.post(
         f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
+        json={
+            "notes": "Compliance evidence bundle",
+            "metadata": {"ticket": "QC-21"},
+            "attachments": [
+                {"event_id": attachment_event_id, "label": "Session created"}
+            ],
+        },
         headers=headers,
     )
     assert export_resp.status_code == 200
     payload = export_resp.json()
     assert payload["format"] == "markdown"
     assert payload["event_count"] >= 1
+    assert payload["notes"] == "Compliance evidence bundle"
+    assert payload["metadata"]["ticket"] == "QC-21"
+    assert payload["approval_status"] == "pending"
+    assert payload["version"] == 1
+    assert payload["attachments"], "expected attachment to be persisted"
+    assert payload["attachments"][0]["reference_id"] == attachment_event_id
     assert f"execution_id: `{exec_id}`" in payload["content"]
     assert "session.created" in payload["content"]
+
+    history = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
+        headers=headers,
+    )
+    assert history.status_code == 200
+    exports = history.json()["exports"]
+    assert len(exports) == 1
+    assert exports[0]["id"] == payload["id"]
+
+    second_export = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
+        json={"notes": "QA rerun"},
+        headers=headers,
+    ).json()
+    assert second_export["version"] == 2
+
+    approval_resp = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative/{second_export['id']}/approve",
+        json={"status": "approved", "signature": "QA ✅"},
+        headers=headers,
+    )
+    assert approval_resp.status_code == 200
+    approved_payload = approval_resp.json()
+    assert approved_payload["approval_status"] == "approved"
+    assert approved_payload["approval_signature"] == "QA ✅"
+    assert approved_payload["approved_at"] is not None
 
     timeline = client.get(
         f"/api/experiment-console/sessions/{exec_id}/timeline",
         headers=headers,
     ).json()
     assert any(event["event_type"] == "narrative_export.created" for event in timeline["events"])
+    assert any(event["event_type"] == "narrative_export.approved" for event in timeline["events"])

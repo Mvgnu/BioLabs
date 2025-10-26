@@ -6,6 +6,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
+import type { QueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import type {
   ExperimentExecutionSession,
@@ -14,6 +15,10 @@ import type {
   ExperimentRemediationResponse,
   ExperimentStepStatusUpdate,
   ExperimentTimelinePage,
+  ExecutionNarrativeExportHistory,
+  ExecutionNarrativeExportRecord,
+  ExecutionNarrativeExportCreate,
+  ExecutionNarrativeApprovalRequest,
 } from '../types'
 
 const sessionKey = (executionId: string | null) => [
@@ -31,6 +36,23 @@ const timelineKey = (
   executionId,
   filters?.eventTypes?.slice().sort().join(','),
 ]
+
+const exportsKey = (executionId: string | null) => [
+  'experiment-console',
+  'exports',
+  executionId,
+]
+
+const invalidateTimelineQueries = (qc: QueryClient, executionId: string | null) => {
+  if (!executionId) return
+  qc.invalidateQueries({
+    predicate: (query) =>
+      Array.isArray(query.queryKey) &&
+      query.queryKey[0] === 'experiment-console' &&
+      query.queryKey[1] === 'timeline' &&
+      query.queryKey[2] === executionId,
+  })
+}
 
 export const useExperimentSession = (executionId: string | null) => {
   return useQuery({
@@ -142,5 +164,84 @@ export const useExecutionTimeline = (
       return resp.data as ExperimentTimelinePage
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+  })
+}
+
+export const useExecutionNarrativeExports = (executionId: string | null) => {
+  return useQuery({
+    queryKey: exportsKey(executionId),
+    enabled: Boolean(executionId),
+    queryFn: async () => {
+      if (!executionId) {
+        throw new Error('Execution id required for export history queries')
+      }
+      const resp = await api.get(
+        `/api/experiment-console/sessions/${executionId}/exports/narrative`,
+      )
+      return resp.data as ExecutionNarrativeExportHistory
+    },
+  })
+}
+
+export const useCreateNarrativeExport = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (
+      payload: ExecutionNarrativeExportCreate = {},
+    ): Promise<ExecutionNarrativeExportRecord> => {
+      if (!executionId) {
+        throw new Error('Execution id required for narrative export creation')
+      }
+      const resp = await api.post(
+        `/api/experiment-console/sessions/${executionId}/exports/narrative`,
+        payload,
+      )
+      return resp.data as ExecutionNarrativeExportRecord
+    },
+    onSuccess: (data) => {
+      qc.setQueryData<ExecutionNarrativeExportHistory | undefined>(
+        exportsKey(executionId),
+        (current) => {
+          if (!current) {
+            return { exports: [data] }
+          }
+          const deduped = current.exports.filter((entry) => entry.id !== data.id)
+          return { exports: [data, ...deduped] }
+        },
+      )
+      invalidateTimelineQueries(qc, executionId)
+    },
+  })
+}
+
+export const useApproveNarrativeExport = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      exportId: string
+      approval: ExecutionNarrativeApprovalRequest
+    }): Promise<ExecutionNarrativeExportRecord> => {
+      if (!executionId) {
+        throw new Error('Execution id required for narrative approval')
+      }
+      const resp = await api.post(
+        `/api/experiment-console/sessions/${executionId}/exports/narrative/${vars.exportId}/approve`,
+        vars.approval,
+      )
+      return resp.data as ExecutionNarrativeExportRecord
+    },
+    onSuccess: (data) => {
+      qc.setQueryData<ExecutionNarrativeExportHistory | undefined>(
+        exportsKey(executionId),
+        (current) => {
+          if (!current) {
+            return { exports: [data] }
+          }
+          const remaining = current.exports.filter((entry) => entry.id !== data.id)
+          return { exports: [data, ...remaining] }
+        },
+      )
+      invalidateTimelineQueries(qc, executionId)
+    },
   })
 }
