@@ -5,9 +5,10 @@ import { useParams } from 'next/navigation'
 import {
   useAdvanceExperimentStep,
   useExperimentSession,
+  useRemediateExperimentStep,
   useUpdateExperimentStep,
 } from '../../hooks/useExperimentConsole'
-import api from '../../api/client'
+import type { ExperimentRemediationResult } from '../../types'
 
 const statusColors: Record<string, string> = {
   pending: 'bg-neutral-200 text-neutral-800',
@@ -20,6 +21,37 @@ const anomalyBadges: Record<string, string> = {
   info: 'bg-sky-100 text-sky-700',
   warning: 'bg-amber-100 text-amber-700',
   critical: 'bg-rose-100 text-rose-700',
+}
+
+const remediationBadges: Record<string, string> = {
+  executed: 'bg-emerald-100 text-emerald-700',
+  scheduled: 'bg-sky-100 text-sky-700',
+  skipped: 'bg-neutral-100 text-neutral-700',
+  failed: 'bg-rose-100 text-rose-700',
+}
+
+const parseAction = (action: string) => {
+  const [domain = '', verb = '', ...rest] = action.split(':')
+  return { domain, verb, identifier: rest.join(':') }
+}
+
+const toLocalInputValue = (iso?: string | null) => {
+  if (!iso) return ''
+  try {
+    const date = new Date(iso)
+    if (Number.isNaN(date.getTime())) return ''
+    const pad = (value: number) => value.toString().padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+  } catch (error) {
+    return ''
+  }
+}
+
+const fromLocalInputValue = (value: string) => {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return date.toISOString()
 }
 
 const formatDateTime = (value?: string | null) => {
@@ -80,7 +112,14 @@ export default function ExperimentConsolePage() {
   const sessionQuery = useExperimentSession(executionId ?? null)
   const stepMutation = useUpdateExperimentStep(executionId ?? null)
   const advanceMutation = useAdvanceExperimentStep(executionId ?? null)
+  const remediationMutation = useRemediateExperimentStep(executionId ?? null)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
+  const [actionStepIndex, setActionStepIndex] = useState<number | null>(null)
+  const [actionContext, setActionContext] = useState<Record<string, any>>({})
+  const [wizardError, setWizardError] = useState<string | null>(null)
+  const [remediationResults, setRemediationResults] = useState<
+    Record<number, ExperimentRemediationResult[]>
+  >({})
 
   if (!executionId) {
     return (
@@ -112,6 +151,7 @@ export default function ExperimentConsolePage() {
   }
 
   const session = sessionQuery.data
+  const parsedAction = pendingAction ? parseAction(pendingAction) : null
 
   const updateStep = (stepIndex: number, status: 'in_progress' | 'completed') => {
     const timestamp = new Date().toISOString()
@@ -137,63 +177,138 @@ export default function ExperimentConsolePage() {
     }
   }
 
-  const handleAction = async (action: string) => {
-    let shouldRefresh = false
-    setPendingAction(action)
-    try {
-      const [domain = '', verb = '', identifier = ''] = action.split(':')
-      if (domain === 'inventory' && verb === 'restore' && identifier) {
-        await api.put(`/api/inventory/items/${identifier}`, { status: 'available' })
-        shouldRefresh = true
-        window.alert('Inventory item restored to available')
-        return
+  const deriveContextDefaults = (action: string) => {
+    const { domain, verb, identifier } = parseAction(action)
+    if (domain === 'booking') {
+      const nowIso = new Date().toISOString()
+      if (verb === 'adjust') {
+        const booking = session.bookings.find((entry) => entry.id === identifier)
+        if (booking) {
+          const delta =
+            Math.max(
+              15,
+              Math.round(
+                (new Date(booking.end_time).getTime() -
+                  new Date(booking.start_time).getTime()) /
+                  60000,
+              ),
+            ) || 60
+          return {
+            start_time: booking.start_time,
+            end_time: booking.end_time,
+            duration_minutes: delta,
+          }
+        }
+        return {
+          start_time: nowIso,
+          end_time: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          duration_minutes: 60,
+        }
       }
-      if (domain === 'equipment' && verb === 'calibrate' && identifier) {
-        const dueDate = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
-        await api.post('/api/equipment/maintenance', {
-          equipment_id: identifier,
-          due_date: dueDate,
-          task_type: 'calibration',
-          description: 'Calibration confirmed from console orchestration',
-        })
-        shouldRefresh = true
-        window.alert('Calibration workflow logged for equipment')
-        return
-      }
-      if (domain === 'equipment' && verb === 'maintenance_request' && identifier) {
-        const dueDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
-        await api.post('/api/equipment/maintenance', {
-          equipment_id: identifier,
-          due_date: dueDate,
-          task_type: 'maintenance',
-          description: 'Auto-generated maintenance request from orchestrator',
-        })
-        shouldRefresh = true
-        window.alert('Maintenance request submitted')
-        return
-      }
-      if (domain === 'booking') {
-        window.open('/schedule', '_blank', 'noopener')
-        return
-      }
-      if (domain === 'compliance') {
-        window.open('/compliance', '_blank', 'noopener')
-        return
-      }
-      if (domain === 'notify') {
-        window.alert(formatActionLabel(action))
-        return
-      }
-      window.alert(`No automated handler for ${formatActionLabel(action)} yet.`)
-    } catch (error) {
-      console.error('Failed to execute required action', error)
-      window.alert('Unable to perform the requested action. Check console for details.')
-    } finally {
-      setPendingAction(null)
-      if (shouldRefresh) {
-        sessionQuery.refetch()
+      if (verb === 'create') {
+        const fallbackResource = session.bookings[0]?.resource_id ?? ''
+        return {
+          start_time: nowIso,
+          duration_minutes: 60,
+          resource_id: fallbackResource,
+        }
       }
     }
+    if (domain === 'equipment' && verb === 'maintenance_request') {
+      return { due_in_days: 7, description: '' }
+    }
+    return {}
+  }
+
+  const openActionWizard = (stepIndex: number, action: string) => {
+    setPendingAction(action)
+    setActionStepIndex(stepIndex)
+    setWizardError(null)
+    setActionContext(deriveContextDefaults(action))
+  }
+
+  const closeActionWizard = () => {
+    setPendingAction(null)
+    setActionStepIndex(null)
+    setActionContext({})
+    setWizardError(null)
+  }
+
+  const persistRemediationResults = (
+    stepIndex: number,
+    results: ExperimentRemediationResult[],
+  ) => {
+    setRemediationResults((prev) => ({ ...prev, [stepIndex]: results }))
+  }
+
+  const handleAutoRemediate = async (stepIndex: number) => {
+    setWizardError(null)
+    try {
+      const response = await remediationMutation.mutateAsync({
+        stepIndex,
+        request: { auto: true },
+      })
+      persistRemediationResults(stepIndex, response.results)
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ??
+        error?.message ??
+        'Automatic remediation failed'
+      persistRemediationResults(stepIndex, [
+        { action: 'auto', status: 'failed', message: detail },
+      ])
+    }
+  }
+
+  const submitAction = async () => {
+    if (!pendingAction || actionStepIndex === null) {
+      return
+    }
+    setWizardError(null)
+    const { domain, verb, identifier } = parseAction(pendingAction)
+    if (domain === 'booking' && verb === 'create' && !actionContext.resource_id) {
+      setWizardError('Resource id is required to create a booking reservation.')
+      return
+    }
+    let contextPayload: Record<string, any> | undefined
+    if (domain === 'booking' && identifier) {
+      contextPayload = {
+        booking: {
+          [identifier]: actionContext,
+        },
+      }
+    }
+    if (domain === 'equipment' && identifier && verb === 'maintenance_request') {
+      contextPayload = {
+        maintenance: {
+          [identifier]: actionContext,
+        },
+      }
+    }
+    try {
+      const response = await remediationMutation.mutateAsync({
+        stepIndex: actionStepIndex,
+        request: {
+          actions: [pendingAction],
+          context:
+            contextPayload && Object.keys(contextPayload).length > 0
+              ? contextPayload
+              : undefined,
+        },
+      })
+      persistRemediationResults(actionStepIndex, response.results)
+      closeActionWizard()
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ??
+        error?.message ??
+        'Unable to complete remediation'
+      setWizardError(detail)
+    }
+  }
+
+  const updateActionContext = (key: string, value: any) => {
+    setActionContext((prev) => ({ ...prev, [key]: value }))
   }
 
     return (
@@ -266,11 +381,11 @@ export default function ExperimentConsolePage() {
           </section>
         )}
 
-        <section className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
-          <div className="xl:col-span-2 space-y-4">
-            <h2 className="text-xl font-semibold">Protocol Steps</h2>
-            <div className="space-y-4">
-              {session.steps.map((step) => {
+      <section className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+        <div className="xl:col-span-2 space-y-4">
+          <h2 className="text-xl font-semibold">Protocol Steps</h2>
+          <div className="space-y-4">
+            {session.steps.map((step) => {
                 const isStepBlocked = Boolean(step.blocked_reason && step.status === 'pending')
                 const isTerminal = step.status === 'completed' || step.status === 'skipped'
                 const isInProgress = step.status === 'in_progress'
@@ -315,16 +430,58 @@ export default function ExperimentConsolePage() {
                               {step.required_actions.map((action) => (
                                 <button
                                   key={action}
-                                  onClick={() => handleAction(action)}
-                                  disabled={pendingAction === action}
+                                  onClick={() => openActionWizard(step.index, action)}
+                                  disabled={
+                                    pendingAction === action || remediationMutation.isLoading
+                                  }
                                   className="text-xs font-medium px-3 py-2 rounded-md border border-rose-200 bg-white text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-60"
                                 >
-                                  {formatActionLabel(action)}
+                                  {pendingAction === action
+                                    ? 'Preparing…'
+                                    : formatActionLabel(action)}
                                 </button>
                               ))}
                             </div>
+                            <button
+                              type="button"
+                              onClick={() => handleAutoRemediate(step.index)}
+                              disabled={remediationMutation.isLoading}
+                              className="text-xs font-semibold px-3 py-2 rounded-md border border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100 transition-colors disabled:opacity-60"
+                            >
+                              {remediationMutation.isLoading
+                                ? 'Running remediation…'
+                                : 'Auto remediate blockers'}
+                            </button>
                           </div>
                         )}
+                        {remediationResults[step.index] &&
+                          remediationResults[step.index].length > 0 && (
+                            <div className="border border-rose-100 bg-white rounded-md p-3 space-y-2">
+                              <p className="text-xs uppercase tracking-wide text-rose-500">
+                                Remediation Outcomes
+                              </p>
+                              <ul className="space-y-1 text-sm">
+                                {remediationResults[step.index].map((result, idx) => (
+                                  <li
+                                    key={`${result.action}-${idx}`}
+                                    className="flex items-center justify-between gap-3"
+                                  >
+                                    <span className="text-neutral-700">
+                                      {formatActionLabel(result.action)}
+                                      {result.message ? ` — ${result.message}` : ''}
+                                    </span>
+                                    <span
+                                      className={`text-xs font-semibold px-2 py-1 rounded-full ${
+                                        remediationBadges[result.status] ?? remediationBadges.skipped
+                                      }`}
+                                    >
+                                      {result.status}
+                                    </span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
                       </div>
                     )}
                     {step.auto_triggers.length > 0 && (
@@ -484,6 +641,148 @@ export default function ExperimentConsolePage() {
           </section>
         </aside>
       </section>
+      {pendingAction && parsedAction && actionStepIndex !== null && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-lg p-6 space-y-4">
+            <header className="space-y-1">
+              <p className="text-xs uppercase tracking-wide text-neutral-500">Remediation Wizard</p>
+              <h3 className="text-lg font-semibold text-neutral-900">
+                {formatActionLabel(pendingAction)}
+              </h3>
+              <p className="text-sm text-neutral-600">
+                Provide any required context and confirm to execute this action directly from the orchestrator.
+              </p>
+            </header>
+            {wizardError && (
+              <div className="border border-rose-200 bg-rose-50 text-rose-700 text-sm rounded-md p-3">
+                {wizardError}
+              </div>
+            )}
+            {(parsedAction.domain === 'booking' ||
+              (parsedAction.domain === 'equipment' && parsedAction.verb === 'maintenance_request')) && (
+              <form className="space-y-3" onSubmit={(event) => event.preventDefault()}>
+                {parsedAction.domain === 'booking' && (
+                  <>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-medium text-neutral-500" htmlFor="start-time">
+                        Start Time
+                      </label>
+                      <input
+                        id="start-time"
+                        type="datetime-local"
+                        value={toLocalInputValue(actionContext.start_time)}
+                        onChange={(event) => {
+                          const iso = fromLocalInputValue(event.target.value)
+                          if (iso) {
+                            updateActionContext('start_time', iso)
+                          }
+                        }}
+                        className="border border-neutral-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-medium text-neutral-500" htmlFor="duration-minutes">
+                        Duration (minutes)
+                      </label>
+                      <input
+                        id="duration-minutes"
+                        type="number"
+                        min={15}
+                        value={actionContext.duration_minutes ?? 60}
+                        onChange={(event) =>
+                          updateActionContext('duration_minutes', Number(event.target.value) || 60)
+                        }
+                        className="border border-neutral-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    {parsedAction.verb === 'adjust' && (
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-neutral-500" htmlFor="end-time">
+                          End Time (optional override)
+                        </label>
+                        <input
+                          id="end-time"
+                          type="datetime-local"
+                          value={toLocalInputValue(actionContext.end_time)}
+                          onChange={(event) => {
+                            const iso = fromLocalInputValue(event.target.value)
+                            updateActionContext('end_time', iso ?? undefined)
+                          }}
+                          className="border border-neutral-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                      </div>
+                    )}
+                    {parsedAction.verb === 'create' && (
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-medium text-neutral-500" htmlFor="resource-id">
+                          Resource Identifier
+                        </label>
+                        <input
+                          id="resource-id"
+                          type="text"
+                          value={actionContext.resource_id ?? ''}
+                          onChange={(event) => updateActionContext('resource_id', event.target.value)}
+                          className="border border-neutral-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          placeholder="UUID of the instrument or room"
+                        />
+                      </div>
+                    )}
+                  </>
+                )}
+                {parsedAction.domain === 'equipment' && parsedAction.verb === 'maintenance_request' && (
+                  <>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-medium text-neutral-500" htmlFor="due-days">
+                        Due in (days)
+                      </label>
+                      <input
+                        id="due-days"
+                        type="number"
+                        min={1}
+                        value={actionContext.due_in_days ?? 7}
+                        onChange={(event) =>
+                          updateActionContext('due_in_days', Number(event.target.value) || 7)
+                        }
+                        className="border border-neutral-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      />
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <label className="text-xs font-medium text-neutral-500" htmlFor="maintenance-notes">
+                        Maintenance Notes
+                      </label>
+                      <textarea
+                        id="maintenance-notes"
+                        value={actionContext.description ?? ''}
+                        onChange={(event) => updateActionContext('description', event.target.value)}
+                        className="border border-neutral-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        rows={3}
+                        placeholder="Optional context for the maintenance ticket"
+                      />
+                    </div>
+                  </>
+                )}
+              </form>
+            )}
+            <div className="flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={closeActionWizard}
+                className="px-4 py-2 text-sm font-medium text-neutral-600 hover:text-neutral-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={submitAction}
+                disabled={remediationMutation.isLoading}
+                className="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
+              >
+                {remediationMutation.isLoading ? 'Applying…' : 'Apply Remediation'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
