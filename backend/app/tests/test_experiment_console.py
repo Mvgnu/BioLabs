@@ -246,3 +246,49 @@ def test_step_remediation_auto_executes_inventory(client):
         assert refreshed_item.status == "reserved"
     finally:
         db.close()
+
+
+def test_generate_execution_narrative_export(client):
+    headers = get_headers(client)
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Narrative Protocol", "content": "Prep\nExecute"},
+        headers=headers,
+    ).json()
+
+    created = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Narrative Run"},
+        headers=headers,
+    ).json()
+
+    exec_id = created["execution"]["id"]
+
+    now = datetime.now(timezone.utc)
+    client.post(
+        f"/api/experiment-console/sessions/{exec_id}/steps/0",
+        json={
+            "status": "completed",
+            "started_at": now.isoformat(),
+            "completed_at": now.isoformat(),
+        },
+        headers=headers,
+    )
+
+    export_resp = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
+        headers=headers,
+    )
+    assert export_resp.status_code == 200
+    payload = export_resp.json()
+    assert payload["format"] == "markdown"
+    assert payload["event_count"] >= 1
+    assert f"execution_id: `{exec_id}`" in payload["content"]
+    assert "session.created" in payload["content"]
+
+    timeline = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/timeline",
+        headers=headers,
+    ).json()
+    assert any(event["event_type"] == "narrative_export.created" for event in timeline["events"])
