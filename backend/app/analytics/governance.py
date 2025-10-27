@@ -97,7 +97,11 @@ def compute_governance_analytics(
             access_filters.append(models.ProtocolTemplate.team_id.in_(membership_ids))
         query = query.filter(or_(*access_filters))
 
-    query = query.options(joinedload(models.ExecutionEvent.execution))
+    query = query.options(
+        joinedload(models.ExecutionEvent.execution).joinedload(
+            models.ProtocolExecution.baseline_versions
+        )
+    )
     query = query.order_by(
         models.ExecutionEvent.created_at.desc(),
         models.ExecutionEvent.sequence.desc(),
@@ -110,8 +114,12 @@ def compute_governance_analytics(
     results: list[schemas.GovernanceAnalyticsPreviewSummary] = []
     total_new_blockers = 0
     total_resolved_blockers = 0
+    total_baseline_versions = 0
+    total_rollbacks = 0
     blocked_ratios: list[float] = []
     sla_ratio_samples: list[float] = []
+    approval_latency_samples: list[float] = []
+    publication_cadence_samples: list[float] = []
 
     for event in events:
         execution = event.execution
@@ -146,6 +154,53 @@ def compute_governance_analytics(
         blocked_ratios.append(blocked_ratio)
 
         step_completion_map = _collect_step_completion_map(execution)
+        baseline_versions = list(getattr(execution, "baseline_versions", []) or [])
+        total_baseline_versions += len(baseline_versions)
+
+        baseline_approval_latencies: list[float] = []
+        baseline_publication_cadence: list[float] = []
+        baseline_rollback_count = 0
+
+        published_versions = [
+            baseline
+            for baseline in baseline_versions
+            if baseline.published_at is not None
+        ]
+        published_versions.sort(key=lambda baseline: baseline.published_at)
+
+        for baseline in baseline_versions:
+            submitted_at = baseline.submitted_at
+            reviewed_at = baseline.reviewed_at
+            if submitted_at and reviewed_at:
+                delta_minutes = (reviewed_at - submitted_at).total_seconds() / 60
+                baseline_approval_latencies.append(delta_minutes)
+            if baseline.status == "rolled_back" or baseline.rolled_back_at is not None:
+                baseline_rollback_count += 1
+
+        if len(published_versions) >= 2:
+            for previous, current in zip(published_versions, published_versions[1:]):
+                if previous.published_at and current.published_at:
+                    cadence_days = (
+                        current.published_at - previous.published_at
+                    ).total_seconds() / (60 * 60 * 24)
+                    baseline_publication_cadence.append(cadence_days)
+
+        approval_latency_value = (
+            mean(baseline_approval_latencies)
+            if baseline_approval_latencies
+            else None
+        )
+        publication_cadence_value = (
+            mean(baseline_publication_cadence)
+            if baseline_publication_cadence
+            else None
+        )
+
+        if approval_latency_value is not None:
+            approval_latency_samples.append(approval_latency_value)
+        if publication_cadence_value is not None:
+            publication_cadence_samples.append(publication_cadence_value)
+        total_rollbacks += baseline_rollback_count
         sla_samples: list[schemas.GovernanceAnalyticsSlaSample] = []
         sla_within_count = 0
         sla_evaluated_count = 0
@@ -236,11 +291,24 @@ def compute_governance_analytics(
                 sla_samples=sla_samples,
                 blocker_heatmap=blocker_heatmap,
                 risk_level=risk_level,
+                baseline_version_count=len(baseline_versions),
+                approval_latency_minutes=approval_latency_value,
+                publication_cadence_days=publication_cadence_value,
+                rollback_count=baseline_rollback_count,
             )
         )
 
     average_blocked_ratio = mean(blocked_ratios) if blocked_ratios else 0.0
     average_sla_within = mean(sla_ratio_samples) if sla_ratio_samples else None
+
+    average_approval_latency = (
+        mean(approval_latency_samples) if approval_latency_samples else None
+    )
+    average_publication_cadence = (
+        mean(publication_cadence_samples)
+        if publication_cadence_samples
+        else None
+    )
 
     totals = schemas.GovernanceAnalyticsTotals(
         preview_count=len(results),
@@ -248,6 +316,10 @@ def compute_governance_analytics(
         total_new_blockers=total_new_blockers,
         total_resolved_blockers=total_resolved_blockers,
         average_sla_within_target_ratio=average_sla_within,
+        total_baseline_versions=total_baseline_versions,
+        total_rollbacks=total_rollbacks,
+        average_approval_latency_minutes=average_approval_latency,
+        average_publication_cadence_days=average_publication_cadence,
     )
 
     return schemas.GovernanceAnalyticsReport(results=results, totals=totals)

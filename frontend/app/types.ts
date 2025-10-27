@@ -481,6 +481,10 @@ export interface GovernanceAnalyticsPreviewSummary {
   sla_samples: GovernanceAnalyticsSlaSample[]
   blocker_heatmap: number[]
   risk_level: GovernanceRiskLevel
+  baseline_version_count: number
+  approval_latency_minutes?: number | null
+  publication_cadence_days?: number | null
+  rollback_count: number
 }
 
 export interface GovernanceAnalyticsTotals {
@@ -489,6 +493,10 @@ export interface GovernanceAnalyticsTotals {
   total_new_blockers: number
   total_resolved_blockers: number
   average_sla_within_target_ratio?: number | null
+  total_baseline_versions: number
+  total_rollbacks: number
+  average_approval_latency_minutes?: number | null
+  average_publication_cadence_days?: number | null
 }
 
 export interface GovernanceAnalyticsReport {

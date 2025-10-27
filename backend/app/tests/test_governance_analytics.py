@@ -108,6 +108,64 @@ def seed_preview_event(user: models.User, team_id: uuid.UUID | None = None) -> u
             created_at=now,
         )
         db.add(event)
+        baseline_one = models.GovernanceBaselineVersion(
+            execution_id=execution.id,
+            template_id=template.id,
+            team_id=team_id,
+            name="Baseline Alpha",
+            description="Initial published baseline",
+            status="published",
+            labels=[],
+            reviewer_ids=[],
+            version_number=1,
+            is_current=False,
+            submitted_by_id=user.id,
+            submitted_at=now - timedelta(days=5),
+            reviewed_by_id=user.id,
+            reviewed_at=now - timedelta(days=5) + timedelta(hours=4),
+            review_notes=None,
+            published_by_id=user.id,
+            published_at=now - timedelta(days=4),
+            publish_notes=None,
+        )
+        baseline_two = models.GovernanceBaselineVersion(
+            execution_id=execution.id,
+            template_id=template.id,
+            team_id=team_id,
+            name="Baseline Beta",
+            description="Current published baseline",
+            status="published",
+            labels=[],
+            reviewer_ids=[],
+            version_number=2,
+            is_current=True,
+            submitted_by_id=user.id,
+            submitted_at=now - timedelta(days=2),
+            reviewed_by_id=user.id,
+            reviewed_at=now - timedelta(days=2) + timedelta(hours=3),
+            published_by_id=user.id,
+            published_at=now - timedelta(days=1),
+        )
+        baseline_three = models.GovernanceBaselineVersion(
+            execution_id=execution.id,
+            template_id=template.id,
+            team_id=team_id,
+            name="Baseline Gamma",
+            description="Rolled back due to regression",
+            status="rolled_back",
+            labels=[],
+            reviewer_ids=[],
+            version_number=3,
+            is_current=False,
+            submitted_by_id=user.id,
+            submitted_at=now - timedelta(days=1),
+            reviewed_by_id=user.id,
+            reviewed_at=now - timedelta(days=1) + timedelta(hours=2),
+            rolled_back_by_id=user.id,
+            rolled_back_at=now - timedelta(hours=12),
+            rollback_notes="Detected SLA regression",
+        )
+        db.add_all([baseline_one, baseline_two, baseline_three])
         db.commit()
         return execution.id
     finally:
@@ -127,6 +185,10 @@ def test_governance_analytics_sla_and_blockers(client):
     assert pytest.approx(payload["totals"]["average_blocked_ratio"], 0.001) == 0.5
     assert payload["totals"]["total_new_blockers"] == 2
     assert payload["totals"]["total_resolved_blockers"] == 1
+    assert payload["totals"]["total_baseline_versions"] == 3
+    assert payload["totals"]["total_rollbacks"] == 1
+    assert payload["totals"]["average_approval_latency_minutes"] == pytest.approx(180.0)
+    assert payload["totals"]["average_publication_cadence_days"] == pytest.approx(3.0)
 
     summary = payload["results"][0]
     assert summary["execution_id"] == str(execution_id)
@@ -138,6 +200,10 @@ def test_governance_analytics_sla_and_blockers(client):
     assert summary["risk_level"] == "high"
     assert summary["sla_within_target_ratio"] == pytest.approx(0.5)
     assert summary["mean_sla_delta_minutes"] == pytest.approx(5.0)
+    assert summary["baseline_version_count"] == 3
+    assert summary["rollback_count"] == 1
+    assert summary["approval_latency_minutes"] == pytest.approx(180.0)
+    assert summary["publication_cadence_days"] == pytest.approx(3.0)
 
     samples = summary["sla_samples"]
     assert len(samples) == 2

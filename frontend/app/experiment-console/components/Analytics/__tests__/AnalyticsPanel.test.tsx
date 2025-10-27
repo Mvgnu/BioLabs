@@ -21,6 +21,10 @@ describe('GovernanceAnalyticsPanel', () => {
       total_new_blockers: 3,
       total_resolved_blockers: 4,
       average_sla_within_target_ratio: 0.75,
+      total_baseline_versions: 5,
+      total_rollbacks: 2,
+      average_approval_latency_minutes: 180,
+      average_publication_cadence_days: 4,
     },
     results: [
       {
@@ -49,6 +53,10 @@ describe('GovernanceAnalyticsPanel', () => {
         ],
         blocker_heatmap: [2],
         risk_level: 'medium',
+        baseline_version_count: 3,
+        approval_latency_minutes: 200,
+        publication_cadence_days: 4,
+        rollback_count: 1,
       },
       {
         execution_id: 'exec-2',
@@ -68,6 +76,10 @@ describe('GovernanceAnalyticsPanel', () => {
         sla_samples: [],
         blocker_heatmap: [],
         risk_level: 'low',
+        baseline_version_count: 2,
+        approval_latency_minutes: 160,
+        publication_cadence_days: 3,
+        rollback_count: 0,
       },
     ],
   }
@@ -100,8 +112,11 @@ describe('GovernanceAnalyticsPanel', () => {
     expect(screen.getByTestId('sla-accuracy-chart')).toBeTruthy()
     expect(screen.getByTestId('blocker-heatmap')).toBeTruthy()
     expect(screen.getByTestId('ladder-load-chart')).toBeTruthy()
+    expect(screen.getByTestId('baseline-lifecycle-card')).toBeTruthy()
     expect(screen.getByText(/Average SLA accuracy/i)).toBeTruthy()
     expect(screen.getByText(/Stage 2/)).toBeTruthy()
     expect(screen.getByText(/Average ladder load/i)).toBeTruthy()
+    expect(screen.getByText(/Baseline Lifecycle Pulse/)).toBeTruthy()
+    expect(screen.getByText(/Approval cadence/)).toBeTruthy()
   })
 })
