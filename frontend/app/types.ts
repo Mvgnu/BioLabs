@@ -426,11 +426,25 @@ export interface ExperimentPreviewStageInsight {
   auto_triggers: string[]
   assignee_id?: string | null
   delegate_id?: string | null
+  mapped_step_indexes: number[]
+  gate_keys: string[]
+  baseline_status?: 'ready' | 'blocked' | null
+  baseline_sla_hours?: number | null
+  baseline_projected_due_at?: string | null
+  baseline_assignee_id?: string | null
+  baseline_delegate_id?: string | null
+  baseline_blockers: string[]
+  delta_status?: 'cleared' | 'regressed' | 'unchanged' | null
+  delta_sla_hours?: number | null
+  delta_projected_due_minutes?: number | null
+  delta_new_blockers: string[]
+  delta_resolved_blockers: string[]
 }
 
 export interface ExperimentPreviewResponse {
   execution_id: string
   snapshot_id: string
+  baseline_snapshot_id?: string | null
   generated_at: string
   template_name?: string | null
   template_version?: number | null
@@ -605,6 +619,8 @@ export interface GovernanceStageBlueprint {
   name?: string | null
   required_role: string
   sla_hours?: number | null
+  stage_step_indexes?: number[]
+  stage_gate_keys?: string[]
   metadata?: Record<string, any>
 }
 

@@ -195,47 +195,98 @@ export default function LadderSimulationWidget({
               </div>
             )}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {activePreview.stage_insights.map((stage) => (
-                <div key={stage.index} className="rounded border border-neutral-200 px-3 py-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="font-semibold text-neutral-800">
-                        Stage {stage.index + 1}: {stage.name || stage.required_role}
+              {activePreview.stage_insights.map((stage) => {
+                const simulatedDue = stage.projected_due_at
+                  ? new Date(stage.projected_due_at)
+                  : null
+                const baselineDue = stage.baseline_projected_due_at
+                  ? new Date(stage.baseline_projected_due_at)
+                  : null
+                return (
+                  <div key={stage.index} className="rounded border border-neutral-200 px-3 py-2 text-xs space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-semibold text-neutral-800">
+                          Stage {stage.index + 1}: {stage.name || stage.required_role}
+                        </p>
+                        <p className="text-neutral-500">Role: {stage.required_role}</p>
+                      </div>
+                      <span
+                        className={`px-2 py-1 rounded ${
+                          stage.status === 'ready'
+                            ? 'bg-emerald-50 text-emerald-700'
+                            : 'bg-rose-50 text-rose-700'
+                        }`}
+                      >
+                        {stage.status === 'ready' ? 'Ready' : 'Blocked'}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-[11px] text-neutral-600">
+                      <div className="space-y-1">
+                        <p className="font-semibold text-neutral-700">Simulated</p>
+                        <p>SLA: {stage.sla_hours ?? '—'}</p>
+                        <p>Due: {simulatedDue ? simulatedDue.toLocaleString() : '—'}</p>
+                        <p>Assignee: {stage.assignee_id ?? '—'}</p>
+                      </div>
+                      <div className="space-y-1">
+                        <p className="font-semibold text-neutral-700">Baseline</p>
+                        <p>SLA: {stage.baseline_sla_hours ?? '—'}</p>
+                        <p>Due: {baselineDue ? baselineDue.toLocaleString() : '—'}</p>
+                        <p>Assignee: {stage.baseline_assignee_id ?? '—'}</p>
+                      </div>
+                    </div>
+                    <div className="text-[11px] text-neutral-600">
+                      <p>Status delta: {stage.delta_status ?? '—'}</p>
+                      <p>
+                        SLA delta:{' '}
+                        {typeof stage.delta_sla_hours === 'number'
+                          ? `${stage.delta_sla_hours >= 0 ? '+' : ''}${stage.delta_sla_hours}h`
+                          : '—'}
                       </p>
-                      <p className="text-neutral-500">Role: {stage.required_role}</p>
+                      <p>
+                        Due delta:{' '}
+                        {typeof stage.delta_projected_due_minutes === 'number'
+                          ? `${stage.delta_projected_due_minutes >= 0 ? '+' : ''}${stage.delta_projected_due_minutes} min`
+                          : '—'}
+                      </p>
                     </div>
-                    <span
-                      className={`px-2 py-1 rounded ${
-                        stage.status === 'ready'
-                          ? 'bg-emerald-50 text-emerald-700'
-                          : 'bg-rose-50 text-rose-700'
-                      }`}
-                    >
-                      {stage.status === 'ready' ? 'Ready' : 'Blocked'}
-                    </span>
+                    {stage.blockers.length > 0 && (
+                      <div className="text-rose-700">
+                        <p className="font-medium">Blockers</p>
+                        <ul className="list-disc pl-5 space-y-1">
+                          {stage.blockers.map((blocker) => (
+                            <li key={blocker}>{blocker}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {(stage.delta_new_blockers.length > 0 || stage.delta_resolved_blockers.length > 0) && (
+                      <div className="space-y-2">
+                        {stage.delta_new_blockers.length > 0 && (
+                          <div className="text-indigo-700">
+                            <p className="font-medium">New blockers</p>
+                            <ul className="list-disc pl-5 space-y-1">
+                              {stage.delta_new_blockers.map((blocker) => (
+                                <li key={`new-${blocker}`}>{blocker}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {stage.delta_resolved_blockers.length > 0 && (
+                          <div className="text-emerald-700">
+                            <p className="font-medium">Resolved blockers</p>
+                            <ul className="list-disc pl-5 space-y-1">
+                              {stage.delta_resolved_blockers.map((blocker) => (
+                                <li key={`resolved-${blocker}`}>{blocker}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
-                  <dl className="mt-2 space-y-1">
-                    <div className="flex justify-between">
-                      <dt>SLA hours</dt>
-                      <dd>{stage.sla_hours ?? '—'}</dd>
-                    </div>
-                    <div className="flex justify-between">
-                      <dt>Projected due</dt>
-                      <dd>{stage.projected_due_at ? new Date(stage.projected_due_at).toLocaleString() : '—'}</dd>
-                    </div>
-                  </dl>
-                  {stage.blockers.length > 0 && (
-                    <div className="mt-2 text-rose-700">
-                      <p className="font-medium">Blockers</p>
-                      <ul className="list-disc pl-5 space-y-1">
-                        {stage.blockers.map((blocker) => (
-                          <li key={blocker}>{blocker}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </div>
-              ))}
+                )
+              })}
             </div>
           </div>
         ) : (

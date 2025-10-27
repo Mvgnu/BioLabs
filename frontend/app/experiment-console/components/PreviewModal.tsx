@@ -245,8 +245,23 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {activePreview.stage_insights.map((stage) => (
-                <Card key={stage.index} variant="outlined">
+              {activePreview.stage_insights.map((stage) => {
+                const projectedDue = stage.projected_due_at
+                  ? new Date(stage.projected_due_at)
+                  : null
+                const baselineDue = stage.baseline_projected_due_at
+                  ? new Date(stage.baseline_projected_due_at)
+                  : null
+                const slaDeltaLabel =
+                  typeof stage.delta_sla_hours === 'number'
+                    ? `${stage.delta_sla_hours >= 0 ? '+' : ''}${stage.delta_sla_hours}h`
+                    : '—'
+                const dueDeltaLabel =
+                  typeof stage.delta_projected_due_minutes === 'number'
+                    ? `${stage.delta_projected_due_minutes >= 0 ? '+' : ''}${stage.delta_projected_due_minutes} min`
+                    : '—'
+                return (
+                  <Card key={stage.index} variant="outlined">
                   <CardBody>
                     <div className="flex items-center justify-between">
                       <div>
@@ -265,14 +280,50 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
                         {stage.status === 'ready' ? 'Ready' : 'Blocked'}
                       </span>
                     </div>
-                    <dl className="mt-3 space-y-1 text-xs text-neutral-600">
+                    <dl className="mt-3 grid grid-cols-2 gap-3 text-xs text-neutral-600">
+                      <div className="space-y-1">
+                        <div className="font-semibold text-neutral-700">Simulated</div>
+                        <div className="flex justify-between">
+                          <dt>SLA</dt>
+                          <dd>{stage.sla_hours ?? '—'}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt>Projected Due</dt>
+                          <dd>{projectedDue ? projectedDue.toLocaleString() : '—'}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt>Assignee</dt>
+                          <dd>{stage.assignee_id ?? '—'}</dd>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="font-semibold text-neutral-700">Baseline</div>
+                        <div className="flex justify-between">
+                          <dt>SLA</dt>
+                          <dd>{stage.baseline_sla_hours ?? '—'}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt>Projected Due</dt>
+                          <dd>{baselineDue ? baselineDue.toLocaleString() : '—'}</dd>
+                        </div>
+                        <div className="flex justify-between">
+                          <dt>Assignee</dt>
+                          <dd>{stage.baseline_assignee_id ?? '—'}</dd>
+                        </div>
+                      </div>
+                    </dl>
+                    <dl className="mt-2 space-y-1 text-xs text-neutral-600">
                       <div className="flex justify-between">
-                        <dt>SLA Hours</dt>
-                        <dd>{stage.sla_hours ?? '—'}</dd>
+                        <dt>Status Delta</dt>
+                        <dd>{stage.delta_status ?? '—'}</dd>
                       </div>
                       <div className="flex justify-between">
-                        <dt>Projected Due</dt>
-                        <dd>{stage.projected_due_at ? new Date(stage.projected_due_at).toLocaleString() : '—'}</dd>
+                        <dt>SLA Delta</dt>
+                        <dd>{slaDeltaLabel}</dd>
+                      </div>
+                      <div className="flex justify-between">
+                        <dt>Due Delta</dt>
+                        <dd>{dueDeltaLabel}</dd>
                       </div>
                     </dl>
                     {stage.blockers.length > 0 && (
@@ -285,6 +336,31 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
                         </ul>
                       </div>
                     )}
+                    {(stage.delta_new_blockers.length > 0 || stage.delta_resolved_blockers.length > 0) && (
+                      <div className="mt-3">
+                        <h4 className="text-xs font-semibold text-indigo-700">Blocker Delta</h4>
+                        {stage.delta_new_blockers.length > 0 && (
+                          <div className="mt-1">
+                            <p className="text-[11px] font-medium text-indigo-700">New</p>
+                            <ul className="mt-1 space-y-1 text-xs text-indigo-700">
+                              {stage.delta_new_blockers.map((blocker) => (
+                                <li key={`new-${blocker}`}>{blocker}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {stage.delta_resolved_blockers.length > 0 && (
+                          <div className="mt-1">
+                            <p className="text-[11px] font-medium text-emerald-700">Resolved</p>
+                            <ul className="mt-1 space-y-1 text-xs text-emerald-700">
+                              {stage.delta_resolved_blockers.map((blocker) => (
+                                <li key={`resolved-${blocker}`}>{blocker}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {stage.required_actions.length > 0 && (
                       <div className="mt-3">
                         <h4 className="text-xs font-semibold text-neutral-700">Required Actions</h4>
@@ -295,9 +371,16 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
                         </ul>
                       </div>
                     )}
+                    {(stage.mapped_step_indexes.length > 0 || stage.gate_keys.length > 0) && (
+                      <div className="mt-3 text-[11px] text-neutral-500">
+                        <p>Steps: {stage.mapped_step_indexes.join(', ') || '—'}</p>
+                        {stage.gate_keys.length > 0 && <p>Gate Keys: {stage.gate_keys.join(', ')}</p>}
+                      </div>
+                    )}
                   </CardBody>
                 </Card>
-              ))}
+                )
+              })}
             </div>
 
             <Card>
