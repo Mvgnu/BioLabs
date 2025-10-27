@@ -593,6 +593,94 @@ class GovernanceAnalyticsReport(BaseModel):
     totals: GovernanceAnalyticsTotals
 
 
+class BaselineLifecycleLabel(BaseModel):
+    # purpose: express structured metadata tags applied to baseline submissions
+    # status: draft
+    key: str
+    value: str
+
+
+class GovernanceBaselineEventOut(BaseModel):
+    # purpose: surface auditable baseline lifecycle transitions
+    # status: draft
+    id: UUID
+    baseline_id: UUID
+    action: str
+    notes: str | None = None
+    detail: dict[str, Any]
+    performed_by_id: UUID
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GovernanceBaselineVersionOut(BaseModel):
+    # purpose: return enriched baseline lifecycle records to clients
+    # status: draft
+    id: UUID
+    execution_id: UUID
+    template_id: UUID | None = None
+    team_id: UUID | None = None
+    name: str
+    description: str | None = None
+    status: str
+    labels: list[BaselineLifecycleLabel] = Field(default_factory=list)
+    reviewer_ids: list[UUID] = Field(default_factory=list)
+    version_number: int | None = None
+    is_current: bool
+    submitted_by_id: UUID
+    submitted_at: datetime
+    reviewed_by_id: UUID | None = None
+    reviewed_at: datetime | None = None
+    review_notes: str | None = None
+    published_by_id: UUID | None = None
+    published_at: datetime | None = None
+    publish_notes: str | None = None
+    rollback_of_id: UUID | None = None
+    rolled_back_by_id: UUID | None = None
+    rolled_back_at: datetime | None = None
+    rollback_notes: str | None = None
+    created_at: datetime
+    updated_at: datetime
+    events: list[GovernanceBaselineEventOut] = Field(default_factory=list)
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GovernanceBaselineCollection(BaseModel):
+    # purpose: wrap baseline collections for predictable API responses
+    # status: draft
+    items: list[GovernanceBaselineVersionOut] = Field(default_factory=list)
+
+
+class BaselineSubmissionRequest(BaseModel):
+    # purpose: validate baseline submission payloads from experiment console
+    # status: draft
+    execution_id: UUID
+    name: str
+    description: str | None = None
+    reviewer_ids: list[UUID] = Field(default_factory=list)
+    labels: list[BaselineLifecycleLabel] = Field(default_factory=list)
+
+
+class BaselineReviewRequest(BaseModel):
+    # purpose: capture reviewer decisions with optional notes
+    # status: draft
+    decision: Literal["approve", "reject"]
+    notes: str | None = None
+
+
+class BaselinePublishRequest(BaseModel):
+    # purpose: accept publishing confirmations and notes
+    # status: draft
+    notes: str | None = None
+
+
+class BaselineRollbackRequest(BaseModel):
+    # purpose: gather rollback justifications and optional target restoration
+    # status: draft
+    reason: str
+    target_version_id: UUID | None = None
+
+
 class ExperimentScenarioFolder(BaseModel):
     # purpose: describe scenario folder metadata for workspace navigation
     # status: pilot
