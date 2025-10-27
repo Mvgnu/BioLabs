@@ -92,6 +92,32 @@ def _prepare_override_context(
     return execution, baseline, target
 
 
+def _prepare_reverse_context(
+    db: Session,
+    user: models.User,
+    payload: schemas.GovernanceOverrideReverseRequest,
+) -> tuple[
+    models.ProtocolExecution,
+    models.GovernanceBaselineVersion | None,
+]:
+    team_ids = _get_user_team_ids(db, user)
+    execution = db.get(models.ProtocolExecution, payload.execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    _ensure_execution_access(db, execution, user, team_ids)
+
+    baseline: models.GovernanceBaselineVersion | None = None
+    if payload.baseline_id is not None:
+        baseline = _load_baseline(db, payload.baseline_id)
+        if baseline is None:
+            raise HTTPException(status_code=404, detail="Baseline not found")
+        if baseline.execution_id != execution.id:
+            raise HTTPException(status_code=400, detail="Baseline does not belong to execution")
+        _assert_baseline_visibility(db, baseline, user, team_ids)
+
+    return execution, baseline
+
+
 @router.post(
     "/override/{recommendation_id}/accept",
     response_model=schemas.GovernanceOverrideActionOutcome,
@@ -114,6 +140,40 @@ def accept_governance_override(
             execution=execution,
             baseline=baseline,
             target_reviewer_id=payload.target_reviewer_id,
+            notes=payload.notes,
+            metadata=payload.metadata,
+        )
+        db.commit()
+        db.refresh(record)
+        return record
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post(
+    "/override/{recommendation_id}/reverse",
+    response_model=schemas.GovernanceOverrideActionOutcome,
+)
+def reverse_governance_override(
+    recommendation_id: str,
+    payload: schemas.GovernanceOverrideReverseRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> schemas.GovernanceOverrideActionOutcome:
+    """Reverse a previously executed override when reversible."""
+
+    try:
+        execution, baseline = _prepare_reverse_context(db, user, payload)
+        record, _ = recommendation_actions.reverse_override(
+            db,
+            actor=user,
+            recommendation_id=recommendation_id,
+            execution=execution,
+            baseline=baseline,
             notes=payload.notes,
             metadata=payload.metadata,
         )

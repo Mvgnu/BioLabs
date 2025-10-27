@@ -125,12 +125,23 @@ def record_governance_override_action_event(
         "rule_key": rule_key,
         "action": action,
         "status": status,
+        "actor_id": str(actor.id),
     }
     detail_payload = detail or {}
-    for key in ("baseline_id", "target_reviewer_id", "notes", "changed", "cooldown_minutes", "urgency"):
-        value = detail_payload.get(key)
-        if value is not None:
-            payload[key] = value
+    payload.update({key: value for key, value in detail_payload.items() if key in {
+        "baseline_id",
+        "target_reviewer_id",
+        "notes",
+        "changed",
+        "cooldown_minutes",
+        "urgency",
+        "reviewer_ids_before",
+        "reviewer_ids_after",
+        "execution_hash",
+        "reversal",
+        "reversal_notes",
+    }})
+    payload["detail"] = detail_payload
     return record_execution_event(
         db,
         execution,

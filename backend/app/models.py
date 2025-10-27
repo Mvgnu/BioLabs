@@ -588,6 +588,8 @@ class GovernanceOverrideAction(Base):
     reversible = Column(Boolean, default=False, nullable=False)
     notes = Column(Text, nullable=True)
     meta = Column("metadata", JSON, default=dict, nullable=False)
+    execution_hash = Column(String(64), nullable=True, unique=True)
+    detail_snapshot = Column(JSON, default=dict, nullable=False)
     created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
     updated_at = Column(
         DateTime,
@@ -605,6 +607,10 @@ class GovernanceOverrideAction(Base):
         sa.CheckConstraint(
             "status IN ('accepted', 'declined', 'executed', 'reversed')",
             name="ck_governance_override_status",
+        ),
+        sa.UniqueConstraint(
+            "execution_hash",
+            name="uq_governance_override_execution_hash",
         ),
     )
 

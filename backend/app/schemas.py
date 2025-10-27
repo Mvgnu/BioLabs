@@ -844,6 +844,17 @@ class GovernanceOverrideActionRequest(BaseModel):
         return self
 
 
+class GovernanceOverrideReverseRequest(BaseModel):
+    # purpose: validate governance override reversals triggered by operators
+    # inputs: execution identifier, optional baseline linkage, reversal notes, metadata
+    # outputs: normalized payload for reversal workflow execution
+    # status: pilot
+    execution_id: UUID
+    baseline_id: UUID | None = None
+    notes: str | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class GovernanceOverrideActionOutcome(BaseModel):
     # purpose: serialize override action records for governance clients
     # inputs: GovernanceOverrideAction ORM instances with optional metadata
