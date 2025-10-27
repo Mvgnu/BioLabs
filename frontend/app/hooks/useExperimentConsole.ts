@@ -31,6 +31,7 @@ import type {
   ExecutionNarrativeApprovalRequest,
   ExecutionNarrativeDelegationRequest,
   ExecutionNarrativeStageResetRequest,
+  GovernanceAnalyticsReport,
 } from '../types'
 
 const sessionKey = (executionId: string | null) => [
@@ -59,6 +60,12 @@ const scenarioWorkspaceKey = (executionId: string | null) => [
   'experiment-console',
   'scenarios',
   executionId,
+]
+
+const governanceAnalyticsKey = (executionId: string | null) => [
+  'experiment-console',
+  'governance-analytics',
+  executionId ?? 'all',
 ]
 
 const invalidateTimelineQueries = (qc: QueryClient, executionId: string | null) => {
@@ -197,6 +204,23 @@ export const useExecutionNarrativeExports = (executionId: string | null) => {
         `/api/experiment-console/sessions/${executionId}/exports/narrative`,
       )
       return resp.data as ExecutionNarrativeExportHistory
+    },
+  })
+}
+
+export const useGovernanceAnalytics = (
+  executionId: string | null,
+  limit = 50,
+) => {
+  return useQuery({
+    queryKey: governanceAnalyticsKey(executionId),
+    queryFn: async () => {
+      const params: Record<string, any> = { limit }
+      if (executionId) {
+        params.execution_id = executionId
+      }
+      const resp = await api.get('/api/governance/analytics', { params })
+      return resp.data as GovernanceAnalyticsReport
     },
   })
 }

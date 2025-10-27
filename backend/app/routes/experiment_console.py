@@ -239,6 +239,76 @@ def _ensure_execution_access(
     raise HTTPException(status_code=403, detail="Not authorized for execution workspace")
 
 
+def _compose_preview_analytics_payload(
+    insights: Sequence[schemas.ExperimentPreviewStageInsight],
+    generated_at: datetime,
+    snapshot: models.ExecutionNarrativeWorkflowTemplateSnapshot,
+    baseline_snapshot: models.ExecutionNarrativeWorkflowTemplateSnapshot | None,
+    stage_overrides: dict[int, dict[str, Any]],
+    resource_warnings: Sequence[str],
+) -> dict[str, Any]:
+    """Summarize preview telemetry for downstream governance analytics."""
+
+    # purpose: condense preview insight metrics into analytics event payloads
+    # inputs: stage insight collection, generated timestamp, template snapshot context
+    # outputs: dictionary payload persisted via execution event log utilities
+    # status: pilot
+    blocked_stage_indexes: list[int] = []
+    stage_predictions: list[dict[str, Any]] = []
+    new_blocker_total = 0
+    resolved_blocker_total = 0
+    delta_projection_minutes: list[int] = []
+
+    for stage in insights:
+        projected_due = (
+            stage.projected_due_at.isoformat()
+            if getattr(stage, "projected_due_at", None)
+            else None
+        )
+        baseline_due = (
+            stage.baseline_projected_due_at.isoformat()
+            if getattr(stage, "baseline_projected_due_at", None)
+            else None
+        )
+        if stage.status == "blocked":
+            blocked_stage_indexes.append(stage.index)
+        new_blocker_total += len(stage.delta_new_blockers)
+        resolved_blocker_total += len(stage.delta_resolved_blockers)
+        if stage.delta_projected_due_minutes is not None:
+            delta_projection_minutes.append(stage.delta_projected_due_minutes)
+        stage_predictions.append(
+            {
+                "index": stage.index,
+                "status": stage.status,
+                "projected_due_at": projected_due,
+                "baseline_projected_due_at": baseline_due,
+                "mapped_step_indexes": list(stage.mapped_step_indexes),
+                "delta_status": stage.delta_status,
+                "delta_projected_due_minutes": stage.delta_projected_due_minutes,
+            }
+        )
+
+    blocked_stage_count = len(blocked_stage_indexes)
+    stage_count = len(insights)
+
+    return {
+        "generated_at": generated_at.isoformat(),
+        "snapshot_id": str(snapshot.id),
+        "baseline_snapshot_id": str(baseline_snapshot.id)
+        if baseline_snapshot
+        else None,
+        "stage_count": stage_count,
+        "blocked_stage_count": blocked_stage_count,
+        "blocked_stage_indexes": blocked_stage_indexes,
+        "override_count": len(stage_overrides),
+        "new_blocker_count": new_blocker_total,
+        "resolved_blocker_count": resolved_blocker_total,
+        "resource_warning_count": len(resource_warnings),
+        "delta_projection_minutes": delta_projection_minutes,
+        "stage_predictions": stage_predictions,
+    }
+
+
 def _resolve_assigned_template_ids(
     db: Session,
     template: models.ProtocolTemplate,
@@ -2375,9 +2445,8 @@ def preview_experiment_governance(
             detail="Execution missing linked protocol template for preview",
         )
 
-    template = db.get(models.ProtocolTemplate, execution.template_id)
-    if not template:
-        raise HTTPException(status_code=404, detail="Linked protocol template not found")
+    team_ids = _get_user_team_ids(db, user)
+    _ensure_execution_access(db, execution, user, team_ids)
 
     snapshot = db.get(
         models.ExecutionNarrativeWorkflowTemplateSnapshot,
@@ -2625,6 +2694,21 @@ def preview_experiment_governance(
         },
     )
     db.add(audit_entry)
+    analytics_payload = _compose_preview_analytics_payload(
+        insights,
+        generated_at,
+        snapshot,
+        baseline_snapshot,
+        stage_overrides,
+        resource_warnings,
+    )
+    record_execution_event(
+        db,
+        execution,
+        "governance.preview.summary",
+        analytics_payload,
+        user,
+    )
     db.commit()
 
     template_name = snapshot_payload.get("name") if isinstance(snapshot_payload, dict) else None

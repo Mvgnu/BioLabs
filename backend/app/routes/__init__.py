@@ -21,6 +21,7 @@ modules = [
     'tools',
     'search',
     'analytics',
+    'governance_analytics',
     'audit',
     'equipment',
     'experiment_console',
