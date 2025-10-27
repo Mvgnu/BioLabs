@@ -492,6 +492,20 @@ export interface GovernanceReviewerCadenceSummary {
   streak_alert: boolean
 }
 
+export interface GovernanceReviewerLoadBandCounts {
+  light: number
+  steady: number
+  saturated: number
+}
+
+export interface GovernanceReviewerCadenceTotals {
+  reviewer_count: number
+  streak_alert_count: number
+  reviewer_latency_p50_minutes?: number | null
+  reviewer_latency_p90_minutes?: number | null
+  load_band_counts: GovernanceReviewerLoadBandCounts
+}
+
 export interface GovernanceAnalyticsPreviewSummary {
   execution_id: string
   preview_event_id: string
@@ -529,12 +543,20 @@ export interface GovernanceAnalyticsTotals {
   average_publication_cadence_days?: number | null
   reviewer_count: number
   streak_alert_count: number
+  reviewer_latency_p50_minutes?: number | null
+  reviewer_latency_p90_minutes?: number | null
+  reviewer_load_band_counts: GovernanceReviewerLoadBandCounts
 }
 
 export interface GovernanceAnalyticsReport {
   results: GovernanceAnalyticsPreviewSummary[]
   reviewer_cadence: GovernanceReviewerCadenceSummary[]
   totals: GovernanceAnalyticsTotals
+}
+
+export interface GovernanceReviewerCadenceReport {
+  reviewers: GovernanceReviewerCadenceSummary[]
+  totals: GovernanceReviewerCadenceTotals
 }
 
 export interface BaselineLifecycleLabel {

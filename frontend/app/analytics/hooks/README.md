@@ -6,4 +6,4 @@
 
 ## Hooks
 
-- `useReviewerCadence.ts` – fetches reviewer cadence summaries and derives band counts plus streak alert subsets for composable UI layers.
+- `useReviewerCadence.ts` – fetches the lean `view=reviewer` payload, exposing reviewer cadence summaries, load band counts, streak alerts, and aggregate latency guardrails for composable UI layers.
