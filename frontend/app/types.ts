@@ -583,6 +583,33 @@ export interface GovernanceOverrideRecommendationReport {
   recommendations: GovernanceOverrideRecommendation[]
 }
 
+export type GovernanceOverrideActionStatus = 'accepted' | 'declined' | 'executed' | 'reversed'
+
+export interface GovernanceOverrideActionRecord {
+  id: string
+  recommendation_id: string
+  action: GovernanceOverrideAction
+  status: GovernanceOverrideActionStatus
+  execution_id?: string | null
+  baseline_id?: string | null
+  target_reviewer_id?: string | null
+  actor_id: string
+  reversible: boolean
+  notes?: string | null
+  metadata: Record<string, any>
+  created_at: string
+  updated_at: string
+}
+
+export interface GovernanceOverrideActionRequest {
+  execution_id: string
+  action: GovernanceOverrideAction
+  baseline_id?: string | null
+  target_reviewer_id?: string | null
+  notes?: string | null
+  metadata?: Record<string, any>
+}
+
 export interface BaselineLifecycleLabel {
   key: string
   value: string

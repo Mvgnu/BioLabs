@@ -5,3 +5,6 @@
 - status: pilot
 
 `governance.py` wraps the reviewer cadence aggregation helpers to construct `GovernanceOverrideRecommendationReport` payloads. Rules inspect reviewer load bands, latency percentiles, blocker ratios, churn signals, and publish streak alerts to emit actionable overrides (`reassign`, `cooldown`, `escalate`). Each recommendation captures metrics, RBAC-scoped reviewer context, and related execution identifiers. The module also logs recommendation provenance via `record_governance_recommendation_event` so governance operators retain a full audit trail of generated advice.
+
+`actions.py` centralizes override workflow execution, persisting `GovernanceOverrideAction` rows when operators accept, decline, or execute staffing overrides. Helpers update affected baselines, emit minimal event payloads, and reuse governance audit utilities to maintain lineage.
+

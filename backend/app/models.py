@@ -551,6 +551,64 @@ class GovernanceBaselineEvent(Base):
     actor = relationship("User")
 
 
+
+class GovernanceOverrideAction(Base):
+    __tablename__ = "governance_override_actions"
+
+    # purpose: persist staffing override decisions and their execution lineage
+    # status: pilot
+    # depends_on: governance_baseline_versions, protocol_executions, users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    recommendation_id = Column(String, nullable=False, index=True)
+    action = Column(String, nullable=False)
+    status = Column(
+        String,
+        nullable=False,
+        default="accepted",
+    )
+    execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    baseline_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_baseline_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    target_reviewer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    actor_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    reversible = Column(Boolean, default=False, nullable=False)
+    notes = Column(Text, nullable=True)
+    meta = Column("metadata", JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    execution = relationship("ProtocolExecution")
+    baseline = relationship("GovernanceBaselineVersion")
+    target_reviewer = relationship("User", foreign_keys=[target_reviewer_id])
+    actor = relationship("User", foreign_keys=[actor_id])
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "status IN ('accepted', 'declined', 'executed', 'reversed')",
+            name="ck_governance_override_status",
+        ),
+    )
+
+
 class ExecutionNarrativeWorkflowTemplateAssignment(Base):
     __tablename__ = "execution_narrative_workflow_template_assignments"
 

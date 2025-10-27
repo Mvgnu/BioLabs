@@ -16,6 +16,8 @@ import type {
   GovernanceReviewerCadenceReport,
   GovernanceReviewerCadenceTotals,
   GovernanceReviewerLoadBandCounts,
+  GovernanceOverrideActionRecord,
+  GovernanceOverrideActionRequest,
   GovernanceOverrideRecommendationReport,
 } from '../types'
 
@@ -116,6 +118,27 @@ export const governanceApi = {
     const response = await api.get<GovernanceOverrideRecommendationReport>(
       '/api/governance/recommendations/override',
       { params },
+    )
+    return response.data
+  },
+  async acceptOverride(recommendationId: string, payload: GovernanceOverrideActionRequest) {
+    const response = await api.post<GovernanceOverrideActionRecord>(
+      `/api/governance/recommendations/override/${recommendationId}/accept`,
+      payload,
+    )
+    return response.data
+  },
+  async declineOverride(recommendationId: string, payload: GovernanceOverrideActionRequest) {
+    const response = await api.post<GovernanceOverrideActionRecord>(
+      `/api/governance/recommendations/override/${recommendationId}/decline`,
+      payload,
+    )
+    return response.data
+  },
+  async executeOverride(recommendationId: string, payload: GovernanceOverrideActionRequest) {
+    const response = await api.post<GovernanceOverrideActionRecord>(
+      `/api/governance/recommendations/override/${recommendationId}/execute`,
+      payload,
     )
     return response.data
   },

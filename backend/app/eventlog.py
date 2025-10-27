@@ -101,3 +101,41 @@ def record_governance_recommendation_event(
         actor=actor,
     )
 
+
+def record_governance_override_action_event(
+    db: Session,
+    execution: models.ProtocolExecution,
+    *,
+    recommendation_id: str,
+    rule_key: str,
+    action: str,
+    status: str,
+    actor: models.User,
+    detail: dict[str, Any] | None = None,
+) -> models.ExecutionEvent:
+    """Persist override action outcomes for governance replay."""
+
+    # purpose: log override action execution results with minimal lineage payloads
+    # inputs: execution context, recommendation identifiers, action metadata, actor
+    # outputs: ExecutionEvent row for governance timeline reconstruction
+    # status: pilot
+
+    payload = {
+        "recommendation_id": recommendation_id,
+        "rule_key": rule_key,
+        "action": action,
+        "status": status,
+    }
+    detail_payload = detail or {}
+    for key in ("baseline_id", "target_reviewer_id", "notes", "changed", "cooldown_minutes", "urgency"):
+        value = detail_payload.get(key)
+        if value is not None:
+            payload[key] = value
+    return record_execution_event(
+        db,
+        execution,
+        event_type="governance.override.action",
+        payload=payload,
+        actor=actor,
+    )
+

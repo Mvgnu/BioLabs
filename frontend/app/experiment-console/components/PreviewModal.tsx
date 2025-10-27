@@ -2,6 +2,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+
 import { Alert, Button, Card, CardBody, Input } from '../../components/ui'
 import { Dialog } from '../../components/ui/Dialog'
 import ScenarioSummary from './ScenarioSummary'
@@ -15,13 +17,16 @@ import {
   useUpdateScenario,
 } from '../../hooks/useExperimentConsole'
 import { useGovernanceRecommendations } from '../hooks/useGovernanceRecommendations'
+import { governanceApi } from '../../api/governance'
 import type {
   ExperimentPreviewRequest,
   ExperimentPreviewResponse,
   ExperimentPreviewStageOverride,
   ExperimentScenario,
   ExperimentScenarioSnapshot,
+  GovernanceOverrideActionRequest,
   GovernanceOverridePriority,
+  GovernanceOverrideRecommendation,
 } from '../../types'
 
 interface PreviewModalProps {
@@ -41,6 +46,12 @@ type ResourceDraft = {
   inventory: string
   bookings: string
   equipment: string
+}
+
+type OverrideFormState = {
+  baselineId: string
+  reviewerId: string
+  notes: string
 }
 
 // purpose: expose governance preview scenario workspace with persistence-aware UI
@@ -176,7 +187,113 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [acknowledgedRecommendations, setAcknowledgedRecommendations] = useState<string[]>([])
+  const [overrideForms, setOverrideForms] = useState<Record<string, OverrideFormState>>({})
+  const queryClient = useQueryClient()
   const preventAutoSelectRef = useRef(false)
+
+  const getOverrideForm = useCallback(
+    (recommendationId: string): OverrideFormState =>
+      overrideForms[recommendationId] ?? { baselineId: '', reviewerId: '', notes: '' },
+    [overrideForms],
+  )
+
+  const updateOverrideForm = useCallback(
+    (recommendationId: string, field: keyof OverrideFormState, value: string) => {
+      setOverrideForms((previous) => {
+        const current = previous[recommendationId] ?? {
+          baselineId: '',
+          reviewerId: '',
+          notes: '',
+        }
+        return {
+          ...previous,
+          [recommendationId]: { ...current, [field]: value },
+        }
+      })
+    },
+    [],
+  )
+
+  const overrideMutation = useMutation({
+    mutationFn: async ({
+      recommendationId,
+      actionType,
+      payload,
+    }: {
+      recommendationId: string
+      actionType: 'accept' | 'decline' | 'execute'
+      payload: GovernanceOverrideActionRequest
+    }) => {
+      if (actionType === 'accept') {
+        return governanceApi.acceptOverride(recommendationId, payload)
+      }
+      if (actionType === 'decline') {
+        return governanceApi.declineOverride(recommendationId, payload)
+      }
+      return governanceApi.executeOverride(recommendationId, payload)
+    },
+    onSuccess: (_data, variables) => {
+      const message =
+        variables.actionType === 'execute'
+          ? 'Override executed successfully.'
+          : variables.actionType === 'accept'
+            ? 'Override accepted.'
+            : 'Override declined.'
+      setSuccessMessage(message)
+      setError(null)
+      setAcknowledgedRecommendations((previous) =>
+        previous.includes(variables.recommendationId)
+          ? previous
+          : [...previous, variables.recommendationId],
+      )
+      queryClient.invalidateQueries({ queryKey: ['governance', 'override-recommendations'] })
+    },
+    onError: () => {
+      setError('Unable to process override action.')
+    },
+  })
+
+const handleOverrideAction = useCallback(
+  (recommendation: GovernanceOverrideRecommendation, actionType: 'accept' | 'decline' | 'execute') => {
+    if (!executionId) {
+      setError('Execution context unavailable for override action.')
+      return
+    }
+    const formState = getOverrideForm(recommendation.recommendation_id)
+    const payload: GovernanceOverrideActionRequest = {
+      execution_id: executionId,
+      action: recommendation.action,
+      metadata: {},
+    }
+    if (formState.notes.trim()) {
+      payload.notes = formState.notes.trim()
+    }
+    if (formState.baselineId.trim()) {
+      payload.baseline_id = formState.baselineId.trim()
+    }
+    if (formState.reviewerId.trim()) {
+      payload.target_reviewer_id = formState.reviewerId.trim()
+    }
+    if (recommendation.action === 'reassign') {
+      if (!payload.baseline_id) {
+        setError('Baseline ID is required to reassign overrides.')
+        return
+      }
+      if (!payload.target_reviewer_id) {
+        setError('Target reviewer ID is required to reassign overrides.')
+        return
+      }
+    }
+    setError(null)
+    setSuccessMessage(null)
+    overrideMutation.mutate({
+      recommendationId: recommendation.recommendation_id,
+      actionType,
+      payload,
+    })
+  },
+  [executionId, getOverrideForm, overrideMutation, setError, setSuccessMessage],
+)
 
   const toggleAcknowledgedRecommendation = useCallback((recommendationId: string) => {
     setAcknowledgedRecommendations((prev) => {
@@ -591,6 +708,7 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
                   recommendation.recommendation_id,
                 )
                 const metrics = recommendation.metrics ?? {}
+                const formState = getOverrideForm(recommendation.recommendation_id)
                 const metricDescriptions: string[] = []
                 if (typeof metrics.load_band === 'string') {
                   metricDescriptions.push(`Load: ${metrics.load_band}`)
@@ -646,17 +764,89 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
                           Triggered {new Date(recommendation.triggered_at).toLocaleString()}
                         </span>
                       </div>
-                      <div className="flex items-center justify-end">
-                        <Button
-                          size="sm"
-                          variant={isAcknowledged ? 'secondary' : 'ghost'}
-                          onClick={() =>
-                            toggleAcknowledgedRecommendation(recommendation.recommendation_id)
-                          }
-                          aria-pressed={isAcknowledged}
-                        >
-                          {isAcknowledged ? 'Acknowledged' : 'Acknowledge'}
-                        </Button>
+                      <div className="grid gap-2 rounded-md border border-neutral-200 p-2">
+                        <label className="flex flex-col text-[11px] font-medium text-neutral-600">
+                          Baseline ID
+                          <Input
+                            value={formState.baselineId}
+                            onChange={(event) =>
+                              updateOverrideForm(
+                                recommendation.recommendation_id,
+                                'baselineId',
+                                event.target.value,
+                              )
+                            }
+                            placeholder="Baseline UUID"
+                            size="sm"
+                          />
+                        </label>
+                        {recommendation.action === 'reassign' && (
+                          <label className="flex flex-col text-[11px] font-medium text-neutral-600">
+                            Target reviewer ID
+                            <Input
+                              value={formState.reviewerId}
+                              onChange={(event) =>
+                                updateOverrideForm(
+                                  recommendation.recommendation_id,
+                                  'reviewerId',
+                                  event.target.value,
+                                )
+                              }
+                              placeholder="Reviewer UUID"
+                              size="sm"
+                            />
+                          </label>
+                        )}
+                        <label className="flex flex-col text-[11px] font-medium text-neutral-600">
+                          Notes
+                          <Input
+                            value={formState.notes}
+                            onChange={(event) =>
+                              updateOverrideForm(
+                                recommendation.recommendation_id,
+                                'notes',
+                                event.target.value,
+                              )
+                            }
+                            placeholder="Optional notes"
+                            size="sm"
+                          />
+                        </label>
+                        <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={overrideMutation.isPending}
+                            onClick={() => handleOverrideAction(recommendation, 'accept')}
+                          >
+                            Accept
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={overrideMutation.isPending}
+                            onClick={() => handleOverrideAction(recommendation, 'decline')}
+                          >
+                            Decline
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={overrideMutation.isPending}
+                            onClick={() => handleOverrideAction(recommendation, 'execute')}
+                          >
+                            Execute
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant={isAcknowledged ? 'secondary' : 'ghost'}
+                            onClick={() =>
+                              toggleAcknowledgedRecommendation(recommendation.recommendation_id)
+                            }
+                            aria-pressed={isAcknowledged}
+                          >
+                            {isAcknowledged ? 'Acknowledged' : 'Acknowledge'}
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </Alert>
