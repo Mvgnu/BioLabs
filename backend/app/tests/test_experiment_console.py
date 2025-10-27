@@ -1,5 +1,8 @@
 from datetime import datetime, timezone, timedelta
+import io
+import json
 import uuid
+import zipfile
 
 from .conftest import TestingSessionLocal
 from app import models
@@ -372,3 +375,127 @@ def test_generate_execution_narrative_export(client):
     ).json()
     assert "queue" in jobs_snapshot
     assert "status_counts" in jobs_snapshot
+
+
+def test_narrative_export_with_multidomain_evidence(client):
+    headers = get_headers(client)
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Evidence Protocol", "content": "Prep\nCapture"},
+        headers=headers,
+    ).json()
+
+    session = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Evidence Run"},
+        headers=headers,
+    ).json()
+
+    exec_id = session["execution"]["id"]
+
+    timeline_seed = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/timeline",
+        headers=headers,
+    ).json()
+    assert timeline_seed["events"]
+    primary_event_id = timeline_seed["events"][0]["id"]
+
+    notebook_entry = client.post(
+        "/api/notebook/entries",
+        json={"title": "Run Notes", "content": "Observations"},
+        headers=headers,
+    ).json()
+
+    db = TestingSessionLocal()
+    try:
+        exec_uuid = uuid.UUID(exec_id)
+        now = datetime.now(timezone.utc)
+        analytics_event = models.ExecutionEvent(
+            execution_id=exec_uuid,
+            event_type="analytics.snapshot.secondary",
+            payload={"label": "Secondary Snapshot", "metrics": {"yield": {"value": 0.88}}},
+            sequence=210,
+            created_at=now,
+        )
+        qc_event = models.ExecutionEvent(
+            execution_id=exec_uuid,
+            event_type="qc.metric.calibration",
+            payload={"label": "Calibration", "readings": [{"name": "OD", "value": 0.42}]},
+            sequence=211,
+            created_at=now,
+        )
+        remediation_event = models.ExecutionEvent(
+            execution_id=exec_uuid,
+            event_type="remediation.report.followup",
+            payload={"label": "Follow up", "actions": ["notify:team"]},
+            sequence=212,
+            created_at=now,
+        )
+        db.add_all([analytics_event, qc_event, remediation_event])
+        db.commit()
+        analytics_id = str(analytics_event.id)
+        qc_id = str(qc_event.id)
+        remediation_id = str(remediation_event.id)
+    finally:
+        db.close()
+
+    export_resp = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
+        json={
+            "notes": "Multi-domain bundle",
+            "attachments": [
+                {"event_id": primary_event_id, "label": "Session created"},
+                {
+                    "type": "notebook_entry",
+                    "reference_id": notebook_entry["id"],
+                    "context": {"include_content": True},
+                },
+                {
+                    "type": "analytics_snapshot",
+                    "reference_id": analytics_id,
+                },
+                {
+                    "type": "qc_metric",
+                    "reference_id": qc_id,
+                },
+                {
+                    "type": "remediation_report",
+                    "reference_id": remediation_id,
+                    "context": {"audience": "compliance"},
+                },
+            ],
+        },
+        headers=headers,
+    )
+    assert export_resp.status_code == 200
+    export_payload = export_resp.json()
+    assert len(export_payload["attachments"]) == 5
+    evidence_types = {item["evidence_type"] for item in export_payload["attachments"]}
+    assert "notebook_entry" in evidence_types
+    assert "analytics_snapshot" in evidence_types
+    assert "qc_metric" in evidence_types
+    assert "remediation_report" in evidence_types
+
+    history_snapshot = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
+        headers=headers,
+    ).json()
+    export_record = next(
+        item for item in history_snapshot["exports"] if item["id"] == export_payload["id"]
+    )
+    assert export_record["artifact_download_path"]
+    artifact_resp = client.get(export_record["artifact_download_path"], headers=headers)
+    assert artifact_resp.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(artifact_resp.content))
+    manifest = json.loads(archive.read("attachments.json").decode("utf-8"))
+    manifest_types = {entry["type"] for entry in manifest}
+    assert "notebook_entry" in manifest_types
+    assert "analytics_snapshot" in manifest_types
+    assert "qc_metric" in manifest_types
+    assert "remediation_report" in manifest_types
+    analytics_entry = next(entry for entry in manifest if entry["type"] == "analytics_snapshot")
+    assert analytics_entry["event"]["payload_path"].endswith(".json")
+    notebook_entry_manifest = next(entry for entry in manifest if entry["type"] == "notebook_entry")
+    assert notebook_entry_manifest["notebook"]["path"].endswith(".md")
+    archive.close()

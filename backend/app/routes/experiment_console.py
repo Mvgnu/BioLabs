@@ -1581,41 +1581,113 @@ async def create_execution_narrative_export(
     export_record.meta = payload.metadata or {}
     export_record.requested_by = user
 
+    def _resolve_event(event_id: UUID) -> models.ExecutionEvent:
+        event = event_map.get(event_id)
+        if not event:
+            event = (
+                db.query(models.ExecutionEvent)
+                .options(joinedload(models.ExecutionEvent.actor))
+                .filter(
+                    models.ExecutionEvent.id == event_id,
+                    models.ExecutionEvent.execution_id == exec_uuid,
+                )
+                .first()
+            )
+        if not event:
+            raise HTTPException(
+                status_code=404,
+                detail="Referenced timeline event not found for export attachment",
+            )
+        return event
+
     attachments_summary: list[dict[str, Any]] = []
     for attachment in payload.attachments:
-        if attachment.event_id:
-            event = event_map.get(attachment.event_id)
-            if not event:
-                event = (
-                    db.query(models.ExecutionEvent)
-                    .options(joinedload(models.ExecutionEvent.actor))
-                    .filter(
-                        models.ExecutionEvent.id == attachment.event_id,
-                        models.ExecutionEvent.execution_id == exec_uuid,
-                    )
-                    .first()
-                )
-            if not event:
-                raise HTTPException(
-                    status_code=404,
-                    detail="Referenced timeline event not found for export attachment",
-                )
+        evidence_type = attachment.type or "timeline_event"
+        evidence_context = dict(attachment.context or {})
+        if evidence_type in {
+            "timeline_event",
+            "analytics_snapshot",
+            "qc_metric",
+            "remediation_report",
+        }:
+            event = _resolve_event(attachment.reference_id)
+            payload_snapshot = event.payload or {}
+            base_snapshot = {
+                "event_type": event.event_type,
+                "payload": payload_snapshot,
+                "created_at": event.created_at.isoformat(),
+                "actor_id": str(event.actor_id) if event.actor_id else None,
+            }
+            if evidence_type == "analytics_snapshot":
+                metrics = payload_snapshot.get("metrics") if isinstance(payload_snapshot, dict) else None
+                if isinstance(metrics, dict):
+                    base_snapshot["metric_rollup"] = {
+                        "count": len(metrics),
+                        "keys": sorted(metrics.keys()),
+                    }
+            if evidence_type == "qc_metric":
+                readings = payload_snapshot.get("readings") if isinstance(payload_snapshot, dict) else None
+                if isinstance(readings, list):
+                    numeric_values = [r.get("value") for r in readings if isinstance(r, dict) and isinstance(r.get("value"), (int, float))]
+                    if numeric_values:
+                        base_snapshot["readings_summary"] = {
+                            "min": min(numeric_values),
+                            "max": max(numeric_values),
+                            "avg": sum(numeric_values) / len(numeric_values),
+                        }
+            if evidence_type == "remediation_report":
+                actions = payload_snapshot.get("actions") if isinstance(payload_snapshot, dict) else None
+                if isinstance(actions, list):
+                    base_snapshot["actions"] = actions
             evidence = models.ExecutionNarrativeExportAttachment(
-                evidence_type="timeline_event",
+                evidence_type=evidence_type,
                 reference_id=event.id,
                 label=attachment.label,
-                snapshot={
-                    "event_type": event.event_type,
-                    "payload": event.payload or {},
-                    "created_at": event.created_at.isoformat(),
-                    "actor_id": str(event.actor_id) if event.actor_id else None,
-                },
+                snapshot=base_snapshot,
+                hydration_context=evidence_context,
             )
             export_record.attachments.append(evidence)
-        else:
+        elif evidence_type == "notebook_entry":
+            entry = (
+                db.query(models.NotebookEntry)
+                .filter(models.NotebookEntry.id == attachment.reference_id)
+                .first()
+            )
+            if not entry:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Referenced notebook entry not found for export attachment",
+                )
+            author = None
+            if entry.created_by:
+                author = (
+                    db.query(models.User)
+                    .filter(models.User.id == entry.created_by)
+                    .first()
+                )
+            preview = entry.content[:500] if entry.content else ""
+            if preview and len(entry.content) > 500:
+                preview = f"{preview}…"
+            notebook_snapshot: dict[str, Any] = {
+                "title": entry.title,
+                "created_at": entry.created_at.isoformat() if entry.created_at else None,
+                "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
+                "author_id": str(entry.created_by) if entry.created_by else None,
+                "author_name": author.full_name if author else None,
+                "preview": preview,
+            }
+            evidence = models.ExecutionNarrativeExportAttachment(
+                evidence_type="notebook_entry",
+                reference_id=entry.id,
+                label=attachment.label or entry.title,
+                snapshot=notebook_snapshot,
+                hydration_context=evidence_context,
+            )
+            export_record.attachments.append(evidence)
+        elif evidence_type == "file":
             file_obj = (
                 db.query(models.File)
-                .filter(models.File.id == attachment.file_id)
+                .filter(models.File.id == attachment.reference_id)
                 .first()
             )
             if not file_obj:
@@ -1633,9 +1705,15 @@ async def create_execution_narrative_export(
                     "file_type": file_obj.file_type,
                     "file_size": file_obj.file_size,
                 },
+                hydration_context=evidence_context,
             )
             evidence.file = file_obj
             export_record.attachments.append(evidence)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported attachment type '{evidence_type}'",
+            )
 
     db.add(export_record)
     db.flush()
@@ -1645,6 +1723,7 @@ async def create_execution_narrative_export(
             "type": record.evidence_type,
             "reference_id": str(record.reference_id),
             "label": record.label,
+            "context": record.hydration_context or {},
         }
         for record in export_record.attachments
     ]

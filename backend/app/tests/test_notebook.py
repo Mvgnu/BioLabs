@@ -1,13 +1,21 @@
 import uuid
-from .conftest import client
+
+from .conftest import TestingSessionLocal
+from app import models
+from app.auth import create_access_token
 
 
 def get_headers(client):
-    resp = client.post(
-        "/api/auth/register",
-        json={"email": f"{uuid.uuid4()}@ex.com", "password": "secret"},
-    )
-    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+    email = f"{uuid.uuid4()}@ex.com"
+    token = create_access_token({"sub": email})
+    db = TestingSessionLocal()
+    try:
+        user = models.User(email=email, hashed_password="placeholder")
+        db.add(user)
+        db.commit()
+    finally:
+        db.close()
+    return {"Authorization": f"Bearer {token}"}
 
 
 def test_notebook_crud(client):
@@ -42,6 +50,35 @@ def test_notebook_crud(client):
     assert del_resp.status_code == 200
     list_after = client.get("/api/notebook/entries", headers=headers)
     assert all(e["id"] != entry_id for e in list_after.json())
+
+
+def test_notebook_evidence_listing(client):
+    headers = get_headers(client)
+    client.post(
+        "/api/notebook/entries",
+        json={"title": "Evidence Note", "content": "Observations"},
+        headers=headers,
+    ).json()
+    client.post(
+        "/api/notebook/entries",
+        json={"title": "Later Note", "content": "Details"},
+        headers=headers,
+    ).json()
+
+    page = client.get("/api/notebook/entries/evidence", headers=headers)
+    assert page.status_code == 200
+    payload = page.json()
+    assert payload["items"], "expected notebook evidence descriptors"
+    descriptor = payload["items"][0]
+    assert descriptor["type"] == "notebook_entry"
+    assert descriptor["snapshot"]["created_at"] is not None
+    if payload["next_cursor"]:
+        next_page = client.get(
+            "/api/notebook/entries/evidence",
+            params={"cursor": payload["next_cursor"]},
+            headers=headers,
+        )
+        assert next_page.status_code == 200
 
 
 def test_notebook_export(client):

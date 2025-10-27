@@ -529,17 +529,51 @@ class ExecutionNarrativeAttachmentIn(BaseModel):
     # purpose: capture user-selected evidence references for bundling
     # inputs: export creation request payload
     # outputs: normalized reference metadata for persistence
-    # status: pilot
+    # status: enhanced
+    type: Literal[
+        "timeline_event",
+        "file",
+        "notebook_entry",
+        "analytics_snapshot",
+        "qc_metric",
+        "remediation_report",
+    ] | None = Field(default=None, serialization_alias="kind")
+    reference_id: UUID | None = None
     event_id: UUID | None = None
     file_id: UUID | None = None
+    notebook_entry_id: UUID | None = None
+    analytics_event_id: UUID | None = None
+    qc_event_id: UUID | None = None
+    remediation_event_id: UUID | None = None
     label: str | None = None
+    context: Dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def validate_reference(self) -> "ExecutionNarrativeAttachmentIn":
-        has_event = self.event_id is not None
-        has_file = self.file_id is not None
-        if has_event == has_file:
-            raise ValueError("Exactly one of event_id or file_id must be provided for attachments")
+        identifiers = {
+            "timeline_event": self.event_id,
+            "file": self.file_id,
+            "notebook_entry": self.notebook_entry_id,
+            "analytics_snapshot": self.analytics_event_id,
+            "qc_metric": self.qc_event_id,
+            "remediation_report": self.remediation_event_id,
+        }
+        if self.reference_id is not None and self.type:
+            identifiers[self.type] = self.reference_id
+
+        provided = {k: v for k, v in identifiers.items() if v is not None}
+        if not provided:
+            raise ValueError("At least one reference identifier must be provided for attachments")
+        if len(provided) > 1:
+            raise ValueError("Provide exactly one reference identifier for each attachment")
+
+        resolved_type, resolved_id = next(iter(provided.items()))
+        if self.type is None:
+            self.type = resolved_type
+        elif self.type != resolved_type:
+            raise ValueError("Attachment type does not match provided reference identifier")
+
+        self.reference_id = resolved_id
         return self
 
 
@@ -547,13 +581,51 @@ class ExecutionNarrativeExportAttachmentOut(BaseModel):
     """Serialized export attachment providing evidence context."""
 
     id: UUID
-    evidence_type: Literal["timeline_event", "file"]
+    evidence_type: Literal[
+        "timeline_event",
+        "file",
+        "notebook_entry",
+        "analytics_snapshot",
+        "qc_metric",
+        "remediation_report",
+    ]
     reference_id: UUID
     label: str | None = None
     snapshot: Dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias="hydration_context",
+        serialization_alias="hydration_context",
+    )
     file: Optional[FileOut] = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class NarrativeEvidenceDescriptor(BaseModel):
+    """Lightweight descriptor surfaced for evidence selection UIs."""
+
+    # purpose: provide paginated selection metadata for narrative evidence domains
+    # inputs: evidence discovery endpoints
+    # outputs: context required to assemble narrative attachments
+    # status: enhanced
+    id: UUID
+    type: Literal[
+        "notebook_entry",
+        "analytics_snapshot",
+        "qc_metric",
+        "remediation_report",
+    ]
+    label: str
+    snapshot: Dict[str, Any] = Field(default_factory=dict)
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class NarrativeEvidencePage(BaseModel):
+    """Paginated response for evidence discovery endpoints."""
+
+    items: list[NarrativeEvidenceDescriptor] = Field(default_factory=list)
+    next_cursor: str | None = None
 
 
 class ExecutionNarrativeExport(BaseModel):

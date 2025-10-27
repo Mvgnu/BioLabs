@@ -67,6 +67,22 @@ def _build_export_artifact_payload(
     archive.writestr("narrative.md", export.content)
     archive.writestr("export.json", json.dumps(export_metadata, indent=2, default=str))
 
+    def _safe_name(base: str, fallback: str, extension: str = "") -> str:
+        sanitized = re.sub(r"[^A-Za-z0-9_.-]", "_", base or "")
+        if not sanitized:
+            sanitized = fallback
+        if extension and not sanitized.endswith(extension):
+            sanitized = f"{sanitized}{extension}"
+        return sanitized
+
+    def _load_event(event_id: UUID) -> models.ExecutionEvent | None:
+        return (
+            db_session.query(models.ExecutionEvent)
+            .options(joinedload(models.ExecutionEvent.actor))
+            .filter(models.ExecutionEvent.id == event_id)
+            .first()
+        )
+
     for index, attachment in enumerate(export.attachments, start=1):
         manifest_entry: dict[str, Any] = {
             "id": str(attachment.id),
@@ -74,7 +90,9 @@ def _build_export_artifact_payload(
             "reference_id": str(attachment.reference_id),
             "label": attachment.label,
             "snapshot": attachment.snapshot or {},
+            "context": attachment.hydration_context or {},
         }
+
         if attachment.evidence_type == "file" and attachment.file_id:
             file_obj = attachment.file
             if not file_obj:
@@ -87,7 +105,7 @@ def _build_export_artifact_payload(
                 raise FileNotFoundError("Attachment file missing for export packaging")
             file_bytes = load_binary_payload(file_obj.storage_path)
             safe_label = attachment.label or file_obj.filename or f"attachment-{index}"
-            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", safe_label) or f"attachment-{index}.bin"
+            safe_name = _safe_name(safe_label, f"attachment-{index}.bin")
             file_path = f"attachments/files/{index:02d}-{safe_name}"
             archive.writestr(file_path, file_bytes)
             manifest_entry["file"] = {
@@ -97,6 +115,46 @@ def _build_export_artifact_payload(
                 "size": file_obj.file_size,
                 "type": file_obj.file_type,
             }
+        elif attachment.evidence_type == "notebook_entry":
+            entry = (
+                db_session.query(models.NotebookEntry)
+                .filter(models.NotebookEntry.id == attachment.reference_id)
+                .first()
+            )
+            if not entry:
+                raise FileNotFoundError("Notebook entry missing for export packaging")
+            safe_label = attachment.label or entry.title or f"notebook-{index}"
+            safe_name = _safe_name(safe_label, f"notebook-{index}", ".md")
+            file_path = f"attachments/notebooks/{index:02d}-{safe_name}"
+            archive.writestr(file_path, entry.content or "")
+            manifest_entry["notebook"] = {
+                "title": entry.title,
+                "path": file_path,
+                "created_at": entry.created_at.isoformat() if entry.created_at else None,
+                "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
+            }
+        elif attachment.evidence_type in {
+            "timeline_event",
+            "analytics_snapshot",
+            "qc_metric",
+            "remediation_report",
+        }:
+            event = _load_event(attachment.reference_id)
+            if not event:
+                raise FileNotFoundError("Timeline event missing for export packaging")
+            manifest_entry["event"] = {
+                "id": str(event.id),
+                "type": event.event_type,
+                "actor_id": str(event.actor_id) if event.actor_id else None,
+                "created_at": event.created_at.isoformat(),
+            }
+            payload = event.payload or {}
+            if attachment.evidence_type in {"analytics_snapshot", "qc_metric", "remediation_report"}:
+                safe_label = attachment.label or attachment.evidence_type.replace("_", "-")
+                safe_name = _safe_name(safe_label, f"event-{index}", ".json")
+                file_path = f"attachments/events/{index:02d}-{safe_name}"
+                archive.writestr(file_path, json.dumps(payload, indent=2, default=str))
+                manifest_entry["event"]["payload_path"] = file_path
         attachments_manifest.append(manifest_entry)
 
     archive.writestr(
