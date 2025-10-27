@@ -745,6 +745,26 @@ class ExecutionNarrativeWorkflowTemplateOut(
     updated_at: datetime
     published_at: datetime | None = None
     forked_from_id: UUID | None = None
+    published_snapshot_id: UUID | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExecutionNarrativeWorkflowTemplateSnapshotOut(BaseModel):
+    """Serialized governance template snapshot representation."""
+
+    # purpose: expose immutable lifecycle snapshots for governance tooling
+    # inputs: snapshot ORM rows
+    # outputs: API-safe payload with serialized snapshot metadata
+    # status: pilot
+    id: UUID
+    template_id: UUID
+    template_key: str
+    version: int
+    status: str
+    captured_at: datetime
+    captured_by_id: UUID
+    snapshot_payload: Dict[str, Any]
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -792,6 +812,7 @@ class ExecutionNarrativeExport(BaseModel):
     approval_completed_at: datetime | None = None
     approval_stage_count: int = 0
     workflow_template_id: UUID | None = None
+    workflow_template_snapshot_id: UUID | None = None
     workflow_template_key: str | None = None
     workflow_template_version: int | None = None
     workflow_template_snapshot: Dict[str, Any] = Field(default_factory=dict)
@@ -838,6 +859,7 @@ class ExecutionNarrativeExportRequest(BaseModel):
     notes: str | None = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
     workflow_template_id: UUID | None = None
+    workflow_template_snapshot_id: UUID | None = None
     approval_stages: list[ExecutionNarrativeApprovalStageDefinition] = Field(
         default_factory=list
     )

@@ -19,6 +19,76 @@ def _require_admin(user: models.User) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin privileges required")
 
 
+def _record_template_audit(
+    db: Session,
+    *,
+    template_id: UUID,
+    actor_id: UUID,
+    action: str,
+    snapshot_id: UUID | None = None,
+    detail: dict | None = None,
+) -> None:
+    """Persist governance lifecycle audit events."""
+
+    # purpose: centralize governance lifecycle telemetry persistence
+    # inputs: database session, lifecycle metadata, acting user and snapshot identifiers
+    # outputs: GovernanceTemplateAuditLog row capturing lifecycle action context
+    # status: pilot
+    entry = models.GovernanceTemplateAuditLog(
+        template_id=template_id,
+        snapshot_id=snapshot_id,
+        actor_id=actor_id,
+        action=action,
+        detail=detail or {},
+    )
+    db.add(entry)
+
+
+def _create_template_snapshot(
+    db: Session,
+    *,
+    template: models.ExecutionNarrativeWorkflowTemplate,
+    actor_id: UUID,
+) -> models.ExecutionNarrativeWorkflowTemplateSnapshot:
+    """Persist the current template payload as an immutable snapshot."""
+
+    # purpose: bind governance templates to immutable payloads for export enforcement
+    # inputs: template ORM entity, acting user identifier
+    # outputs: stored snapshot instance for downstream export binding
+    # status: pilot
+    payload = {
+        "template_id": str(template.id),
+        "template_key": template.template_key,
+        "version": template.version,
+        "name": template.name,
+        "description": template.description,
+        "default_stage_sla_hours": template.default_stage_sla_hours,
+        "permitted_roles": template.permitted_roles or [],
+        "stage_blueprint": template.stage_blueprint or [],
+        "status": template.status,
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+    }
+    snapshot = models.ExecutionNarrativeWorkflowTemplateSnapshot(
+        template_id=template.id,
+        template_key=template.template_key,
+        version=template.version,
+        status=template.status,
+        captured_by_id=actor_id,
+    )
+    snapshot.snapshot_payload = payload
+    db.add(snapshot)
+    db.flush()
+    _record_template_audit(
+        db,
+        template_id=template.id,
+        actor_id=actor_id,
+        action="template.snapshot.created",
+        snapshot_id=snapshot.id,
+        detail={"version": template.version, "status": template.status},
+    )
+    return snapshot
+
+
 @router.get(
     "/templates",
     response_model=list[schemas.ExecutionNarrativeWorkflowTemplateOut],
@@ -31,7 +101,10 @@ def list_workflow_templates(
     _require_admin(user)
     query = db.query(models.ExecutionNarrativeWorkflowTemplate)
     if not include_all:
-        query = query.filter(models.ExecutionNarrativeWorkflowTemplate.is_latest.is_(True))
+        query = query.filter(
+            models.ExecutionNarrativeWorkflowTemplate.is_latest.is_(True),
+            models.ExecutionNarrativeWorkflowTemplate.status != "archived",
+        )
     templates = (
         query.order_by(
             models.ExecutionNarrativeWorkflowTemplate.template_key.asc(),
@@ -124,6 +197,91 @@ def create_workflow_template(
         is_latest=True,
     )
     db.add(template)
+    db.flush()
+    _record_template_audit(
+        db,
+        template_id=template.id,
+        actor_id=user.id,
+        action="template.created",
+        detail={"version": version, "status": status_value},
+    )
+    if template.status == "published":
+        snapshot = _create_template_snapshot(db, template=template, actor_id=user.id)
+        template.published_snapshot_id = snapshot.id
+        template.published_at = template.published_at or now
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@router.post(
+    "/templates/{template_id}/publish",
+    response_model=schemas.ExecutionNarrativeWorkflowTemplateOut,
+)
+def publish_workflow_template(
+    template_id: UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Transition a governance template into the published state."""
+
+    _require_admin(user)
+    template = db.get(models.ExecutionNarrativeWorkflowTemplate, template_id)
+    if not template:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    if template.status == "archived":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Archived templates cannot be republished",
+        )
+    if template.status == "published":
+        return template
+    snapshot = _create_template_snapshot(db, template=template, actor_id=user.id)
+    template.status = "published"
+    template.published_at = datetime.now(timezone.utc)
+    template.updated_at = template.published_at
+    template.published_snapshot_id = snapshot.id
+    template.is_latest = True
+    _record_template_audit(
+        db,
+        template_id=template.id,
+        actor_id=user.id,
+        action="template.published",
+        snapshot_id=snapshot.id,
+        detail={"version": template.version},
+    )
+    db.commit()
+    db.refresh(template)
+    return template
+
+
+@router.post(
+    "/templates/{template_id}/archive",
+    response_model=schemas.ExecutionNarrativeWorkflowTemplateOut,
+)
+def archive_workflow_template(
+    template_id: UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Archive a governance template and exclude it from active listings."""
+
+    _require_admin(user)
+    template = db.get(models.ExecutionNarrativeWorkflowTemplate, template_id)
+    if not template:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    if template.status == "archived":
+        return template
+    template.status = "archived"
+    template.updated_at = datetime.now(timezone.utc)
+    template.is_latest = False
+    _record_template_audit(
+        db,
+        template_id=template.id,
+        actor_id=user.id,
+        action="template.archived",
+        detail={"version": template.version},
+    )
     db.commit()
     db.refresh(template)
     return template
@@ -166,6 +324,11 @@ def create_template_assignment(
     template = db.get(models.ExecutionNarrativeWorkflowTemplate, template_id)
     if not template:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Template not found")
+    if template.status == "archived":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot assign archived templates",
+        )
     if not assignment_in.team_id and not assignment_in.protocol_template_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

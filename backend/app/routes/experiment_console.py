@@ -1571,8 +1571,23 @@ async def create_execution_narrative_export(
     )
 
     template_record: models.ExecutionNarrativeWorkflowTemplate | None = None
+    snapshot_record: models.ExecutionNarrativeWorkflowTemplateSnapshot | None = None
+    if payload.workflow_template_snapshot_id:
+        snapshot_record = (
+            db.query(models.ExecutionNarrativeWorkflowTemplateSnapshot)
+            .filter(
+                models.ExecutionNarrativeWorkflowTemplateSnapshot.id
+                == payload.workflow_template_snapshot_id
+            )
+            .first()
+        )
+        if not snapshot_record:
+            raise HTTPException(status_code=404, detail="Workflow template snapshot not found")
+        template_record = snapshot_record.template
+        if not template_record:
+            raise HTTPException(status_code=404, detail="Workflow template not found")
     if payload.workflow_template_id:
-        template_record = (
+        template_record = template_record or (
             db.query(models.ExecutionNarrativeWorkflowTemplate)
             .filter(
                 models.ExecutionNarrativeWorkflowTemplate.id
@@ -1582,6 +1597,16 @@ async def create_execution_narrative_export(
         )
         if not template_record:
             raise HTTPException(status_code=404, detail="Workflow template not found")
+        if not snapshot_record:
+            raise HTTPException(
+                status_code=400,
+                detail="Workflow template exports require a published snapshot",
+            )
+        if snapshot_record.template_id != template_record.id:
+            raise HTTPException(
+                status_code=400,
+                detail="Snapshot does not belong to supplied workflow template",
+            )
 
     export_record = models.ExecutionNarrativeExport(
         execution_id=exec_uuid,
@@ -1595,6 +1620,8 @@ async def create_execution_narrative_export(
     )
     export_record.meta = payload.metadata or {}
     export_record.workflow_template_id = payload.workflow_template_id
+    if snapshot_record:
+        export_record.workflow_template_snapshot_id = snapshot_record.id
     export_record.requested_by = user
 
     stage_blueprints: list[schemas.ExecutionNarrativeApprovalStageDefinition] = []
@@ -1603,51 +1630,61 @@ async def create_execution_narrative_export(
     if payload.approval_stages:
         stage_blueprints = list(payload.approval_stages)
 
-    if template_record:
-        template_snapshot = {
-            "template_id": str(template_record.id),
-            "template_key": template_record.template_key,
-            "version": template_record.version,
-            "name": template_record.name,
-            "description": template_record.description,
-            "default_stage_sla_hours": template_record.default_stage_sla_hours,
-            "permitted_roles": template_record.permitted_roles or [],
-            "stage_blueprint": template_record.stage_blueprint or [],
-            "status": template_record.status,
-        }
+    if snapshot_record:
+        if snapshot_record.status != "published":
+            raise HTTPException(
+                status_code=400,
+                detail="Only published snapshots can seed exports",
+            )
+        if template_record.status != "published":
+            raise HTTPException(
+                status_code=409,
+                detail="Workflow template must be published",
+            )
+        if stage_blueprints:
+            raise HTTPException(
+                status_code=400,
+                detail="Published templates cannot be overridden during export",
+            )
+        template_snapshot = snapshot_record.snapshot_payload or {}
         export_record.workflow_template_key = template_record.template_key
         export_record.workflow_template_version = template_record.version
         export_record.workflow_template_snapshot = template_snapshot
 
-        if not stage_blueprints:
-            for stage_data in template_record.stage_blueprint or []:
-                if not isinstance(stage_data, dict):
-                    raise HTTPException(
-                        status_code=422,
-                        detail="Template stage blueprint must be an object",
-                    )
-                stage_payload: dict[str, Any] = dict(stage_data)
-                stage_payload.setdefault(
-                    "sla_hours",
-                    stage_payload.get("sla_hours")
-                    or template_record.default_stage_sla_hours,
+        snapshot_stages = template_snapshot.get("stage_blueprint", [])
+        for stage_data in snapshot_stages:
+            if not isinstance(stage_data, dict):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Snapshot stage blueprint must be an object",
                 )
-                stage_payload.setdefault(
-                    "metadata",
-                    stage_payload.get("metadata") or {},
-                )
-                try:
-                    resolved_stage = (
-                        schemas.ExecutionNarrativeApprovalStageDefinition.model_validate(
-                            stage_payload
-                        )
+            stage_payload: dict[str, Any] = dict(stage_data)
+            stage_payload.setdefault(
+                "sla_hours",
+                stage_payload.get("sla_hours")
+                or template_snapshot.get("default_stage_sla_hours"),
+            )
+            stage_payload.setdefault(
+                "metadata",
+                stage_payload.get("metadata") or {},
+            )
+            try:
+                resolved_stage = (
+                    schemas.ExecutionNarrativeApprovalStageDefinition.model_validate(
+                        stage_payload
                     )
-                except ValidationError as exc:
-                    raise HTTPException(
-                        status_code=422,
-                        detail="Invalid stage blueprint in workflow template",
-                    ) from exc
-                stage_blueprints.append(resolved_stage)
+                )
+            except ValidationError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Invalid stage blueprint in workflow snapshot",
+                ) from exc
+            stage_blueprints.append(resolved_stage)
+    elif template_record:
+        raise HTTPException(
+            status_code=400,
+            detail="Workflow template exports require a snapshot reference",
+        )
 
     if not stage_blueprints:
         stage_blueprints = [
@@ -1655,7 +1692,7 @@ async def create_execution_narrative_export(
                 required_role="approver",
             )
         ]
-    elif not template_record:
+    else:
         export_record.workflow_template_snapshot = template_snapshot or {}
 
     referenced_user_ids: set[UUID] = set()
@@ -1874,6 +1911,19 @@ async def create_execution_narrative_export(
         }
         for record in export_record.attachments
     ]
+
+    if snapshot_record:
+        audit_entry = models.GovernanceTemplateAuditLog(
+            template_id=snapshot_record.template_id,
+            snapshot_id=snapshot_record.id,
+            actor_id=user.id,
+            action="export.snapshot.bound",
+            detail={
+                "export_id": str(export_record.id),
+                "execution_id": str(exec_uuid),
+            },
+        )
+        db.add(audit_entry)
 
     record_execution_event(
         db,

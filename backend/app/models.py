@@ -219,6 +219,14 @@ class ExecutionNarrativeWorkflowTemplate(Base):
         nullable=False,
     )
     published_at = Column(DateTime, nullable=True)
+    published_snapshot_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "execution_narrative_workflow_template_snapshots.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     is_latest = Column(Boolean, default=True, nullable=False)
 
     created_by = relationship("User")
@@ -230,11 +238,103 @@ class ExecutionNarrativeWorkflowTemplate(Base):
         back_populates="template",
         cascade="all, delete-orphan",
     )
+    published_snapshot = relationship(
+        "ExecutionNarrativeWorkflowTemplateSnapshot",
+        foreign_keys=[published_snapshot_id],
+    )
+    snapshots = relationship(
+        "ExecutionNarrativeWorkflowTemplateSnapshot",
+        back_populates="template",
+        cascade="all, delete-orphan",
+        order_by="ExecutionNarrativeWorkflowTemplateSnapshot.captured_at.desc()",
+        foreign_keys="ExecutionNarrativeWorkflowTemplateSnapshot.template_id",
+    )
 
     __table_args__ = (
         sa.UniqueConstraint("template_key", "version", name="uq_template_key_version"),
+        sa.CheckConstraint(
+            "status IN ('draft', 'published', 'archived')",
+            name="ck_template_lifecycle_status",
+        ),
     )
 
+
+class ExecutionNarrativeWorkflowTemplateSnapshot(Base):
+    __tablename__ = "execution_narrative_workflow_template_snapshots"
+
+    # purpose: persist immutable governance template payloads for lifecycle enforcement
+    # status: pilot
+    # depends_on: execution_narrative_workflow_templates
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "execution_narrative_workflow_templates.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+    template_key = Column(String, nullable=False)
+    version = Column(Integer, nullable=False)
+    status = Column(String, nullable=False)
+    captured_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    captured_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    snapshot_payload = Column(JSON, default=dict, nullable=False)
+
+    template = relationship(
+        "ExecutionNarrativeWorkflowTemplate",
+        back_populates="snapshots",
+        foreign_keys=[template_id],
+    )
+    captured_by = relationship("User")
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "template_id",
+            "version",
+            name="uq_template_snapshot_version",
+        ),
+        sa.CheckConstraint(
+            "status IN ('draft', 'published', 'archived')",
+            name="ck_template_snapshot_status",
+        ),
+    )
+
+
+class GovernanceTemplateAuditLog(Base):
+    __tablename__ = "governance_template_audit_logs"
+
+    # purpose: track governance template lifecycle events and export bindings
+    # status: pilot
+    # depends_on: execution_narrative_workflow_templates
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "execution_narrative_workflow_templates.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    snapshot_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "execution_narrative_workflow_template_snapshots.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
+    actor_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    action = Column(String, nullable=False)
+    detail = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    template = relationship("ExecutionNarrativeWorkflowTemplate")
+    snapshot = relationship("ExecutionNarrativeWorkflowTemplateSnapshot")
+    actor = relationship("User")
 
 class ExecutionNarrativeWorkflowTemplateAssignment(Base):
     __tablename__ = "execution_narrative_workflow_template_assignments"
@@ -318,6 +418,14 @@ class ExecutionNarrativeExport(Base):
         ForeignKey("execution_narrative_workflow_templates.id", ondelete="SET NULL"),
         nullable=True,
     )
+    workflow_template_snapshot_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "execution_narrative_workflow_template_snapshots.id",
+            ondelete="SET NULL",
+        ),
+        nullable=True,
+    )
     workflow_template_key = Column(String, nullable=True)
     workflow_template_version = Column(Integer, nullable=True)
     workflow_template_snapshot = Column(JSON, default=dict)
@@ -356,6 +464,10 @@ class ExecutionNarrativeExport(Base):
     workflow_template = relationship(
         "ExecutionNarrativeWorkflowTemplate",
         foreign_keys=[workflow_template_id],
+    )
+    workflow_template_snapshot_record = relationship(
+        "ExecutionNarrativeWorkflowTemplateSnapshot",
+        foreign_keys=[workflow_template_snapshot_id],
     )
     attachments = relationship(
         "ExecutionNarrativeExportAttachment",
