@@ -9,10 +9,12 @@ import {
   useRemediateExperimentStep,
   useUpdateExperimentStep,
 } from '../../hooks/useExperimentConsole'
+import { useCurrentUser } from '../../hooks/useCurrentUser'
 import type { ExperimentRemediationResult } from '../../types'
 import Timeline from '../components/Timeline'
 import ExportsPanel from '../components/ExportsPanel'
 import GovernanceAnalyticsPanel from '../components/Analytics/AnalyticsPanel'
+import { BaselinesPanel } from '../components/Baselines'
 
 const statusColors: Record<string, string> = {
   pending: 'bg-neutral-200 text-neutral-800',
@@ -114,6 +116,7 @@ export default function ExperimentConsolePage() {
   }, [params])
 
   const sessionQuery = useExperimentSession(executionId ?? null)
+  const { data: currentUser } = useCurrentUser()
   const stepMutation = useUpdateExperimentStep(executionId ?? null)
   const advanceMutation = useAdvanceExperimentStep(executionId ?? null)
   const remediationMutation = useRemediateExperimentStep(executionId ?? null)
@@ -188,6 +191,10 @@ export default function ExperimentConsolePage() {
   }
 
   const session = sessionQuery.data
+  const canManageBaselines = Boolean(
+    currentUser?.is_admin ||
+      (currentUser?.id && session.execution.run_by && currentUser.id === session.execution.run_by),
+  )
   const parsedAction = pendingAction ? parseAction(pendingAction) : null
 
   const updateStep = (stepIndex: number, status: 'in_progress' | 'completed') => {
@@ -366,6 +373,14 @@ export default function ExperimentConsolePage() {
             {formatDateTime(session.execution.created_at)}
           </p>
         </header>
+
+        <BaselinesPanel
+          executionId={executionId}
+          templateId={session.protocol.id}
+          templateName={session.protocol.name}
+          canManage={canManageBaselines}
+          currentUserId={currentUser?.id}
+        />
 
         <GovernanceAnalyticsPanel executionId={executionId} />
 

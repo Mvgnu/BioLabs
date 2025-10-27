@@ -1,8 +1,14 @@
 import api from './client'
 import type {
+  BaselinePublishRequest,
+  BaselineReviewDecision,
+  BaselineRollbackRequest,
+  BaselineSubmissionDraft,
+  GovernanceBaselineCollection,
+  GovernanceBaselineVersion,
   GovernanceTemplate,
-  GovernanceTemplateDraft,
   GovernanceTemplateAssignment,
+  GovernanceTemplateDraft,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -74,5 +80,57 @@ export const governanceApi = {
   async deleteAssignment(assignmentId: string) {
     await api.delete(`/api/governance/assignments/${assignmentId}`)
     return assignmentId
+  },
+  async listBaselines(params?: { execution_id?: string; template_id?: string }) {
+    const response = await api.get<GovernanceBaselineCollection>(
+      '/api/governance/baselines',
+      {
+        params,
+      },
+    )
+    return response.data
+  },
+  async getBaseline(baselineId: string) {
+    const response = await api.get<GovernanceBaselineVersion>(
+      `/api/governance/baselines/${baselineId}`,
+    )
+    return response.data
+  },
+  async submitBaseline(payload: BaselineSubmissionDraft) {
+    const response = await api.post<GovernanceBaselineVersion>(
+      '/api/governance/baselines/submissions',
+      payload,
+    )
+    return response.data
+  },
+  async reviewBaseline(
+    baselineId: string,
+    payload: BaselineReviewDecision,
+  ) {
+    const response = await api.post<GovernanceBaselineVersion>(
+      `/api/governance/baselines/${baselineId}/review`,
+      payload,
+    )
+    return response.data
+  },
+  async publishBaseline(
+    baselineId: string,
+    payload: BaselinePublishRequest,
+  ) {
+    const response = await api.post<GovernanceBaselineVersion>(
+      `/api/governance/baselines/${baselineId}/publish`,
+      payload,
+    )
+    return response.data
+  },
+  async rollbackBaseline(
+    baselineId: string,
+    payload: BaselineRollbackRequest,
+  ) {
+    const response = await api.post<GovernanceBaselineVersion>(
+      `/api/governance/baselines/${baselineId}/rollback`,
+      payload,
+    )
+    return response.data
   },
 }
