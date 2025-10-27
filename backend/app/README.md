@@ -23,7 +23,12 @@ Compliance administrators can now curate reusable approval ladders through the g
 - `GET /api/governance/templates` (and `/api/governance/templates/{id}`) surfaces template details, including stage blueprints, permitted roles, SLA defaults, and publication status. The optional `include_all` query flag returns historical versions for auditing.
 - `POST /api/governance/templates/{id}/assignments` links templates to teams or protocol templates, allowing contextual rollout of governance policies. Assignments can be enumerated via `GET /api/governance/templates/{id}/assignments` and revoked through `DELETE /api/governance/assignments/{assignment_id}`.
 
-Templates persist to `execution_narrative_workflow_templates` with JSON-encoded stage blueprints and SLA metadata, while assignments live in `execution_narrative_workflow_template_assignments`. Narrative exports referencing a template automatically seed approval stages, stamp the template key/version, and embed a snapshot of the blueprint for audit trails.
+Templates persist to `execution_narrative_workflow_templates` with JSON-encoded stage blueprints and SLA metadata, while assignments live in `execution_narrative_workflow_template_assignments`. Narrative exports referencing a template now require immutable published snapshots sourced from `execution_narrative_workflow_template_snapshots`, ensuring lifecycle enforcement and drift detection. Published/archived transitions emit structured audit entries inside `governance_template_audit_logs` for review.
+
+### Governance CLI
+
+- Run `python -m backend.app.cli migrate-exports` to backfill historical narrative exports with published snapshot identifiers. Use `--dry-run` to preview impact without applying updates.
+- Migration anomalies are appended to `problems/governance_migration.log` for triage alongside broader Problem Tracker workflows.
 
 ## Testing
 

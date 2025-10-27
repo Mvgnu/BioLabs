@@ -46,6 +46,7 @@ def test_template_creation_and_versioning(client):
     assert first_template["status"] == "published"
     assert first_template["is_latest"] is True
     assert len(first_template["stage_blueprint"]) == 2
+    assert first_template["published_snapshot_id"] is not None
 
     second_payload = {
         "template_key": "biosafety",
@@ -139,9 +140,20 @@ def test_export_creation_uses_template_blueprint(client):
     finally:
         db.close()
 
+    publish_resp = client.post(
+        f"/api/governance/templates/{template_id}/publish",
+        headers=headers,
+    )
+    assert publish_resp.status_code == 200
+    snapshot_id = publish_resp.json()["published_snapshot_id"]
+    assert snapshot_id
+
     export_response = client.post(
         f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
-        json={"workflow_template_id": template_id},
+        json={
+            "workflow_template_id": template_id,
+            "workflow_template_snapshot_id": snapshot_id,
+        },
         headers=headers,
     )
     assert export_response.status_code == 200
@@ -153,5 +165,6 @@ def test_export_creation_uses_template_blueprint(client):
     assert export_payload["approval_stages"][0]["required_role"] == "qa_lead"
     assert export_payload["approval_stages"][1]["required_role"] == "compliance"
     snapshot = export_payload["workflow_template_snapshot"]
+    assert export_payload["workflow_template_snapshot_id"] == snapshot_id
     assert snapshot["stage_blueprint"][0]["name"] == "QA"
     assert snapshot["template_key"] == "compliance"

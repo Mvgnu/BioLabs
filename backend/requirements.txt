@@ -31,3 +31,4 @@ scikit-learn
 matplotlib
 seaborn
 slowapi
+typer

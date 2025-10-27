@@ -1,0 +1,199 @@
+from datetime import datetime, timezone
+import uuid
+
+from app import models
+from app.tests.conftest import TestingSessionLocal
+
+from app.auth import create_access_token
+from app.cli.migrate_templates import migrate_exports
+
+
+def admin_headers():
+    email = f"admin-{uuid.uuid4()}@example.com"
+    token = create_access_token({"sub": email})
+    db = TestingSessionLocal()
+    try:
+        user = models.User(email=email, hashed_password="placeholder", is_admin=True)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        return {"Authorization": f"Bearer {token}"}, user.id
+    finally:
+        db.close()
+
+
+def _create_team(db, name: str, creator_id: uuid.UUID) -> models.Team:
+    team = models.Team(name=name, created_by=creator_id)
+    db.add(team)
+    db.commit()
+    db.refresh(team)
+    return team
+
+
+def test_publish_and_archive_cycle_excludes_archived(client):
+    headers, _ = admin_headers()
+
+    payload = {
+        "template_key": "archive-check",
+        "name": "Archive Check",
+        "description": "Lifecycle validation",
+        "default_stage_sla_hours": 24,
+        "permitted_roles": ["qa_lead"],
+        "stage_blueprint": [{"name": "QA", "required_role": "qa_lead"}],
+        "publish": False,
+    }
+    create_resp = client.post("/api/governance/templates", json=payload, headers=headers)
+    assert create_resp.status_code == 201
+    template = create_resp.json()
+    assert template["status"] == "draft"
+    template_id = template["id"]
+
+    publish_resp = client.post(f"/api/governance/templates/{template_id}/publish", headers=headers)
+    assert publish_resp.status_code == 200
+    published = publish_resp.json()
+    assert published["status"] == "published"
+    assert published["published_snapshot_id"] is not None
+
+    archive_resp = client.post(f"/api/governance/templates/{template_id}/archive", headers=headers)
+    assert archive_resp.status_code == 200
+    archived = archive_resp.json()
+    assert archived["status"] == "archived"
+    assert archived["is_latest"] is False
+
+    list_resp = client.get("/api/governance/templates", headers=headers)
+    assert list_resp.status_code == 200
+    returned_ids = {tpl["id"] for tpl in list_resp.json()}
+    assert template_id not in returned_ids
+
+
+def test_assignment_reassignment_requires_active_template(client):
+    headers, user_id = admin_headers()
+
+    template_payload = {
+        "template_key": "assignment-check",
+        "name": "Assignment Lifecycle",
+        "description": "Assignment validation",
+        "default_stage_sla_hours": 12,
+        "permitted_roles": ["compliance"],
+        "stage_blueprint": [{"name": "Compliance", "required_role": "compliance"}],
+        "publish": True,
+    }
+    template_resp = client.post("/api/governance/templates", json=template_payload, headers=headers)
+    template_id = template_resp.json()["id"]
+
+    db = TestingSessionLocal()
+    try:
+        team = _create_team(db, "GovOps", user_id)
+    finally:
+        db.close()
+
+    assignment_payload = {
+        "template_id": template_id,
+        "team_id": str(team.id),
+    }
+    assignment_resp = client.post(
+        f"/api/governance/templates/{template_id}/assignments",
+        json=assignment_payload,
+        headers=headers,
+    )
+    assert assignment_resp.status_code == 201
+
+    archive_resp = client.post(f"/api/governance/templates/{template_id}/archive", headers=headers)
+    assert archive_resp.status_code == 200
+
+    blocked_resp = client.post(
+        f"/api/governance/templates/{template_id}/assignments",
+        json=assignment_payload,
+        headers=headers,
+    )
+    assert blocked_resp.status_code == 400
+
+    successor_payload = {
+        "template_key": "assignment-check",
+        "name": "Assignment Lifecycle v2",
+        "description": "Assignment validation v2",
+        "default_stage_sla_hours": 18,
+        "permitted_roles": ["compliance"],
+        "stage_blueprint": [{"name": "Compliance", "required_role": "compliance"}],
+        "publish": True,
+        "forked_from_id": template_id,
+    }
+    successor_resp = client.post("/api/governance/templates", json=successor_payload, headers=headers)
+    assert successor_resp.status_code == 201
+    successor_id = successor_resp.json()["id"]
+
+    reassignment_resp = client.post(
+        f"/api/governance/templates/{successor_id}/assignments",
+        json={"template_id": successor_id, "team_id": str(team.id)},
+        headers=headers,
+    )
+    assert reassignment_resp.status_code == 201
+
+
+def test_cli_migration_backfills_snapshot(client):
+    headers, user_id = admin_headers()
+
+    template_payload = {
+        "template_key": "migration-check",
+        "name": "Migration Template",
+        "description": "Migration validation",
+        "default_stage_sla_hours": 8,
+        "permitted_roles": ["qa_lead"],
+        "stage_blueprint": [{"name": "QA", "required_role": "qa_lead"}],
+        "publish": True,
+    }
+    template_resp = client.post("/api/governance/templates", json=template_payload, headers=headers)
+    template_data = template_resp.json()
+    template_id = template_data["id"]
+    snapshot_id = template_data["published_snapshot_id"]
+    template_uuid = uuid.UUID(template_id)
+
+    db = TestingSessionLocal()
+    try:
+        protocol_template = models.ProtocolTemplate(
+            name="Migrated Protocol",
+            content="Step 1",
+            created_by=user_id,
+        )
+        db.add(protocol_template)
+        db.flush()
+
+        execution = models.ProtocolExecution(
+            template_id=protocol_template.id,
+            run_by=user_id,
+            status="completed",
+            params={},
+            result={},
+        )
+        db.add(execution)
+        db.flush()
+
+        export = models.ExecutionNarrativeExport(
+            execution_id=execution.id,
+            version=1,
+            format="markdown",
+            content="legacy",
+            event_count=0,
+            generated_at=datetime.now(timezone.utc),
+            requested_by_id=user_id,
+            approval_status="pending",
+            workflow_template_id=template_uuid,
+        )
+        export.meta = {}
+        db.add(export)
+        db.commit()
+        export_id = export.id
+    finally:
+        db.close()
+
+    summary = migrate_exports(dry_run=False)
+    assert summary["dry_run"] is False
+
+    db = TestingSessionLocal()
+    try:
+        migrated = db.get(models.ExecutionNarrativeExport, export_id)
+        assert migrated.workflow_template_snapshot_id == uuid.UUID(snapshot_id)
+        assert migrated.workflow_template_snapshot["template_id"] == template_id
+        assert migrated.workflow_template_version == 1
+    finally:
+        db.close()
