@@ -86,25 +86,28 @@ describe('GovernanceAnalyticsPanel', () => {
         blocker_churn_index: 0.25,
       },
     ],
-    reviewer_loads: [
+    reviewer_cadence: [
       {
         reviewer_id: 'reviewer-1',
         reviewer_email: 'reviewer@example.com',
         reviewer_name: 'Reviewer Example',
-        assigned_count: 5,
-        completed_count: 5,
-        pending_count: 0,
+        assignment_count: 6,
+        completion_count: 5,
+        pending_count: 1,
+        load_band: 'steady',
         average_latency_minutes: 140,
+        latency_p50_minutes: 120,
+        latency_p90_minutes: 210,
         latency_bands: [
           { label: 'under_2h', count: 1, start_minutes: null, end_minutes: 120 },
           { label: 'two_to_eight_h', count: 3, start_minutes: 120, end_minutes: 480 },
           { label: 'eight_to_day', count: 1, start_minutes: 480, end_minutes: 1440 },
           { label: 'over_day', count: 0, start_minutes: 1440, end_minutes: null },
         ],
-        recent_blocked_ratio: 0.3,
-        baseline_churn: 3.2,
+        blocked_ratio_trailing: 0.3,
+        churn_signal: 3.2,
         rollback_precursor_count: 1,
-        current_publish_streak: 2,
+        publish_streak: 2,
         last_publish_at: '2024-01-02T00:00:00Z',
         streak_alert: false,
       },
@@ -141,6 +144,7 @@ describe('GovernanceAnalyticsPanel', () => {
     expect(screen.getByTestId('ladder-load-chart')).toBeTruthy()
     expect(screen.getByTestId('baseline-lifecycle-card')).toBeTruthy()
     expect(screen.getByTestId('reviewer-load-heatmap')).toBeTruthy()
+    expect(screen.getByTestId('reviewer-cadence-table')).toBeTruthy()
     expect(screen.getByTestId('reviewer-streak-alerts')).toBeTruthy()
     expect(screen.getByText(/Average SLA accuracy/i)).toBeTruthy()
     expect(screen.getByText(/Stage 2/)).toBeTruthy()

@@ -1,6 +1,11 @@
 'use client'
 import React, { useState } from 'react'
 import { useAnalytics, useTrendingItems } from '../hooks/useAnalytics'
+import { useReviewerCadence } from './hooks/useReviewerCadence'
+import {
+  ReviewerCadenceAlerts,
+  ReviewerCadenceTable,
+} from './components'
 import { 
   BarChart, 
   LineChart, 
@@ -14,6 +19,8 @@ export default function AnalyticsPage() {
   const [timeRange, setTimeRange] = useState('7d')
   const { data: inventoryDistribution, isLoading, error } = useAnalytics()
   const { data: trendingItems } = useTrendingItems()
+  const reviewerCadenceQuery = useReviewerCadence()
+  const reviewerCadence = reviewerCadenceQuery.reviewers
 
   if (error) {
     return (
@@ -244,6 +251,47 @@ export default function AnalyticsPage() {
                     } over selected period
                   </p>
                 </div>
+              </div>
+            </div>
+
+            {/* Reviewer Cadence */}
+            <div className="mt-8 grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="lg:col-span-2 bg-white rounded-lg shadow-sm border border-neutral-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-neutral-900">Reviewer Cadence</h3>
+                  <span className="text-xs text-neutral-500">Load bands, latency, churn</span>
+                </div>
+                {reviewerCadenceQuery.isLoading ? (
+                  <LoadingState description="Loading reviewer cadence..." />
+                ) : reviewerCadenceQuery.isError ? (
+                  <p className="text-sm text-rose-600">
+                    Unable to load reviewer cadence analytics at this time.
+                  </p>
+                ) : (
+                  <ReviewerCadenceTable reviewers={reviewerCadence} />
+                )}
+              </div>
+              <div className="bg-white rounded-lg shadow-sm border border-neutral-200 p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-lg font-semibold text-neutral-900">Cadence Alerts</h3>
+                  <span className="text-xs text-neutral-500">Publish streak guardrails</span>
+                </div>
+                {reviewerCadenceQuery.isLoading ? (
+                  <LoadingState description="Checking streak alerts..." />
+                ) : reviewerCadenceQuery.isError ? (
+                  <p className="text-sm text-rose-600">
+                    Unable to load reviewer cadence alerts.
+                  </p>
+                ) : (
+                  <ReviewerCadenceAlerts
+                    reviewers={reviewerCadence}
+                    renderEmptyState={() => (
+                      <p className="text-sm text-neutral-500">
+                        No reviewer publish streak alerts detected for this period.
+                      </p>
+                    )}
+                  />
+                )}
               </div>
             </div>
           </>

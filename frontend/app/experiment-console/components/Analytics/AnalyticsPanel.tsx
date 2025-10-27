@@ -97,9 +97,9 @@ export default function GovernanceAnalyticsPanel({ executionId }: GovernanceAnal
         </CardBody>
       </Card>
       <BaselineLifecycleStats report={analytics} />
-      <ReviewerLoadHeatmap reviewers={analytics.reviewer_loads} />
+      <ReviewerLoadHeatmap reviewers={analytics.reviewer_cadence} />
       <ReviewerStreakAlerts
-        reviewers={analytics.reviewer_loads}
+        reviewers={analytics.reviewer_cadence}
         totalAlerts={analytics.totals.streak_alert_count}
       />
     </section>

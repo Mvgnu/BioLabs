@@ -559,23 +559,26 @@ class GovernanceAnalyticsLatencyBand(BaseModel):
     count: int = 0
 
 
-class GovernanceAnalyticsReviewerLoad(BaseModel):
-    # purpose: represent reviewer-centric throughput metrics for governance dashboards
+class GovernanceReviewerCadenceSummary(BaseModel):
+    # purpose: express RBAC-safe reviewer cadence metrics for throughput analytics
     # inputs: aggregated lifecycle samples derived from compute_governance_analytics
-    # outputs: reviewer heatmap records and cadence streak alert payloads
+    # outputs: reviewer-centric payload powering cadence heatmaps and alerting primitives
     # status: pilot
     reviewer_id: UUID
     reviewer_email: EmailStr | None = None
     reviewer_name: str | None = None
-    assigned_count: int = 0
-    completed_count: int = 0
+    assignment_count: int = 0
+    completion_count: int = 0
     pending_count: int = 0
+    load_band: Literal["light", "steady", "saturated"] = "light"
     average_latency_minutes: float | None = None
+    latency_p50_minutes: float | None = None
+    latency_p90_minutes: float | None = None
     latency_bands: list[GovernanceAnalyticsLatencyBand] = Field(default_factory=list)
-    recent_blocked_ratio: float | None = None
-    baseline_churn: float | None = None
+    blocked_ratio_trailing: float | None = None
+    churn_signal: float | None = None
     rollback_precursor_count: int = 0
-    current_publish_streak: int = 0
+    publish_streak: int = 0
     last_publish_at: datetime | None = None
     streak_alert: bool = False
 
@@ -629,11 +632,11 @@ class GovernanceAnalyticsTotals(BaseModel):
 
 class GovernanceAnalyticsReport(BaseModel):
     # purpose: deliver structured governance analytics response payloads
-    # inputs: preview summary list and aggregate totals
+    # inputs: preview summary list, reviewer cadence aggregates, and totals
     # outputs: API response consumed by governance analytics clients
     # status: pilot
     results: list[GovernanceAnalyticsPreviewSummary] = Field(default_factory=list)
-    reviewer_loads: list[GovernanceAnalyticsReviewerLoad] = Field(default_factory=list)
+    reviewer_cadence: list[GovernanceReviewerCadenceSummary] = Field(default_factory=list)
     totals: GovernanceAnalyticsTotals
 
 
