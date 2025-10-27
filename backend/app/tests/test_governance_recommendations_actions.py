@@ -107,6 +107,60 @@ def test_override_reassign_execution_flow(client):
         db.close()
 
 
+def test_override_execute_is_idempotent(client):
+    operator, headers = create_user_and_headers()
+    team_id = attach_team_membership(operator)
+    execution_id = seed_preview_event(operator, team_id)
+    baseline = _get_current_baseline(execution_id)
+    reviewer = _create_reviewer()
+
+    recommendation_id = f"cadence_overload:{baseline.id}"
+    payload = {
+        "execution_id": str(execution_id),
+        "action": "reassign",
+        "baseline_id": str(baseline.id),
+        "target_reviewer_id": str(reviewer.id),
+        "notes": "Primary execution",
+        "metadata": {"reversible": True},
+    }
+
+    first_response = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/execute",
+        headers=headers,
+        json=payload,
+    )
+    assert first_response.status_code == 200
+    first_body = first_response.json()
+    assert first_body["status"] == "executed"
+
+    second_response = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/execute",
+        headers=headers,
+        json=payload,
+    )
+    assert second_response.status_code == 200
+    second_body = second_response.json()
+    assert second_body["id"] == first_body["id"]
+    assert second_body["status"] == "executed"
+
+    db = TestingSessionLocal()
+    try:
+        refreshed_baseline = db.get(models.GovernanceBaselineVersion, baseline.id)
+        assert refreshed_baseline is not None
+        reviewer_ids = refreshed_baseline.reviewer_ids or []
+        assert reviewer_ids.count(str(reviewer.id)) == 1
+
+        events = (
+            db.query(models.ExecutionEvent)
+            .filter(models.ExecutionEvent.execution_id == execution_id)
+            .filter(models.ExecutionEvent.event_type == "governance.override.action")
+            .all()
+        )
+        assert len(events) == 1, "Idempotent execution should emit a single event"
+    finally:
+        db.close()
+
+
 def test_override_execution_requires_access(client):
     operator, headers = create_user_and_headers()
     team_id = attach_team_membership(operator)
@@ -130,4 +184,79 @@ def test_override_execution_requires_access(client):
         json=payload,
     )
     assert response.status_code in {403, 404}
+
+
+def test_override_reversal_flow(client):
+    operator, headers = create_user_and_headers()
+    team_id = attach_team_membership(operator)
+    execution_id = seed_preview_event(operator, team_id)
+    baseline = _get_current_baseline(execution_id)
+    reviewer = _create_reviewer()
+
+    recommendation_id = f"cadence_overload:{baseline.id}"
+    execute_payload = {
+        "execution_id": str(execution_id),
+        "action": "reassign",
+        "baseline_id": str(baseline.id),
+        "target_reviewer_id": str(reviewer.id),
+        "notes": "Applying override",
+        "metadata": {"reversible": True},
+    }
+
+    execute_response = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/execute",
+        headers=headers,
+        json=execute_payload,
+    )
+    assert execute_response.status_code == 200
+    execute_body = execute_response.json()
+    assert execute_body["status"] == "executed"
+
+    reversal_payload = {
+        "execution_id": str(execution_id),
+        "baseline_id": str(baseline.id),
+        "notes": "Undo override",
+        "metadata": {"reason": "operator_request"},
+    }
+    reverse_response = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/reverse",
+        headers=headers,
+        json=reversal_payload,
+    )
+    assert reverse_response.status_code == 200
+    reverse_body = reverse_response.json()
+    assert reverse_body["status"] == "reversed"
+    assert reverse_body["baseline_id"] == str(baseline.id)
+    assert reverse_body["target_reviewer_id"] == str(reviewer.id)
+
+    repeat_reverse = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/reverse",
+        headers=headers,
+        json=reversal_payload,
+    )
+    assert repeat_reverse.status_code == 200
+    repeat_body = repeat_reverse.json()
+    assert repeat_body["status"] == "reversed"
+    assert repeat_body["id"] == reverse_body["id"]
+
+    db = TestingSessionLocal()
+    try:
+        refreshed_baseline = db.get(models.GovernanceBaselineVersion, baseline.id)
+        assert refreshed_baseline is not None
+        reviewer_ids = refreshed_baseline.reviewer_ids or []
+        assert str(reviewer.id) not in reviewer_ids
+
+        events = (
+            db.query(models.ExecutionEvent)
+            .filter(models.ExecutionEvent.execution_id == execution_id)
+            .filter(models.ExecutionEvent.event_type == "governance.override.action")
+            .order_by(models.ExecutionEvent.created_at.asc())
+            .all()
+        )
+        assert len(events) == 2, "Execute and reverse should emit two events"
+        payloads = [event.payload for event in events]
+        assert payloads[-1].get("status") == "reversed"
+        assert payloads[-1].get("detail", {}).get("reversal") is True
+    finally:
+        db.close()
 
