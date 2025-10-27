@@ -536,6 +536,91 @@ class ExperimentPreviewResponse(BaseModel):
     resource_warnings: list[str] = Field(default_factory=list)
 
 
+class ExperimentScenarioBase(BaseModel):
+    # purpose: normalize persisted scenario payloads for CRUD operations
+    # inputs: scenario metadata including snapshot binding and overrides
+    # outputs: sanitized override payload suitable for storage and preview invocation
+    # status: pilot
+    name: str
+    description: str | None = None
+    workflow_template_snapshot_id: UUID
+    resource_overrides: ExperimentPreviewResourceOverrides | None = None
+    stage_overrides: list[ExperimentPreviewStageOverride] = Field(default_factory=list)
+
+
+class ExperimentScenarioCreate(ExperimentScenarioBase):
+    # purpose: capture scenario creation payload from scientist workspace
+    # status: pilot
+    pass
+
+
+class ExperimentScenarioUpdate(BaseModel):
+    # purpose: allow selective scenario metadata updates
+    # status: pilot
+    name: str | None = None
+    description: str | None = None
+    workflow_template_snapshot_id: UUID | None = None
+    resource_overrides: ExperimentPreviewResourceOverrides | None = None
+    stage_overrides: list[ExperimentPreviewStageOverride] | None = None
+
+
+class ExperimentScenario(BaseModel):
+    # purpose: expose persisted scenario metadata to clients
+    # status: pilot
+    id: UUID
+    execution_id: UUID
+    owner_id: UUID
+    team_id: UUID | None = None
+    workflow_template_snapshot_id: UUID
+    name: str
+    description: str | None = None
+    resource_overrides: ExperimentPreviewResourceOverrides | None = None
+    stage_overrides: list[ExperimentPreviewStageOverride] = Field(default_factory=list)
+    cloned_from_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExperimentScenarioCloneRequest(BaseModel):
+    # purpose: allow naming overrides when cloning scenarios
+    # status: pilot
+    name: str | None = None
+    description: str | None = None
+
+
+class ExperimentScenarioSnapshot(BaseModel):
+    # purpose: summarize workflow template snapshots for scenario workspace selection
+    # status: pilot
+    id: UUID
+    template_id: UUID
+    template_key: str
+    version: int
+    status: str
+    captured_at: datetime
+    captured_by_id: UUID
+    template_name: str | None = None
+
+
+class ExperimentScenarioExecutionSummary(BaseModel):
+    # purpose: provide minimal execution metadata for workspace sidebar context
+    # status: pilot
+    id: UUID
+    template_id: UUID | None = None
+    template_name: str | None = None
+    template_version: str | None = None
+    run_by_id: UUID | None = None
+    status: str | None = None
+
+
+class ExperimentScenarioWorkspace(BaseModel):
+    # purpose: bundle execution context, available snapshots, and saved scenarios
+    # status: pilot
+    execution: ExperimentScenarioExecutionSummary
+    snapshots: list[ExperimentScenarioSnapshot] = Field(default_factory=list)
+    scenarios: list[ExperimentScenario] = Field(default_factory=list)
+
+
 class ExperimentExecutionSessionCreate(BaseModel):
     template_id: UUID
     title: Optional[str] = None

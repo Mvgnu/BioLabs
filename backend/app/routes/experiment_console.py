@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import re
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Sequence
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
@@ -45,6 +46,236 @@ def _build_artifact_download_path(execution_id: UUID, export_id: UUID) -> str:
         f"/api/experiment-console/sessions/{execution_id}/exports/narrative/{export_id}/artifact"
     )
 
+
+def _coerce_uuid_or_none(value: Any) -> UUID | None:
+    """Attempt to coerce arbitrary payload values into UUIDs."""
+
+    # purpose: safely parse override identifiers stored as JSON strings
+    # inputs: untyped value from scenario payloads or overrides
+    # outputs: UUID when parsing succeeds or None otherwise
+    # status: pilot
+    if value in {None, "", 0}:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):  # pragma: no cover - defensive guard
+        return None
+
+
+def _normalize_resource_overrides(
+    payload: dict[str, Any] | None,
+) -> schemas.ExperimentPreviewResourceOverrides | None:
+    """Return sanitized resource override configuration."""
+
+    # purpose: translate persisted scenario resource overrides into schema objects
+    # inputs: raw JSON dict from ExperimentScenario.resource_overrides
+    # outputs: ExperimentPreviewResourceOverrides or None when empty
+    # status: pilot
+    if not isinstance(payload, dict):
+        return None
+    cleaned: dict[str, list[str]] = {}
+    for key in ("inventory_item_ids", "booking_ids", "equipment_ids"):
+        raw_values = payload.get(key)
+        if not isinstance(raw_values, (list, tuple)):
+            continue
+        normalized: list[str] = []
+        for entry in raw_values:
+            value = _coerce_uuid_or_none(entry)
+            if value is not None:
+                normalized.append(str(value))
+        if normalized:
+            cleaned[key] = normalized
+    if not cleaned:
+        return None
+    return schemas.ExperimentPreviewResourceOverrides(**cleaned)
+
+
+def _normalize_stage_overrides(
+    payload: Sequence[dict[str, Any]] | None,
+) -> list[schemas.ExperimentPreviewStageOverride]:
+    """Return sanitized stage override configuration."""
+
+    # purpose: translate persisted scenario stage overrides into schema objects
+    # inputs: list of dict payloads from ExperimentScenario.stage_overrides
+    # outputs: list[ExperimentPreviewStageOverride] sorted by index
+    # status: pilot
+    if not isinstance(payload, (list, tuple)):
+        return []
+    normalized: list[schemas.ExperimentPreviewStageOverride] = []
+    for raw in payload:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            index_value = int(raw.get("index"))
+        except (TypeError, ValueError):
+            continue
+        normalized.append(
+            schemas.ExperimentPreviewStageOverride(
+                index=index_value,
+                sla_hours=
+                raw.get("sla_hours") if isinstance(raw.get("sla_hours"), int) else None,
+                assignee_id=_coerce_uuid_or_none(raw.get("assignee_id")),
+                delegate_id=_coerce_uuid_or_none(raw.get("delegate_id")),
+            )
+        )
+    normalized.sort(key=lambda item: item.index)
+    return normalized
+
+
+def _prepare_resource_override_payload(
+    overrides: schemas.ExperimentPreviewResourceOverrides | None,
+) -> dict[str, list[str]]:
+    """Convert resource override schema into JSON-serialisable payload."""
+
+    # purpose: store scientist-authored resource overrides without UUID objects
+    # inputs: ExperimentPreviewResourceOverrides from API payloads
+    # outputs: dict of identifier lists suitable for JSON persistence
+    # status: pilot
+    if overrides is None:
+        return {}
+    payload = overrides.model_dump(exclude_none=True)
+    sanitized: dict[str, list[str]] = {}
+    for key, values in payload.items():
+        if not isinstance(values, list):
+            continue
+        sanitized[key] = []
+        for entry in values:
+            try:
+                sanitized[key].append(str(UUID(str(entry))))
+            except (TypeError, ValueError):
+                continue
+        if not sanitized[key]:
+            sanitized.pop(key, None)
+    return sanitized
+
+
+def _prepare_stage_override_payload(
+    overrides: Sequence[schemas.ExperimentPreviewStageOverride] | None,
+) -> list[dict[str, Any]]:
+    """Convert stage override schemas into JSON payload."""
+
+    # purpose: persist stage overrides with primitive types for JSON storage
+    # inputs: list of ExperimentPreviewStageOverride
+    # outputs: list of dict payloads with serialisable primitives
+    # status: pilot
+    if not overrides:
+        return []
+    payload: list[dict[str, Any]] = []
+    for override in overrides:
+        override_dict = override.model_dump(exclude_none=True)
+        override_payload: dict[str, Any] = {"index": int(override_dict.get("index", 0))}
+        if "sla_hours" in override_dict:
+            override_payload["sla_hours"] = override_dict["sla_hours"]
+        for key in ("assignee_id", "delegate_id"):
+            value = override_dict.get(key)
+            if value:
+                try:
+                    override_payload[key] = str(UUID(str(value)))
+                except (TypeError, ValueError):
+                    continue
+        payload.append(override_payload)
+    return payload
+
+
+def _get_user_team_ids(db: Session, user: models.User) -> set[UUID]:
+    """Return team memberships for the authenticated user."""
+
+    # purpose: support RBAC decisions across scenario workspace endpoints
+    # inputs: database session and authenticated user record
+    # outputs: set of team UUIDs where the user is a member
+    # status: pilot
+    if user.is_admin:
+        return set()
+    rows = (
+        db.query(models.TeamMember.team_id)
+        .filter(models.TeamMember.user_id == user.id)
+        .all()
+    )
+    return {row[0] for row in rows if row[0] is not None}
+
+
+def _ensure_execution_access(
+    db: Session,
+    execution: models.ProtocolExecution,
+    user: models.User,
+    team_ids: set[UUID] | None = None,
+) -> models.ProtocolTemplate:
+    """Raise when a user lacks permission to interact with the execution."""
+
+    # purpose: centralise RBAC enforcement for scenario workspace endpoints
+    # inputs: execution record, authenticated user, optional cached team ids
+    # outputs: associated protocol template when authorised
+    # status: pilot
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    if user.is_admin or execution.run_by == user.id:
+        template = execution.template or db.get(models.ProtocolTemplate, execution.template_id)
+        if template is None:
+            raise HTTPException(status_code=404, detail="Protocol template not found")
+        return template
+    template = execution.template or db.get(models.ProtocolTemplate, execution.template_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail="Protocol template not found")
+    membership_ids = team_ids if team_ids is not None else _get_user_team_ids(db, user)
+    if template.team_id and membership_ids and template.team_id in membership_ids:
+        return template
+    raise HTTPException(status_code=403, detail="Not authorized for execution workspace")
+
+
+def _resolve_assigned_template_ids(
+    db: Session,
+    template: models.ProtocolTemplate,
+) -> set[UUID]:
+    """Determine governance workflow template ids assigned to the protocol context."""
+
+    # purpose: constrain scenario workspace snapshots to assigned governance templates
+    # inputs: protocol template
+    # outputs: set of workflow template UUIDs bound to the execution context
+    # status: pilot
+    if template is None:
+        return set()
+    filters = [
+        models.ExecutionNarrativeWorkflowTemplateAssignment.protocol_template_id
+        == template.id
+    ]
+    if template.team_id:
+        filters.append(
+            models.ExecutionNarrativeWorkflowTemplateAssignment.team_id == template.team_id
+        )
+    query = db.query(models.ExecutionNarrativeWorkflowTemplateAssignment)
+    if len(filters) == 1:
+        query = query.filter(filters[0])
+    else:
+        query = query.filter(or_(*filters))
+    assignments = query.all()
+    return {assignment.template_id for assignment in assignments if assignment.template_id}
+
+
+def _serialize_scenario(
+    scenario: models.ExperimentScenario,
+) -> schemas.ExperimentScenario:
+    """Convert database scenario row into API schema."""
+
+    # purpose: provide consistent API representation for workspace responses
+    # inputs: ExperimentScenario ORM instance
+    # outputs: ExperimentScenario schema with normalized overrides
+    # status: pilot
+    resource_overrides = _normalize_resource_overrides(scenario.resource_overrides)
+    stage_overrides = _normalize_stage_overrides(scenario.stage_overrides)
+    return schemas.ExperimentScenario(
+        id=scenario.id,
+        execution_id=scenario.execution_id,
+        owner_id=scenario.owner_id,
+        team_id=scenario.team_id,
+        workflow_template_snapshot_id=scenario.workflow_template_snapshot_id,
+        name=scenario.name,
+        description=scenario.description,
+        resource_overrides=resource_overrides,
+        stage_overrides=stage_overrides,
+        cloned_from_id=scenario.cloned_from_id,
+        created_at=scenario.created_at,
+        updated_at=scenario.updated_at,
+    )
 
 def _parse_uuid_list(values: Iterable[Any]) -> list[UUID]:
     """
@@ -1250,6 +1481,438 @@ async def create_execution_session(
     db.refresh(execution)
 
     return _assemble_session(db, execution)
+
+
+@preview_router.get(
+    "/{execution_id}/scenarios",
+    response_model=schemas.ExperimentScenarioWorkspace,
+)
+async def list_execution_scenarios(
+    execution_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Return accessible preview scenarios and available snapshots for an execution."""
+
+    # purpose: power the scientist scenario workspace with persisted simulations
+    # inputs: execution identifier path param, authenticated user
+    # outputs: ExperimentScenarioWorkspace summarising execution, snapshots, and scenarios
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    team_ids = _get_user_team_ids(db, user)
+    template = _ensure_execution_access(db, execution, user, team_ids)
+
+    assigned_template_ids = _resolve_assigned_template_ids(db, template)
+    scenario_query = (
+        db.query(models.ExperimentScenario)
+        .options(
+            joinedload(models.ExperimentScenario.snapshot).joinedload(
+                models.ExecutionNarrativeWorkflowTemplateSnapshot.template
+            )
+        )
+        .filter(models.ExperimentScenario.execution_id == execution.id)
+        .order_by(models.ExperimentScenario.updated_at.desc())
+    )
+    scenario_rows = scenario_query.all()
+
+    accessible_scenarios: list[schemas.ExperimentScenario] = []
+    snapshot_template_ids = set(assigned_template_ids)
+    for scenario in scenario_rows:
+        if user.is_admin or scenario.owner_id == user.id or (
+            scenario.team_id and scenario.team_id in team_ids
+        ):
+            accessible_scenarios.append(_serialize_scenario(scenario))
+            if scenario.snapshot and scenario.snapshot.template_id:
+                snapshot_template_ids.add(scenario.snapshot.template_id)
+
+    snapshot_rows: list[models.ExecutionNarrativeWorkflowTemplateSnapshot] = []
+    if snapshot_template_ids:
+        snapshot_rows = (
+            db.query(models.ExecutionNarrativeWorkflowTemplateSnapshot)
+            .options(
+                joinedload(
+                    models.ExecutionNarrativeWorkflowTemplateSnapshot.template
+                )
+            )
+            .filter(
+                models.ExecutionNarrativeWorkflowTemplateSnapshot.template_id.in_(
+                    list(snapshot_template_ids)
+                )
+            )
+            .order_by(
+                models.ExecutionNarrativeWorkflowTemplateSnapshot.captured_at.desc()
+            )
+            .all()
+        )
+
+    snapshot_payload: dict[UUID, schemas.ExperimentScenarioSnapshot] = {}
+    for snapshot in snapshot_rows:
+        snapshot_payload[snapshot.id] = schemas.ExperimentScenarioSnapshot(
+            id=snapshot.id,
+            template_id=snapshot.template_id,
+            template_key=snapshot.template_key,
+            version=snapshot.version,
+            status=snapshot.status,
+            captured_at=snapshot.captured_at,
+            captured_by_id=snapshot.captured_by_id,
+            template_name=(snapshot.template.name if snapshot.template else None),
+        )
+
+    execution_summary = schemas.ExperimentScenarioExecutionSummary(
+        id=execution.id,
+        template_id=execution.template_id,
+        template_name=template.name if template else None,
+        template_version=str(template.version) if template and template.version else None,
+        run_by_id=execution.run_by,
+        status=execution.status,
+    )
+
+    return schemas.ExperimentScenarioWorkspace(
+        execution=execution_summary,
+        snapshots=list(snapshot_payload.values()),
+        scenarios=accessible_scenarios,
+    )
+
+
+@preview_router.post(
+    "/{execution_id}/scenarios",
+    response_model=schemas.ExperimentScenario,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_execution_scenario(
+    execution_id: str,
+    payload: schemas.ExperimentScenarioCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Persist a new preview scenario scoped to an execution."""
+
+    # purpose: allow scientists to capture reusable preview configurations
+    # inputs: execution identifier path param, scenario creation payload
+    # outputs: ExperimentScenario schema for the persisted scenario
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    team_ids = _get_user_team_ids(db, user)
+    template = _ensure_execution_access(db, execution, user, team_ids)
+
+    snapshot = db.get(
+        models.ExecutionNarrativeWorkflowTemplateSnapshot,
+        payload.workflow_template_snapshot_id,
+    )
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Workflow template snapshot not found")
+
+    assigned_template_ids = _resolve_assigned_template_ids(db, template)
+    if assigned_template_ids and snapshot.template_id not in assigned_template_ids:
+        raise HTTPException(
+            status_code=403,
+            detail="Snapshot is not assigned to this execution context",
+        )
+
+    scenario = models.ExperimentScenario(
+        execution_id=execution.id,
+        owner_id=user.id,
+        team_id=template.team_id,
+        workflow_template_snapshot_id=snapshot.id,
+        name=payload.name,
+        description=payload.description,
+        resource_overrides=_prepare_resource_override_payload(
+            payload.resource_overrides
+        ),
+        stage_overrides=_prepare_stage_override_payload(payload.stage_overrides),
+    )
+    db.add(scenario)
+
+    record_execution_event(
+        db,
+        execution,
+        "scenario.saved",
+        {
+            "scenario_id": str(scenario.id),
+            "snapshot_id": str(snapshot.id),
+            "name": payload.name,
+        },
+        user,
+    )
+
+    db.commit()
+    db.refresh(scenario)
+
+    return _serialize_scenario(scenario)
+
+
+@preview_router.put(
+    "/{execution_id}/scenarios/{scenario_id}",
+    response_model=schemas.ExperimentScenario,
+)
+async def update_execution_scenario(
+    execution_id: str,
+    scenario_id: str,
+    payload: schemas.ExperimentScenarioUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Update scenario metadata and overrides."""
+
+    # purpose: support iterative refinement of saved scenarios
+    # inputs: execution and scenario identifiers plus update payload
+    # outputs: refreshed ExperimentScenario representation
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+        scenario_uuid = UUID(scenario_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid identifier") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    scenario = (
+        db.query(models.ExperimentScenario)
+        .filter(
+            models.ExperimentScenario.id == scenario_uuid,
+            models.ExperimentScenario.execution_id == execution.id,
+        )
+        .first()
+    )
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    team_ids = _get_user_team_ids(db, user)
+    template = _ensure_execution_access(db, execution, user, team_ids)
+
+    if not (user.is_admin or scenario.owner_id == user.id):
+        raise HTTPException(status_code=403, detail="Only the owner may update this scenario")
+
+    if payload.name is not None:
+        scenario.name = payload.name
+    if payload.description is not None:
+        scenario.description = payload.description
+
+    if payload.workflow_template_snapshot_id is not None:
+        snapshot = db.get(
+            models.ExecutionNarrativeWorkflowTemplateSnapshot,
+            payload.workflow_template_snapshot_id,
+        )
+        if not snapshot:
+            raise HTTPException(status_code=404, detail="Workflow template snapshot not found")
+        assigned_template_ids = _resolve_assigned_template_ids(db, template)
+        if assigned_template_ids and snapshot.template_id not in assigned_template_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="Snapshot is not assigned to this execution context",
+            )
+        scenario.workflow_template_snapshot_id = snapshot.id
+
+    if payload.resource_overrides is not None:
+        scenario.resource_overrides = _prepare_resource_override_payload(
+            payload.resource_overrides
+        )
+    if payload.stage_overrides is not None:
+        scenario.stage_overrides = _prepare_stage_override_payload(
+            payload.stage_overrides
+        )
+
+    record_execution_event(
+        db,
+        execution,
+        "scenario.updated",
+        {
+            "scenario_id": str(scenario.id),
+            "name": scenario.name,
+        },
+        user,
+    )
+
+    db.add(scenario)
+    db.commit()
+    db.refresh(scenario)
+
+    return _serialize_scenario(scenario)
+
+
+@preview_router.post(
+    "/{execution_id}/scenarios/{scenario_id}/clone",
+    response_model=schemas.ExperimentScenario,
+    status_code=status.HTTP_201_CREATED,
+)
+async def clone_execution_scenario(
+    execution_id: str,
+    scenario_id: str,
+    payload: schemas.ExperimentScenarioCloneRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Clone an existing scenario into a new record owned by the requester."""
+
+    # purpose: enable scientists to branch scenarios without manual re-entry
+    # inputs: execution id, source scenario id, optional clone metadata overrides
+    # outputs: ExperimentScenario representing the newly cloned scenario
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+        scenario_uuid = UUID(scenario_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid identifier") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    source = (
+        db.query(models.ExperimentScenario)
+        .options(
+            joinedload(models.ExperimentScenario.snapshot)
+        )
+        .filter(
+            models.ExperimentScenario.id == scenario_uuid,
+            models.ExperimentScenario.execution_id == execution.id,
+        )
+        .first()
+    )
+    if not source:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    team_ids = _get_user_team_ids(db, user)
+    template = _ensure_execution_access(db, execution, user, team_ids)
+
+    if not (
+        user.is_admin
+        or source.owner_id == user.id
+        or (source.team_id and source.team_id in team_ids)
+    ):
+        raise HTTPException(status_code=403, detail="Not authorized to clone this scenario")
+
+    cloned = models.ExperimentScenario(
+        execution_id=execution.id,
+        owner_id=user.id,
+        team_id=template.team_id,
+        workflow_template_snapshot_id=source.workflow_template_snapshot_id,
+        name=payload.name or f"{source.name} Copy",
+        description=payload.description if payload.description is not None else source.description,
+        resource_overrides=copy.deepcopy(source.resource_overrides or {}),
+        stage_overrides=copy.deepcopy(source.stage_overrides or []),
+        cloned_from_id=source.id,
+    )
+    db.add(cloned)
+
+    record_execution_event(
+        db,
+        execution,
+        "scenario.cloned",
+        {
+            "scenario_id": str(cloned.id),
+            "source_scenario_id": str(source.id),
+        },
+        user,
+    )
+
+    db.commit()
+    db.refresh(cloned)
+
+    return _serialize_scenario(cloned)
+
+
+@preview_router.delete(
+    "/{execution_id}/scenarios/{scenario_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_execution_scenario(
+    execution_id: str,
+    scenario_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Remove a persisted scenario."""
+
+    # purpose: allow scientists to curate scenario workspace storage
+    # inputs: execution id and scenario id
+    # outputs: empty response with 204 status code on success
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+        scenario_uuid = UUID(scenario_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid identifier") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    scenario = (
+        db.query(models.ExperimentScenario)
+        .filter(
+            models.ExperimentScenario.id == scenario_uuid,
+            models.ExperimentScenario.execution_id == execution.id,
+        )
+        .first()
+    )
+    if not scenario:
+        raise HTTPException(status_code=404, detail="Scenario not found")
+
+    team_ids = _get_user_team_ids(db, user)
+    _ensure_execution_access(db, execution, user, team_ids)
+
+    if not (user.is_admin or scenario.owner_id == user.id):
+        raise HTTPException(status_code=403, detail="Only the owner may delete this scenario")
+
+    record_execution_event(
+        db,
+        execution,
+        "scenario.deleted",
+        {
+            "scenario_id": str(scenario.id),
+            "name": scenario.name,
+        },
+        user,
+    )
+
+    db.delete(scenario)
+    db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @preview_router.post(

@@ -453,6 +453,68 @@ export interface ExperimentPreviewResponse {
   resource_warnings: string[]
 }
 
+export interface ExperimentScenario {
+  id: string
+  execution_id: string
+  owner_id: string
+  team_id?: string | null
+  workflow_template_snapshot_id: string
+  name: string
+  description?: string | null
+  resource_overrides?: ExperimentPreviewResourceOverrides
+  stage_overrides: ExperimentPreviewStageOverride[]
+  cloned_from_id?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ExperimentScenarioSnapshot {
+  id: string
+  template_id: string
+  template_key: string
+  version: number
+  status: string
+  captured_at: string
+  captured_by_id: string
+  template_name?: string | null
+}
+
+export interface ExperimentScenarioExecutionSummary {
+  id: string
+  template_id?: string | null
+  template_name?: string | null
+  template_version?: string | null
+  run_by_id?: string | null
+  status?: string | null
+}
+
+export interface ExperimentScenarioWorkspace {
+  execution: ExperimentScenarioExecutionSummary
+  snapshots: ExperimentScenarioSnapshot[]
+  scenarios: ExperimentScenario[]
+}
+
+export interface ExperimentScenarioCreateRequest {
+  name: string
+  description?: string | null
+  workflow_template_snapshot_id: string
+  resource_overrides?: ExperimentPreviewResourceOverrides
+  stage_overrides?: ExperimentPreviewStageOverride[]
+}
+
+export interface ExperimentScenarioUpdateRequest {
+  name?: string | null
+  description?: string | null
+  workflow_template_snapshot_id?: string
+  resource_overrides?: ExperimentPreviewResourceOverrides
+  stage_overrides?: ExperimentPreviewStageOverride[]
+}
+
+export interface ExperimentScenarioCloneRequest {
+  name?: string | null
+  description?: string | null
+}
+
 export interface NarrativeExportAttachmentInput {
   event_id?: string
   file_id?: string

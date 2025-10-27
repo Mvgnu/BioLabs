@@ -163,6 +163,57 @@ class ProtocolExecution(Base):
         cascade="all, delete-orphan",
         order_by="ExecutionEvent.sequence",
     )
+    template = relationship("ProtocolTemplate")
+    runner = relationship("User")
+
+
+class ExperimentScenario(Base):
+    __tablename__ = "experiment_preview_scenarios"
+
+    # purpose: persist scientist-authored preview scenarios scoped to executions
+    # status: pilot
+    # depends_on: protocol_executions, users, teams, execution_narrative_workflow_template_snapshots
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    workflow_template_snapshot_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "execution_narrative_workflow_template_snapshots.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    resource_overrides = Column(JSON, default=dict, nullable=False)
+    stage_overrides = Column(JSON, default=list, nullable=False)
+    cloned_from_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("experiment_preview_scenarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    execution = relationship("ProtocolExecution")
+    owner = relationship("User")
+    team = relationship("Team")
+    snapshot = relationship("ExecutionNarrativeWorkflowTemplateSnapshot")
+    cloned_from = relationship("ExperimentScenario", remote_side=[id])
 
 
 class ExecutionEvent(Base):

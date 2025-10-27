@@ -66,3 +66,60 @@ highlight which stages are impacted when scientists adjust overrides.
 ```
 
 Front-end clients persist preview history in `localStorage` so scientists can compare multiple simulations before publishing template changes. The updated modal and ladder widget surface simulated vs baseline SLA projections, assignee deltas, blocker diffs, and mapped steps so teams can immediately understand how overrides diverge from production baselines.
+
+## Scenario Workspace API
+
+- purpose: expose persisted preview scenarios scoped to an execution with RBAC enforcement
+- status: pilot
+
+### Workspace Retrieval
+
+`GET /api/experiments/{execution_id}/scenarios` returns the full workspace bundle:
+
+```json
+{
+  "execution": {
+    "id": "<execution uuid>",
+    "template_id": "<protocol template uuid>",
+    "template_name": "Protocol A",
+    "template_version": "1",
+    "run_by_id": "<user uuid>",
+    "status": "in_progress"
+  },
+  "snapshots": [
+    {
+      "id": "<snapshot uuid>",
+      "template_name": "Baseline Ladder",
+      "version": 2,
+      "status": "published",
+      "captured_at": "2024-04-12T09:21:00Z"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "<scenario uuid>",
+      "name": "Extended SLA",
+      "workflow_template_snapshot_id": "<snapshot uuid>",
+      "stage_overrides": [
+        { "index": 0, "sla_hours": 72, "assignee_id": "<scientist uuid>" }
+      ],
+      "resource_overrides": {
+        "inventory_item_ids": ["<inventory uuid>"]
+      },
+      "created_at": "2024-04-12T10:00:00Z",
+      "updated_at": "2024-04-12T10:05:00Z"
+    }
+  ]
+}
+```
+
+Only administrators, the execution owner, or team members attached to the protocol template are authorised to access the workspace.
+
+### Scenario Lifecycle
+
+- `POST /api/experiments/{execution_id}/scenarios` persists a new scenario bound to the execution, normalising UUIDs and logging a `scenario.saved` execution event.
+- `PUT /api/experiments/{execution_id}/scenarios/{scenario_id}` updates metadata, overrides, or snapshot bindings (owner/admin only).
+- `POST /api/experiments/{execution_id}/scenarios/{scenario_id}/clone` duplicates an existing scenario for rapid iteration, recording a `scenario.cloned` timeline event.
+- `DELETE /api/experiments/{execution_id}/scenarios/{scenario_id}` removes the record and emits `scenario.deleted` for auditability.
+
+The frontend modal (`ScenarioSummary` + updated `PreviewModal`) consumes these APIs via React Query, enabling scientists to iterate on overrides, compare saved scenarios, and run previews without manually copying UUIDs.

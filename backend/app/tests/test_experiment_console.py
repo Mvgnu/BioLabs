@@ -614,3 +614,193 @@ def test_multistage_approval_delegation_and_reset(client):
         headers=headers,
     ).json()["events"]
     assert any(event["event_type"] == "narrative_export.approval.rejected" for event in final_timeline)
+
+
+def _create_preview_snapshot(template_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
+    db = TestingSessionLocal()
+    try:
+        user = db.query(models.User).order_by(models.User.created_at.desc()).first()
+        if not user:
+            user = models.User(email=f"{uuid.uuid4()}@example.com", hashed_password="placeholder")
+            db.add(user)
+            db.flush()
+        template_key = f"governance.baseline.{uuid.uuid4()}"
+        workflow_template = models.ExecutionNarrativeWorkflowTemplate(
+            template_key=template_key,
+            name="Baseline",
+            description="",
+            version=1,
+            stage_blueprint=[{"required_role": "scientist", "name": "Review"}],
+            default_stage_sla_hours=48,
+            permitted_roles=["scientist"],
+            status="published",
+            created_by_id=user.id if user else None,
+        )
+        db.add(workflow_template)
+        db.flush()
+
+        snapshot = models.ExecutionNarrativeWorkflowTemplateSnapshot(
+            template_id=workflow_template.id,
+            template_key=template_key,
+            version=1,
+            status="published",
+            captured_by_id=user.id if user else None,
+            snapshot_payload={
+                "default_stage_sla_hours": 48,
+                "stage_blueprint": [
+                    {
+                        "required_role": "scientist",
+                        "name": "Review",
+                        "sla_hours": 48,
+                        "metadata": {},
+                    }
+                ],
+            },
+        )
+        db.add(snapshot)
+        db.flush()
+
+        assignment = models.ExecutionNarrativeWorkflowTemplateAssignment(
+            template_id=workflow_template.id,
+            protocol_template_id=template_id,
+            created_by_id=user.id,
+        )
+        db.add(assignment)
+        db.commit()
+        return workflow_template.id, snapshot.id
+    finally:
+        db.close()
+
+
+def test_scenario_workspace_crud_flow(client):
+    headers = get_headers(client)
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Scenario Protocol", "content": "Prep"},
+        headers=headers,
+    ).json()
+
+    session_payload = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"]},
+        headers=headers,
+    ).json()
+
+    execution_id = session_payload["execution"]["id"]
+    template_uuid = uuid.UUID(template["id"])
+    _, snapshot_id = _create_preview_snapshot(template_uuid)
+
+    workspace = client.get(
+        f"/api/experiments/{execution_id}/scenarios",
+        headers=headers,
+    )
+    assert workspace.status_code == 200
+    workspace_payload = workspace.json()
+    assert workspace_payload["scenarios"] == []
+    snapshot_ids = {entry["id"] for entry in workspace_payload["snapshots"]}
+    assert str(snapshot_id) in snapshot_ids
+
+    create_resp = client.post(
+        f"/api/experiments/{execution_id}/scenarios",
+        json={
+            "name": "Baseline Check",
+            "description": "confirm baseline",
+            "workflow_template_snapshot_id": str(snapshot_id),
+            "stage_overrides": [{"index": 0, "sla_hours": 72}],
+            "resource_overrides": {"inventory_item_ids": []},
+        },
+        headers=headers,
+    )
+    assert create_resp.status_code == 201
+    scenario_payload = create_resp.json()
+    assert scenario_payload["name"] == "Baseline Check"
+    assert scenario_payload["stage_overrides"][0]["sla_hours"] == 72
+
+    updated = client.put(
+        f"/api/experiments/{execution_id}/scenarios/{scenario_payload['id']}",
+        json={
+            "name": "Updated Scenario",
+            "stage_overrides": [
+                {
+                    "index": 0,
+                    "sla_hours": 60,
+                    "assignee_id": scenario_payload["owner_id"],
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert updated.status_code == 200
+    updated_payload = updated.json()
+    assert updated_payload["name"] == "Updated Scenario"
+    assert updated_payload["stage_overrides"][0]["sla_hours"] == 60
+    assert updated_payload["stage_overrides"][0]["assignee_id"] == scenario_payload["owner_id"]
+
+    clone_resp = client.post(
+        f"/api/experiments/{execution_id}/scenarios/{scenario_payload['id']}/clone",
+        json={"name": "Cloned"},
+        headers=headers,
+    )
+    assert clone_resp.status_code == 201
+    clone_payload = clone_resp.json()
+    assert clone_payload["cloned_from_id"] == scenario_payload["id"]
+    assert clone_payload["stage_overrides"][0]["sla_hours"] == 60
+
+    delete_resp = client.delete(
+        f"/api/experiments/{execution_id}/scenarios/{scenario_payload['id']}",
+        headers=headers,
+    )
+    assert delete_resp.status_code == 204
+
+    final_workspace = client.get(
+        f"/api/experiments/{execution_id}/scenarios",
+        headers=headers,
+    ).json()
+    assert len(final_workspace["scenarios"]) == 1
+    assert final_workspace["scenarios"][0]["name"] == "Cloned"
+
+
+def test_scenario_workspace_rbac_blocks_other_users(client):
+    owner_headers = get_headers(client)
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "RBAC Protocol", "content": "Prep"},
+        headers=owner_headers,
+    ).json()
+
+    session_payload = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"]},
+        headers=owner_headers,
+    ).json()
+    execution_id = session_payload["execution"]["id"]
+    template_uuid = uuid.UUID(template["id"])
+    _, snapshot_id = _create_preview_snapshot(template_uuid)
+
+    create_resp = client.post(
+        f"/api/experiments/{execution_id}/scenarios",
+        json={
+            "name": "Owner Scenario",
+            "workflow_template_snapshot_id": str(snapshot_id),
+        },
+        headers=owner_headers,
+    )
+    assert create_resp.status_code == 201
+    scenario_id = create_resp.json()["id"]
+
+    other_headers = get_headers(client)
+
+    list_attempt = client.get(
+        f"/api/experiments/{execution_id}/scenarios",
+        headers=other_headers,
+    )
+    assert list_attempt.status_code == 403
+
+    update_attempt = client.put(
+        f"/api/experiments/{execution_id}/scenarios/{scenario_id}",
+        json={"name": "Unauthorised"},
+        headers=other_headers,
+    )
+    assert update_attempt.status_code == 403
