@@ -4,6 +4,7 @@ import hashlib
 import io
 import re
 from datetime import datetime, timezone, timedelta
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Sequence
 from uuid import UUID
 
@@ -14,9 +15,9 @@ from sqlalchemy.orm import Session, joinedload
 
 from pydantic import ValidationError
 
-from .. import models, schemas
+from .. import models, schemas, simulation
 from ..eventlog import record_execution_event
-from ..narratives import render_execution_narrative
+from ..narratives import render_execution_narrative, render_preview_narrative
 from ..auth import get_current_user
 from ..database import get_db
 from ..storage import (
@@ -30,6 +31,7 @@ from ..workers.packaging import (
 )
 
 router = APIRouter(prefix="/api/experiment-console", tags=["experiment-console"])
+preview_router = APIRouter(prefix="/api/experiments", tags=["experiment-preview"])
 
 
 def _build_artifact_download_path(execution_id: UUID, export_id: UUID) -> str:
@@ -263,6 +265,82 @@ def _prepare_step_gate_context(
         "global_required_approvals": global_required_approvals,
         "now": datetime.now(timezone.utc),
     }
+
+
+def _apply_preview_resource_overrides(
+    gate_context: dict[str, Any],
+    overrides: schemas.ExperimentPreviewResourceOverrides | None,
+) -> list[str]:
+    """Mutate gate context with simulated resources for preview purposes."""
+
+    # purpose: allow preview simulations to account for hypothetical resources
+    # inputs: prepared gate context and optional override payload
+    # outputs: list of warnings describing ignored overrides or placeholders
+    # status: pilot
+    warnings: list[str] = []
+    if not overrides:
+        return warnings
+
+    now = gate_context.get("now", datetime.now(timezone.utc))
+    inventory_map: dict[UUID, Any] = gate_context.setdefault("inventory", {})
+    booking_map: dict[UUID, Any] = gate_context.setdefault("bookings", {})
+    equipment_map: dict[UUID, Any] = gate_context.setdefault("equipment", {})
+    default_inventory_ids: list[UUID] = gate_context.setdefault("default_inventory_ids", [])
+    default_booking_ids: list[UUID] = gate_context.setdefault("default_booking_ids", [])
+    default_equipment_ids: list[UUID] = gate_context.setdefault("default_equipment_ids", [])
+
+    def _register_inventory(identifier: UUID) -> None:
+        if identifier in inventory_map:
+            return
+        inventory_map[identifier] = SimpleNamespace(
+            id=identifier,
+            name=f"Simulated Inventory {identifier}",
+            status="available",
+        )
+        if identifier not in default_inventory_ids:
+            default_inventory_ids.append(identifier)
+
+    for inventory_id in overrides.inventory_item_ids:
+        if isinstance(inventory_id, UUID):
+            _register_inventory(inventory_id)
+        else:
+            warnings.append(f"Invalid inventory override ignored: {inventory_id}")
+
+    def _register_booking(identifier: UUID) -> None:
+        if identifier in booking_map:
+            return
+        booking_map[identifier] = SimpleNamespace(
+            id=identifier,
+            start_time=now - timedelta(hours=1),
+            end_time=now + timedelta(hours=1),
+        )
+        if identifier not in default_booking_ids:
+            default_booking_ids.append(identifier)
+
+    for booking_id in overrides.booking_ids:
+        if isinstance(booking_id, UUID):
+            _register_booking(booking_id)
+        else:
+            warnings.append(f"Invalid booking override ignored: {booking_id}")
+
+    def _register_equipment(identifier: UUID) -> None:
+        if identifier in equipment_map:
+            return
+        equipment_map[identifier] = SimpleNamespace(
+            id=identifier,
+            name=f"Simulated Equipment {identifier}",
+            status="available",
+        )
+        if identifier not in default_equipment_ids:
+            default_equipment_ids.append(identifier)
+
+    for equipment_id in overrides.equipment_ids:
+        if isinstance(equipment_id, UUID):
+            _register_equipment(equipment_id)
+        else:
+            warnings.append(f"Invalid equipment override ignored: {equipment_id}")
+
+    return warnings
 
 
 def _evaluate_step_gate(
@@ -1172,6 +1250,193 @@ async def create_execution_session(
     db.refresh(execution)
 
     return _assemble_session(db, execution)
+
+
+@preview_router.post(
+    "/{execution_id}/preview",
+    response_model=schemas.ExperimentPreviewResponse,
+)
+def preview_experiment_governance(
+    execution_id: str,
+    payload: schemas.ExperimentPreviewRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Simulate governance ladder outcomes for an experiment execution."""
+
+    # purpose: provide scientist-facing preview of governance impact before publication
+    # inputs: execution identifier path param, preview request payload, authenticated user
+    # outputs: ExperimentPreviewResponse containing stage insights and narrative preview
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    if not execution.template_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Execution missing linked protocol template for preview",
+        )
+
+    template = db.get(models.ProtocolTemplate, execution.template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Linked protocol template not found")
+
+    snapshot = db.get(
+        models.ExecutionNarrativeWorkflowTemplateSnapshot,
+        payload.workflow_template_snapshot_id,
+    )
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Workflow template snapshot not found")
+    if snapshot.status != "published":
+        raise HTTPException(
+            status_code=400,
+            detail="Preview requires a published workflow template snapshot",
+        )
+
+    snapshot_payload = snapshot.snapshot_payload or {}
+    stage_blueprint = []
+    if isinstance(snapshot_payload, dict):
+        blueprint_candidate = snapshot_payload.get("stage_blueprint")
+        if isinstance(blueprint_candidate, list):
+            stage_blueprint = blueprint_candidate
+    default_stage_sla = None
+    if isinstance(snapshot_payload, dict):
+        default_stage_sla = snapshot_payload.get("default_stage_sla_hours")
+        if not isinstance(default_stage_sla, int):
+            default_stage_sla = None
+
+    params = execution.params or {}
+    inventory_ids = _parse_uuid_list(params.get("inventory_item_ids", []))
+    booking_ids = _parse_uuid_list(params.get("booking_ids", []))
+
+    inventory_items = []
+    if inventory_ids:
+        inventory_items = (
+            db.query(models.InventoryItem)
+            .filter(models.InventoryItem.id.in_(inventory_ids))
+            .all()
+        )
+    bookings = []
+    if booking_ids:
+        bookings = (
+            db.query(models.Booking)
+            .filter(models.Booking.id.in_(booking_ids))
+            .all()
+        )
+
+    instructions = _extract_steps(template.content)
+    gate_context = _prepare_step_gate_context(db, execution, inventory_items, bookings)
+    resource_warnings = _apply_preview_resource_overrides(
+        gate_context, payload.resource_overrides
+    )
+    steps = _build_step_states(execution, instructions, gate_context)
+
+    generated_at = datetime.now(timezone.utc)
+    raw_stage_overrides = simulation.normalize_stage_overrides(payload.stage_overrides)
+    stage_overrides: dict[int, dict[str, Any]] = {}
+    total_stages = len(stage_blueprint)
+    for index, override in raw_stage_overrides.items():
+        if index < 0 or index >= total_stages:
+            resource_warnings.append(
+                f"Stage override for index {index} ignored; blueprint has {total_stages} stages"
+            )
+            continue
+        stage_overrides[index] = override
+
+    override_user_ids = {
+        value
+        for config in stage_overrides.values()
+        for value in (config.get("assignee_id"), config.get("delegate_id"))
+        if isinstance(value, UUID)
+    }
+    if override_user_ids:
+        known_users = (
+            db.query(models.User)
+            .filter(models.User.id.in_(list(override_user_ids)))
+            .all()
+        )
+        found_ids = {user.id for user in known_users}
+        for missing_id in sorted(override_user_ids - found_ids):
+            resource_warnings.append(
+                f"User override {missing_id} not found; preview uses placeholder"
+            )
+
+    stage_results = simulation.build_stage_simulation(
+        stage_blueprint,
+        default_stage_sla_hours=default_stage_sla,
+        stage_overrides=stage_overrides,
+        step_states=steps,
+        generated_at=generated_at,
+    )
+
+    insights: list[schemas.ExperimentPreviewStageInsight] = []
+    for result in stage_results:
+        status = result.status if result.status in {"ready", "blocked"} else "ready"
+        insights.append(
+            schemas.ExperimentPreviewStageInsight(
+                index=result.index,
+                name=result.name,
+                required_role=result.required_role,
+                status=status,
+                sla_hours=result.sla_hours,
+                projected_due_at=result.projected_due_at,
+                blockers=result.blockers,
+                required_actions=result.required_actions,
+                auto_triggers=result.auto_triggers,
+                assignee_id=result.assignee_id,
+                delegate_id=result.delegate_id,
+            )
+        )
+
+    narrative_preview = render_preview_narrative(
+        execution,
+        stage_results,
+        template_snapshot=snapshot_payload,
+    )
+
+    audit_entry = models.GovernanceTemplateAuditLog(
+        template_id=snapshot.template_id,
+        snapshot_id=snapshot.id,
+        actor_id=user.id,
+        action="template.preview.generated",
+        detail={
+            "execution_id": str(exec_uuid),
+            "stage_count": len(stage_results),
+            "blocked_stage_count": sum(1 for result in stage_results if result.status == "blocked"),
+            "override_indexes": sorted(stage_overrides.keys()),
+            "warnings": resource_warnings,
+        },
+    )
+    db.add(audit_entry)
+    db.commit()
+
+    template_name = snapshot_payload.get("name") if isinstance(snapshot_payload, dict) else None
+    template_version = None
+    if isinstance(snapshot_payload, dict):
+        version_candidate = snapshot_payload.get("version")
+        if isinstance(version_candidate, int):
+            template_version = version_candidate
+
+    return schemas.ExperimentPreviewResponse(
+        execution_id=exec_uuid,
+        snapshot_id=snapshot.id,
+        generated_at=generated_at,
+        template_name=template_name,
+        template_version=template_version,
+        stage_insights=insights,
+        narrative_preview=narrative_preview,
+        resource_warnings=resource_warnings,
+    )
 
 
 @router.post(

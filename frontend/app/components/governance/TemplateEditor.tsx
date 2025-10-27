@@ -7,6 +7,7 @@ import type {
 } from '../../types'
 import { Button, Card, CardBody, Input, Alert } from '../ui'
 import LadderBuilder from './LadderBuilder'
+import LadderSimulationWidget from './LadderSimulationWidget'
 
 interface TemplateEditorProps {
   draft: GovernanceTemplateDraft
@@ -171,6 +172,11 @@ export default function TemplateEditor({
           </div>
         </CardBody>
       </Card>
+
+      <LadderSimulationWidget
+        stageBlueprint={draft.stage_blueprint}
+        defaultSla={draft.default_stage_sla_hours ?? null}
+      />
 
       <Card>
         <CardBody className="space-y-3">

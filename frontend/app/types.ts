@@ -395,6 +395,50 @@ export interface ExperimentExecutionSession {
   timeline_preview: ExecutionEvent[]
 }
 
+export interface ExperimentPreviewResourceOverrides {
+  inventory_item_ids?: string[]
+  booking_ids?: string[]
+  equipment_ids?: string[]
+}
+
+export interface ExperimentPreviewStageOverride {
+  index: number
+  assignee_id?: string | null
+  delegate_id?: string | null
+  sla_hours?: number | null
+}
+
+export interface ExperimentPreviewRequest {
+  workflow_template_snapshot_id: string
+  resource_overrides?: ExperimentPreviewResourceOverrides
+  stage_overrides?: ExperimentPreviewStageOverride[]
+}
+
+export interface ExperimentPreviewStageInsight {
+  index: number
+  name?: string | null
+  required_role: string
+  status: 'ready' | 'blocked'
+  sla_hours?: number | null
+  projected_due_at?: string | null
+  blockers: string[]
+  required_actions: string[]
+  auto_triggers: string[]
+  assignee_id?: string | null
+  delegate_id?: string | null
+}
+
+export interface ExperimentPreviewResponse {
+  execution_id: string
+  snapshot_id: string
+  generated_at: string
+  template_name?: string | null
+  template_version?: number | null
+  stage_insights: ExperimentPreviewStageInsight[]
+  narrative_preview: string
+  resource_warnings: string[]
+}
+
 export interface NarrativeExportAttachmentInput {
   event_id?: string
   file_id?: string

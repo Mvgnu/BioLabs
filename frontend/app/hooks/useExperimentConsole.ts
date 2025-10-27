@@ -11,6 +11,8 @@ import api from '../api/client'
 import type {
   ExperimentExecutionSession,
   ExperimentExecutionSessionCreate,
+  ExperimentPreviewRequest,
+  ExperimentPreviewResponse,
   ExperimentRemediationRequest,
   ExperimentRemediationResponse,
   ExperimentStepStatusUpdate,
@@ -212,6 +214,23 @@ export const useCreateNarrativeExport = (executionId: string | null) => {
         },
       )
       invalidateTimelineQueries(qc, executionId)
+    },
+  })
+}
+
+export const useExperimentPreview = (executionId: string | null) => {
+  return useMutation({
+    mutationFn: async (
+      payload: ExperimentPreviewRequest,
+    ): Promise<ExperimentPreviewResponse> => {
+      if (!executionId) {
+        throw new Error('Execution id required for governance preview')
+      }
+      const resp = await api.post(
+        `/api/experiments/${executionId}/preview`,
+        payload,
+      )
+      return resp.data as ExperimentPreviewResponse
     },
   })
 }

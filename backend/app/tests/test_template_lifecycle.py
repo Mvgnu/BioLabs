@@ -1,7 +1,8 @@
-from datetime import datetime, timezone
 import uuid
+from datetime import datetime, timezone
 
 from app import models
+
 from app.tests.conftest import TestingSessionLocal
 
 from app.auth import create_access_token
@@ -197,3 +198,133 @@ def test_cli_migration_backfills_snapshot(client):
         assert migrated.workflow_template_version == 1
     finally:
         db.close()
+
+
+def test_preview_endpoint_generates_stage_insights(client):
+    headers, user_id = admin_headers()
+
+    template_payload = {
+        "template_key": "preview-check",
+        "name": "Preview Template",
+        "description": "Preview validation",
+        "default_stage_sla_hours": 24,
+        "permitted_roles": ["scientist"],
+        "stage_blueprint": [
+            {
+                "name": "Scientist Approval",
+                "required_role": "scientist",
+                "sla_hours": 24,
+            }
+        ],
+        "publish": True,
+    }
+    template_resp = client.post("/api/governance/templates", json=template_payload, headers=headers)
+    assert template_resp.status_code == 201
+    template_data = template_resp.json()
+    snapshot_id = uuid.UUID(template_data["published_snapshot_id"])
+
+    db = TestingSessionLocal()
+    try:
+        protocol_template = models.ProtocolTemplate(
+            name="Preview Protocol",
+            content="Step 1\nStep 2",
+            created_by=user_id,
+        )
+        db.add(protocol_template)
+        db.flush()
+
+        execution = models.ProtocolExecution(
+            template_id=protocol_template.id,
+            run_by=user_id,
+            status="pending",
+            params={},
+            result={},
+        )
+        db.add(execution)
+        db.commit()
+        execution_id = execution.id
+    finally:
+        db.close()
+
+    preview_payload = {
+        "workflow_template_snapshot_id": str(snapshot_id),
+        "stage_overrides": [{"index": 0, "sla_hours": 48}],
+    }
+    resp = client.post(
+        f"/api/experiments/{execution_id}/preview",
+        json=preview_payload,
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["snapshot_id"] == str(snapshot_id)
+    assert body["stage_insights"]
+    assert body["stage_insights"][0]["sla_hours"] == 48
+    assert body["narrative_preview"].startswith("# Governance Preview")
+
+    db = TestingSessionLocal()
+    try:
+        audit_entries = (
+            db.query(models.GovernanceTemplateAuditLog)
+            .filter(models.GovernanceTemplateAuditLog.snapshot_id == snapshot_id)
+            .order_by(models.GovernanceTemplateAuditLog.created_at.desc())
+            .all()
+        )
+        assert audit_entries
+        assert any(entry.action == "template.preview.generated" for entry in audit_entries)
+    finally:
+        db.close()
+
+
+def test_preview_requires_published_snapshot(client):
+    headers, user_id = admin_headers()
+
+    template_payload = {
+        "template_key": "preview-status",
+        "name": "Preview Status",
+        "description": "Snapshot status validation",
+        "default_stage_sla_hours": 12,
+        "permitted_roles": ["qa"],
+        "stage_blueprint": [
+            {
+                "name": "QA",
+                "required_role": "qa",
+                "sla_hours": 12,
+            }
+        ],
+        "publish": True,
+    }
+    template_resp = client.post("/api/governance/templates", json=template_payload, headers=headers)
+    template_data = template_resp.json()
+    snapshot_id = uuid.UUID(template_data["published_snapshot_id"])
+
+    db = TestingSessionLocal()
+    try:
+        snapshot = db.get(models.ExecutionNarrativeWorkflowTemplateSnapshot, snapshot_id)
+        snapshot.status = "draft"
+        protocol_template = models.ProtocolTemplate(
+            name="Status Protocol",
+            content="Step 1",
+            created_by=user_id,
+        )
+        db.add(protocol_template)
+        db.flush()
+        execution = models.ProtocolExecution(
+            template_id=protocol_template.id,
+            run_by=user_id,
+            status="pending",
+            params={},
+            result={},
+        )
+        db.add(execution)
+        db.commit()
+        execution_id = execution.id
+    finally:
+        db.close()
+
+    resp = client.post(
+        f"/api/experiments/{execution_id}/preview",
+        json={"workflow_template_snapshot_id": str(snapshot_id)},
+        headers=headers,
+    )
+    assert resp.status_code == 400

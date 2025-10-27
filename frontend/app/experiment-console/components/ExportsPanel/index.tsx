@@ -13,6 +13,7 @@ import {
   useExecutionNarrativeExports,
   useResetNarrativeApprovalStage,
 } from '../../../hooks/useExperimentConsole'
+import PreviewModal from '../PreviewModal'
 
 const statusBadge: Record<string, string> = {
   pending: 'bg-amber-100 text-amber-700 border-amber-200',
@@ -103,6 +104,7 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
   const [delegationInputs, setDelegationInputs] = useState<Record<string, string>>({})
   const [delegationDueInputs, setDelegationDueInputs] = useState<Record<string, string>>({})
   const [stageErrors, setStageErrors] = useState<Record<string, string>>({})
+  const [isPreviewOpen, setPreviewOpen] = useState(false)
 
   const recentEvents = useMemo(() => timelineEvents.slice(0, 10), [timelineEvents])
 
@@ -246,6 +248,7 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
 
   return (
     <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-6">
+      <PreviewModal executionId={executionId} open={isPreviewOpen} onClose={() => setPreviewOpen(false)} />
       <header className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-xl font-semibold">Compliance Narrative Exports</h2>
@@ -253,9 +256,18 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
             Generate persisted Markdown dossiers with bundled evidence and approvals.
           </p>
         </div>
-        <span className="text-xs text-neutral-400">
-          Execution ID: <span className="font-mono">{executionId}</span>
-        </span>
+        <div className="flex flex-col items-start gap-2 md:items-end">
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(true)}
+            className="inline-flex items-center rounded-md border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-sm font-medium text-indigo-700 hover:bg-indigo-100"
+          >
+            Preview Governance Impact
+          </button>
+          <span className="text-xs text-neutral-400">
+            Execution ID: <span className="font-mono">{executionId}</span>
+          </span>
+        </div>
       </header>
 
       <div className="grid gap-4 md:grid-cols-[2fr,1fr]">
