@@ -4,13 +4,15 @@ import hashlib
 import io
 import re
 from datetime import datetime, timezone, timedelta
-from typing import Any, Iterable, Sequence
+from typing import Any, Dict, Iterable, Sequence
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
+
+from pydantic import ValidationError
 
 from .. import models, schemas
 from ..eventlog import record_execution_event
@@ -1568,6 +1570,19 @@ async def create_execution_narrative_export(
         or 0
     )
 
+    template_record: models.ExecutionNarrativeWorkflowTemplate | None = None
+    if payload.workflow_template_id:
+        template_record = (
+            db.query(models.ExecutionNarrativeWorkflowTemplate)
+            .filter(
+                models.ExecutionNarrativeWorkflowTemplate.id
+                == payload.workflow_template_id
+            )
+            .first()
+        )
+        if not template_record:
+            raise HTTPException(status_code=404, detail="Workflow template not found")
+
     export_record = models.ExecutionNarrativeExport(
         execution_id=exec_uuid,
         version=existing_count + 1,
@@ -1582,13 +1597,66 @@ async def create_execution_narrative_export(
     export_record.workflow_template_id = payload.workflow_template_id
     export_record.requested_by = user
 
-    stage_blueprints = payload.approval_stages or []
+    stage_blueprints: list[schemas.ExecutionNarrativeApprovalStageDefinition] = []
+    template_snapshot: Dict[str, Any] = {}
+
+    if payload.approval_stages:
+        stage_blueprints = list(payload.approval_stages)
+
+    if template_record:
+        template_snapshot = {
+            "template_id": str(template_record.id),
+            "template_key": template_record.template_key,
+            "version": template_record.version,
+            "name": template_record.name,
+            "description": template_record.description,
+            "default_stage_sla_hours": template_record.default_stage_sla_hours,
+            "permitted_roles": template_record.permitted_roles or [],
+            "stage_blueprint": template_record.stage_blueprint or [],
+            "status": template_record.status,
+        }
+        export_record.workflow_template_key = template_record.template_key
+        export_record.workflow_template_version = template_record.version
+        export_record.workflow_template_snapshot = template_snapshot
+
+        if not stage_blueprints:
+            for stage_data in template_record.stage_blueprint or []:
+                if not isinstance(stage_data, dict):
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Template stage blueprint must be an object",
+                    )
+                stage_payload: dict[str, Any] = dict(stage_data)
+                stage_payload.setdefault(
+                    "sla_hours",
+                    stage_payload.get("sla_hours")
+                    or template_record.default_stage_sla_hours,
+                )
+                stage_payload.setdefault(
+                    "metadata",
+                    stage_payload.get("metadata") or {},
+                )
+                try:
+                    resolved_stage = (
+                        schemas.ExecutionNarrativeApprovalStageDefinition.model_validate(
+                            stage_payload
+                        )
+                    )
+                except ValidationError as exc:
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Invalid stage blueprint in workflow template",
+                    ) from exc
+                stage_blueprints.append(resolved_stage)
+
     if not stage_blueprints:
         stage_blueprints = [
             schemas.ExecutionNarrativeApprovalStageDefinition(
                 required_role="approver",
             )
         ]
+    elif not template_record:
+        export_record.workflow_template_snapshot = template_snapshot or {}
 
     referenced_user_ids: set[UUID] = set()
     for stage_def in stage_blueprints:
