@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 from uuid import UUID
@@ -43,6 +43,60 @@ async def list_entries(
     user: models.User = Depends(get_current_user),
 ):
     return db.query(models.NotebookEntry).all()
+
+
+@router.get("/entries/evidence", response_model=schemas.NarrativeEvidencePage)
+async def list_entry_evidence(
+    limit: int = Query(default=20, ge=1, le=100),
+    cursor: str | None = None,
+    execution_id: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    query = db.query(models.NotebookEntry).order_by(models.NotebookEntry.created_at.desc())
+    if execution_id:
+        try:
+            exec_uuid = UUID(execution_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid execution id filter") from exc
+        query = query.filter(models.NotebookEntry.execution_id == exec_uuid)
+
+    if cursor:
+        try:
+            cursor_dt = datetime.fromisoformat(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid cursor") from exc
+        query = query.filter(models.NotebookEntry.created_at < cursor_dt)
+
+    entries = query.limit(limit + 1).all()
+    has_more = len(entries) > limit
+    if has_more:
+        entries = entries[:limit]
+    next_cursor = None
+    if has_more and entries:
+        tail = entries[-1]
+        if tail.created_at:
+            next_cursor = tail.created_at.isoformat()
+
+    descriptors = [
+        schemas.NarrativeEvidenceDescriptor(
+            id=entry.id,
+            type="notebook_entry",
+            label=entry.title,
+            snapshot={
+                "created_at": entry.created_at.isoformat() if entry.created_at else None,
+                "updated_at": entry.updated_at.isoformat() if entry.updated_at else None,
+                "author_id": str(entry.created_by) if entry.created_by else None,
+            },
+            context={
+                "execution_id": str(entry.execution_id) if entry.execution_id else None,
+                "project_id": str(entry.project_id) if entry.project_id else None,
+            },
+        )
+        for entry in entries
+    ]
+
+    return schemas.NarrativeEvidencePage(items=descriptors, next_cursor=next_cursor)
 
 @router.get("/entries/{entry_id}", response_model=schemas.NotebookEntryOut)
 async def get_entry(

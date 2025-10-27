@@ -250,7 +250,7 @@ class ExecutionNarrativeExportAttachment(Base):
     __tablename__ = "execution_narrative_export_attachments"
 
     # purpose: associate narrative exports with snapshot evidence references
-    # status: pilot
+    # status: enhanced
     # depends_on: execution_narrative_exports
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -269,6 +269,7 @@ class ExecutionNarrativeExportAttachment(Base):
     )
     label = Column(String, nullable=True)
     snapshot = Column(JSON, default=dict)
+    hydration_context = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
     export = relationship("ExecutionNarrativeExport", back_populates="attachments")
