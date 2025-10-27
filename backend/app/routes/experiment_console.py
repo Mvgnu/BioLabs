@@ -177,6 +177,23 @@ def _prepare_stage_override_payload(
     return payload
 
 
+def _normalize_shared_team_ids(values: Iterable[Any] | None) -> list[str]:
+    """Return sanitized list of team identifiers for sharing metadata."""
+
+    # purpose: harmonize shared team payloads for persistence
+    # inputs: iterable of arbitrary values supplied by clients
+    # outputs: list of UUID strings safe for storage
+    # status: pilot
+    normalized: list[str] = []
+    if not values:
+        return normalized
+    for value in values:
+        team_id = _coerce_uuid_or_none(value)
+        if team_id is not None:
+            normalized.append(str(team_id))
+    return normalized
+
+
 def _get_user_team_ids(db: Session, user: models.User) -> set[UUID]:
     """Return team memberships for the authenticated user."""
 
@@ -262,6 +279,18 @@ def _serialize_scenario(
     # status: pilot
     resource_overrides = _normalize_resource_overrides(scenario.resource_overrides)
     stage_overrides = _normalize_stage_overrides(scenario.stage_overrides)
+    shared_team_ids: list[UUID] = []
+    raw_shared = scenario.shared_team_ids or []
+    for entry in raw_shared:
+        try:
+            shared_team_ids.append(UUID(str(entry)))
+        except (TypeError, ValueError):
+            continue
+
+    expires_at = scenario.expires_at
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
     return schemas.ExperimentScenario(
         id=scenario.id,
         execution_id=scenario.execution_id,
@@ -273,9 +302,130 @@ def _serialize_scenario(
         resource_overrides=resource_overrides,
         stage_overrides=stage_overrides,
         cloned_from_id=scenario.cloned_from_id,
+        folder_id=scenario.folder_id,
+        is_shared=bool(scenario.is_shared),
+        shared_team_ids=shared_team_ids,
+        expires_at=expires_at,
+        timeline_event_id=scenario.timeline_event_id,
         created_at=scenario.created_at,
         updated_at=scenario.updated_at,
     )
+
+
+def _serialize_folder(
+    folder: models.ExperimentScenarioFolder,
+) -> schemas.ExperimentScenarioFolder:
+    """Convert folder ORM row into API schema."""
+
+    # purpose: surface folder metadata for workspace navigation
+    # inputs: ExperimentScenarioFolder ORM row
+    # outputs: ExperimentScenarioFolder schema
+    # status: pilot
+    return schemas.ExperimentScenarioFolder(
+        id=folder.id,
+        execution_id=folder.execution_id,
+        name=folder.name,
+        description=folder.description,
+        owner_id=folder.owner_id,
+        team_id=folder.team_id,
+        visibility=folder.visibility,
+        created_at=folder.created_at,
+        updated_at=folder.updated_at,
+    )
+
+
+def _folder_accessible(
+    folder: models.ExperimentScenarioFolder,
+    user: models.User,
+    team_ids: set[UUID],
+) -> bool:
+    """Return True when the folder is visible to the requester."""
+
+    # purpose: reuse RBAC semantics for folder navigation decisions
+    # inputs: folder ORM row, requesting user, cached team identifiers
+    # outputs: boolean access decision
+    # status: pilot
+    if user.is_admin or folder.owner_id == user.id:
+        return True
+    if folder.visibility == "execution":
+        return True
+    if folder.visibility == "team" and folder.team_id and folder.team_id in team_ids:
+        return True
+    if folder.team_id and folder.team_id in team_ids:
+        return True
+    return False
+
+
+def _scenario_accessible(
+    scenario: models.ExperimentScenario,
+    user: models.User,
+    team_ids: set[UUID],
+) -> bool:
+    """Return True when the scenario is visible to the requester."""
+
+    # purpose: centralise scenario visibility logic with sharing metadata
+    # inputs: scenario ORM row, authenticated user, cached team ids
+    # outputs: boolean access decision used by workspace listing
+    # status: pilot
+    if user.is_admin or scenario.owner_id == user.id:
+        return True
+    if scenario.team_id and scenario.team_id in team_ids:
+        return True
+    if scenario.folder and _folder_accessible(scenario.folder, user, team_ids):
+        return True
+    if scenario.is_shared:
+        shared_memberships = {
+            value
+            for entry in (scenario.shared_team_ids or [])
+            if (value := _coerce_uuid_or_none(entry)) is not None
+        }
+        if shared_memberships & team_ids:
+            return True
+    return False
+
+
+def _validate_folder_assignment(
+    db: Session,
+    execution: models.ProtocolExecution,
+    folder_id: UUID | None,
+    user: models.User,
+    team_ids: set[UUID],
+) -> models.ExperimentScenarioFolder | None:
+    """Ensure a requested folder belongs to the execution and is accessible."""
+
+    # purpose: centralise folder RBAC validation for create/update flows
+    # inputs: database session, execution, requested folder identifier, user context
+    # outputs: ExperimentScenarioFolder or None when not provided
+    # status: pilot
+    if folder_id is None:
+        return None
+    folder = db.get(models.ExperimentScenarioFolder, folder_id)
+    if not folder or folder.execution_id != execution.id:
+        raise HTTPException(status_code=404, detail="Scenario folder not found")
+    if user.is_admin or folder.owner_id == user.id:
+        return folder
+    if not _folder_accessible(folder, user, team_ids):
+        raise HTTPException(status_code=403, detail="Not authorised to use this folder")
+    return folder
+
+
+def _validate_timeline_event_binding(
+    db: Session,
+    execution: models.ProtocolExecution,
+    event_id: UUID | None,
+) -> models.ExecutionEvent | None:
+    """Ensure the referenced timeline event belongs to the execution."""
+
+    # purpose: guarantee timeline anchors reflect execution history
+    # inputs: database session, execution context, optional event id
+    # outputs: ExecutionEvent row or None
+    # status: pilot
+    if event_id is None:
+        return None
+    event = db.get(models.ExecutionEvent, event_id)
+    if not event or event.execution_id != execution.id:
+        raise HTTPException(status_code=404, detail="Timeline event not found")
+    return event
 
 def _parse_uuid_list(values: Iterable[Any]) -> list[UUID]:
     """
@@ -1521,9 +1671,16 @@ async def list_execution_scenarios(
         .options(
             joinedload(models.ExperimentScenario.snapshot).joinedload(
                 models.ExecutionNarrativeWorkflowTemplateSnapshot.template
-            )
+            ),
+            joinedload(models.ExperimentScenario.folder),
         )
         .filter(models.ExperimentScenario.execution_id == execution.id)
+        .filter(
+            or_(
+                models.ExperimentScenario.expires_at.is_(None),
+                models.ExperimentScenario.expires_at > datetime.now(timezone.utc),
+            )
+        )
         .order_by(models.ExperimentScenario.updated_at.desc())
     )
     scenario_rows = scenario_query.all()
@@ -1531,12 +1688,23 @@ async def list_execution_scenarios(
     accessible_scenarios: list[schemas.ExperimentScenario] = []
     snapshot_template_ids = set(assigned_template_ids)
     for scenario in scenario_rows:
-        if user.is_admin or scenario.owner_id == user.id or (
-            scenario.team_id and scenario.team_id in team_ids
-        ):
+        if _scenario_accessible(scenario, user, team_ids):
             accessible_scenarios.append(_serialize_scenario(scenario))
             if scenario.snapshot and scenario.snapshot.template_id:
                 snapshot_template_ids.add(scenario.snapshot.template_id)
+
+    folder_rows = (
+        db.query(models.ExperimentScenarioFolder)
+        .filter(models.ExperimentScenarioFolder.execution_id == execution.id)
+        .order_by(models.ExperimentScenarioFolder.updated_at.desc())
+        .all()
+    )
+
+    accessible_folders = [
+        _serialize_folder(folder)
+        for folder in folder_rows
+        if _folder_accessible(folder, user, team_ids)
+    ]
 
     snapshot_rows: list[models.ExecutionNarrativeWorkflowTemplateSnapshot] = []
     if snapshot_template_ids:
@@ -1584,7 +1752,162 @@ async def list_execution_scenarios(
         execution=execution_summary,
         snapshots=list(snapshot_payload.values()),
         scenarios=accessible_scenarios,
+        folders=accessible_folders,
     )
+
+
+@preview_router.post(
+    "/{execution_id}/scenario-folders",
+    response_model=schemas.ExperimentScenarioFolder,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_scenario_folder(
+    execution_id: str,
+    payload: schemas.ExperimentScenarioFolderCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Persist a collaborative folder for organizing scenarios."""
+
+    # purpose: enable scientists to group preview scenarios for shared review
+    # inputs: execution identifier and folder creation payload
+    # outputs: ExperimentScenarioFolder schema for the new folder
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    team_ids = _get_user_team_ids(db, user)
+    template = _ensure_execution_access(db, execution, user, team_ids)
+
+    visibility = payload.visibility
+    team_id = payload.team_id
+    if visibility == "team" and team_id is None:
+        team_id = template.team_id
+    if visibility == "team" and team_id is None:
+        raise HTTPException(status_code=400, detail="Team visibility requires a team id")
+
+    folder = models.ExperimentScenarioFolder(
+        execution_id=execution.id,
+        name=payload.name,
+        description=payload.description,
+        owner_id=user.id,
+        team_id=team_id,
+        visibility=visibility,
+    )
+    db.add(folder)
+
+    record_execution_event(
+        db,
+        execution,
+        "scenario.folder.created",
+        {
+            "folder_id": str(folder.id),
+            "name": folder.name,
+            "visibility": folder.visibility,
+        },
+        user,
+    )
+
+    db.commit()
+    db.refresh(folder)
+
+    return _serialize_folder(folder)
+
+
+@preview_router.patch(
+    "/{execution_id}/scenario-folders/{folder_id}",
+    response_model=schemas.ExperimentScenarioFolder,
+)
+async def update_scenario_folder(
+    execution_id: str,
+    folder_id: str,
+    payload: schemas.ExperimentScenarioFolderUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Update metadata for a scenario folder."""
+
+    # purpose: support renaming and sharing adjustments for scenario folders
+    # inputs: execution identifier, folder identifier, update payload
+    # outputs: refreshed ExperimentScenarioFolder schema
+    # status: pilot
+    try:
+        exec_uuid = UUID(execution_id)
+        folder_uuid = UUID(folder_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid identifier") from exc
+
+    execution = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .filter(models.ProtocolExecution.id == exec_uuid)
+        .first()
+    )
+    if not execution:
+        raise HTTPException(status_code=404, detail="Execution not found")
+
+    folder = (
+        db.query(models.ExperimentScenarioFolder)
+        .filter(
+            models.ExperimentScenarioFolder.id == folder_uuid,
+            models.ExperimentScenarioFolder.execution_id == execution.id,
+        )
+        .first()
+    )
+    if not folder:
+        raise HTTPException(status_code=404, detail="Scenario folder not found")
+
+    team_ids = _get_user_team_ids(db, user)
+    _ensure_execution_access(db, execution, user, team_ids)
+
+    if not (user.is_admin or folder.owner_id == user.id):
+        raise HTTPException(status_code=403, detail="Only the owner may update this folder")
+
+    fields_set = getattr(payload, "model_fields_set", set())
+
+    if payload.name is not None:
+        folder.name = payload.name
+    if payload.description is not None:
+        folder.description = payload.description
+
+    if "visibility" in fields_set or "team_id" in fields_set:
+        visibility = payload.visibility or folder.visibility
+        team_id = payload.team_id if payload.team_id is not None else folder.team_id
+        if visibility == "team" and team_id is None:
+            team_id = execution.template.team_id if execution.template else None
+        if visibility == "team" and team_id is None:
+            raise HTTPException(status_code=400, detail="Team visibility requires a team id")
+        folder.visibility = visibility
+        folder.team_id = team_id
+
+    record_execution_event(
+        db,
+        execution,
+        "scenario.folder.updated",
+        {
+            "folder_id": str(folder.id),
+            "name": folder.name,
+            "visibility": folder.visibility,
+        },
+        user,
+    )
+
+    db.add(folder)
+    db.commit()
+    db.refresh(folder)
+
+    return _serialize_folder(folder)
 
 
 @preview_router.post(
@@ -1635,6 +1958,23 @@ async def create_execution_scenario(
             detail="Snapshot is not assigned to this execution context",
         )
 
+    folder = _validate_folder_assignment(
+        db,
+        execution,
+        payload.folder_id,
+        user,
+        team_ids,
+    )
+    shared_team_ids = _normalize_shared_team_ids(payload.shared_team_ids)
+    expires_at = payload.expires_at
+    if expires_at and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    timeline_event = _validate_timeline_event_binding(
+        db,
+        execution,
+        payload.timeline_event_id,
+    )
+
     scenario = models.ExperimentScenario(
         execution_id=execution.id,
         owner_id=user.id,
@@ -1646,6 +1986,11 @@ async def create_execution_scenario(
             payload.resource_overrides
         ),
         stage_overrides=_prepare_stage_override_payload(payload.stage_overrides),
+        folder_id=folder.id if folder else None,
+        is_shared=bool(payload.is_shared or shared_team_ids),
+        shared_team_ids=shared_team_ids,
+        expires_at=expires_at,
+        timeline_event_id=timeline_event.id if timeline_event else None,
     )
     db.add(scenario)
 
@@ -1657,6 +2002,12 @@ async def create_execution_scenario(
             "scenario_id": str(scenario.id),
             "snapshot_id": str(snapshot.id),
             "name": payload.name,
+            "folder_id": str(folder.id) if folder else None,
+            "is_shared": scenario.is_shared,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "timeline_event_id": str(timeline_event.id)
+            if timeline_event
+            else None,
         },
         user,
     )
@@ -1716,6 +2067,8 @@ async def update_execution_scenario(
     if not (user.is_admin or scenario.owner_id == user.id):
         raise HTTPException(status_code=403, detail="Only the owner may update this scenario")
 
+    fields_set = getattr(payload, "model_fields_set", set())
+
     if payload.name is not None:
         scenario.name = payload.name
     if payload.description is not None:
@@ -1745,6 +2098,58 @@ async def update_execution_scenario(
             payload.stage_overrides
         )
 
+    if "folder_id" in fields_set:
+        folder = _validate_folder_assignment(
+            db,
+            execution,
+            payload.folder_id,
+            user,
+            team_ids,
+        )
+        scenario.folder_id = folder.id if folder else None
+    else:
+        folder = scenario.folder
+
+    if "shared_team_ids" in fields_set:
+        if payload.shared_team_ids is None:
+            scenario.shared_team_ids = []
+        else:
+            scenario.shared_team_ids = _normalize_shared_team_ids(payload.shared_team_ids)
+
+    if payload.is_shared is not None or "shared_team_ids" in fields_set or "folder_id" in fields_set:
+        if payload.is_shared is not None:
+            scenario.is_shared = bool(payload.is_shared)
+        elif "shared_team_ids" in fields_set:
+            scenario.is_shared = bool(scenario.shared_team_ids)
+
+    if "expires_at" in fields_set:
+        if payload.expires_at is None:
+            scenario.expires_at = None
+        else:
+            expires_at = payload.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            scenario.expires_at = expires_at
+
+    if "timeline_event_id" in fields_set:
+        if payload.timeline_event_id is None:
+            scenario.timeline_event_id = None
+        else:
+            event = _validate_timeline_event_binding(
+                db,
+                execution,
+                payload.timeline_event_id,
+            )
+            scenario.timeline_event_id = event.id
+
+    if "transfer_owner_id" in fields_set and payload.transfer_owner_id:
+        if not (user.is_admin or scenario.owner_id == user.id):
+            raise HTTPException(status_code=403, detail="Only the owner may transfer ownership")
+        new_owner = db.get(models.User, payload.transfer_owner_id)
+        if not new_owner:
+            raise HTTPException(status_code=404, detail="New owner not found")
+        scenario.owner_id = new_owner.id
+
     record_execution_event(
         db,
         execution,
@@ -1752,6 +2157,14 @@ async def update_execution_scenario(
         {
             "scenario_id": str(scenario.id),
             "name": scenario.name,
+            "folder_id": str(scenario.folder_id) if scenario.folder_id else None,
+            "is_shared": scenario.is_shared,
+            "expires_at": scenario.expires_at.isoformat()
+            if scenario.expires_at
+            else None,
+            "timeline_event_id": str(scenario.timeline_event_id)
+            if scenario.timeline_event_id
+            else None,
         },
         user,
     )
@@ -1800,6 +2213,8 @@ async def clone_execution_scenario(
         db.query(models.ExperimentScenario)
         .options(
             joinedload(models.ExperimentScenario.snapshot)
+            .joinedload(models.ExecutionNarrativeWorkflowTemplateSnapshot.template),
+            joinedload(models.ExperimentScenario.folder),
         )
         .filter(
             models.ExperimentScenario.id == scenario_uuid,
@@ -1820,6 +2235,10 @@ async def clone_execution_scenario(
     ):
         raise HTTPException(status_code=403, detail="Not authorized to clone this scenario")
 
+    inherited_folder_id: UUID | None = None
+    if source.folder_id and _folder_accessible(source.folder, user, team_ids):
+        inherited_folder_id = source.folder_id
+
     cloned = models.ExperimentScenario(
         execution_id=execution.id,
         owner_id=user.id,
@@ -1830,6 +2249,11 @@ async def clone_execution_scenario(
         resource_overrides=copy.deepcopy(source.resource_overrides or {}),
         stage_overrides=copy.deepcopy(source.stage_overrides or []),
         cloned_from_id=source.id,
+        folder_id=inherited_folder_id,
+        is_shared=False,
+        shared_team_ids=[],
+        expires_at=None,
+        timeline_event_id=None,
     )
     db.add(cloned)
 
@@ -1840,6 +2264,7 @@ async def clone_execution_scenario(
         {
             "scenario_id": str(cloned.id),
             "source_scenario_id": str(source.id),
+            "folder_id": str(inherited_folder_id) if inherited_folder_id else None,
         },
         user,
     )

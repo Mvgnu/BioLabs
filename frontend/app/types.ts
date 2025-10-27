@@ -464,8 +464,39 @@ export interface ExperimentScenario {
   resource_overrides?: ExperimentPreviewResourceOverrides
   stage_overrides: ExperimentPreviewStageOverride[]
   cloned_from_id?: string | null
+  folder_id?: string | null
+  is_shared: boolean
+  shared_team_ids: string[]
+  expires_at?: string | null
+  timeline_event_id?: string | null
   created_at: string
   updated_at: string
+}
+
+export interface ExperimentScenarioFolder {
+  id: string
+  execution_id: string
+  name: string
+  description?: string | null
+  owner_id?: string | null
+  team_id?: string | null
+  visibility: 'private' | 'team' | 'execution'
+  created_at: string
+  updated_at: string
+}
+
+export interface ExperimentScenarioFolderCreateRequest {
+  name: string
+  description?: string | null
+  visibility?: 'private' | 'team' | 'execution'
+  team_id?: string | null
+}
+
+export interface ExperimentScenarioFolderUpdateRequest {
+  name?: string | null
+  description?: string | null
+  visibility?: 'private' | 'team' | 'execution'
+  team_id?: string | null
 }
 
 export interface ExperimentScenarioSnapshot {
@@ -492,6 +523,7 @@ export interface ExperimentScenarioWorkspace {
   execution: ExperimentScenarioExecutionSummary
   snapshots: ExperimentScenarioSnapshot[]
   scenarios: ExperimentScenario[]
+  folders: ExperimentScenarioFolder[]
 }
 
 export interface ExperimentScenarioCreateRequest {
@@ -500,6 +532,11 @@ export interface ExperimentScenarioCreateRequest {
   workflow_template_snapshot_id: string
   resource_overrides?: ExperimentPreviewResourceOverrides
   stage_overrides?: ExperimentPreviewStageOverride[]
+  folder_id?: string | null
+  is_shared?: boolean
+  shared_team_ids?: string[]
+  expires_at?: string | null
+  timeline_event_id?: string | null
 }
 
 export interface ExperimentScenarioUpdateRequest {
@@ -508,6 +545,12 @@ export interface ExperimentScenarioUpdateRequest {
   workflow_template_snapshot_id?: string
   resource_overrides?: ExperimentPreviewResourceOverrides
   stage_overrides?: ExperimentPreviewStageOverride[]
+  folder_id?: string | null
+  is_shared?: boolean
+  shared_team_ids?: string[]
+  expires_at?: string | null
+  timeline_event_id?: string | null
+  transfer_owner_id?: string | null
 }
 
 export interface ExperimentScenarioCloneRequest {

@@ -15,9 +15,14 @@ vi.mock('../../governance/LadderBuilder', () => ({
   ),
 }))
 
+vi.mock('../../governance/LadderSimulationWidget', () => ({
+  default: () => <div data-testid="ladder-simulation" />,
+}))
+
 const mutateAsync = vi.fn()
 const createAssignmentMutate = vi.fn()
 const deleteAssignmentMutate = vi.fn()
+const previewMutate = vi.fn()
 
 const baseTemplate: GovernanceTemplate = {
   id: 'template-1',
@@ -57,6 +62,11 @@ vi.mock('../../../hooks/useGovernance', () => ({
   useDeleteGovernanceAssignment: () => ({ mutate: deleteAssignmentMutate }),
 }))
 
+vi.mock('../../../hooks/useExperimentConsole', () => ({
+  useExperimentPreview: () => ({ mutateAsync: previewMutate, isPending: false, reset: vi.fn() }),
+  useCreateScenarioFolder: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}))
+
 vi.mock('../../../components/ui', async () => {
   const ui = await vi.importActual<typeof import('../../../components/ui')>(
     '../../../components/ui'
@@ -71,6 +81,7 @@ describe('GovernanceWorkspacePage', () => {
     mutateAsync.mockReset()
     createAssignmentMutate.mockReset()
     deleteAssignmentMutate.mockReset()
+    previewMutate.mockReset()
   })
 
   it('persists a draft for a new template', async () => {

@@ -30,6 +30,11 @@ describe('ScenarioSummary', () => {
       },
     ],
     cloned_from_id: null,
+    folder_id: null,
+    is_shared: false,
+    shared_team_ids: [],
+    expires_at: null,
+    timeline_event_id: null,
     created_at: new Date('2024-01-01T12:00:00Z').toISOString(),
     updated_at: new Date('2024-01-02T12:00:00Z').toISOString(),
   }
@@ -46,7 +51,7 @@ describe('ScenarioSummary', () => {
   }
 
   it('renders scenario metadata and overrides', () => {
-    render(<ScenarioSummary scenario={baseScenario} snapshot={snapshot} />)
+    render(<ScenarioSummary scenario={baseScenario} snapshot={snapshot} folderName="Unfiled" />)
 
     const summary = screen.getAllByTestId('scenario-summary-card')[0]
     const scoped = within(summary)
@@ -62,9 +67,39 @@ describe('ScenarioSummary', () => {
   })
 
   it('includes a deep link to the experiment console', () => {
-    render(<ScenarioSummary scenario={baseScenario} snapshot={snapshot} />)
+    render(<ScenarioSummary scenario={baseScenario} snapshot={snapshot} folderName="Unfiled" />)
     const summary = screen.getAllByTestId('scenario-summary-card')[0]
     const link = within(summary).getByRole('link', { name: /open scenario/i }) as HTMLAnchorElement
     expect(link.getAttribute('href')).toBe('/experiment-console/exec-1?scenario=scenario-1')
+  })
+
+  it('highlights shared metadata and timeline anchors when provided', () => {
+    const sharedScenario: ExperimentScenario = {
+      ...baseScenario,
+      id: 'scenario-2',
+      name: 'Shared Scenario',
+      folder_id: 'folder-1',
+      is_shared: true,
+      shared_team_ids: ['team-1', 'team-2'],
+      expires_at: new Date('2024-02-01T12:00:00Z').toISOString(),
+      timeline_event_id: 'event-123',
+    }
+
+    render(
+      <ScenarioSummary
+        scenario={sharedScenario}
+        snapshot={snapshot}
+        folderName="Team Reviews"
+      />,
+    )
+
+    const cards = screen.getAllByTestId('scenario-summary-card')
+    const summary = cards[cards.length - 1]
+    const scoped = within(summary)
+
+    expect(scoped.getByText((content) => content.includes('Team Reviews'))).toBeTruthy()
+    expect(scoped.getByText('Shared')).toBeTruthy()
+    expect(scoped.getByText(/Teams: team-1, team-2/)).toBeTruthy()
+    expect(scoped.getByText(/Timeline anchor linked/)).toBeTruthy()
   })
 })

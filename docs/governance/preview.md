@@ -95,6 +95,17 @@ Front-end clients persist preview history in `localStorage` so scientists can co
       "captured_at": "2024-04-12T09:21:00Z"
     }
   ],
+  "folders": [
+    {
+      "id": "<folder uuid>",
+      "name": "Team Reviews",
+      "description": "Shared ladder experiments",
+      "visibility": "team",
+      "team_id": "<team uuid>",
+      "created_at": "2024-04-12T08:30:00Z",
+      "updated_at": "2024-04-12T08:30:00Z"
+    }
+  ],
   "scenarios": [
     {
       "id": "<scenario uuid>",
@@ -106,6 +117,11 @@ Front-end clients persist preview history in `localStorage` so scientists can co
       "resource_overrides": {
         "inventory_item_ids": ["<inventory uuid>"]
       },
+      "folder_id": "<folder uuid>",
+      "is_shared": true,
+      "shared_team_ids": ["<team uuid>", "<partner team uuid>"],
+      "expires_at": "2024-05-01T00:00:00Z",
+      "timeline_event_id": "<timeline event uuid>",
       "created_at": "2024-04-12T10:00:00Z",
       "updated_at": "2024-04-12T10:05:00Z"
     }
@@ -117,9 +133,10 @@ Only administrators, the execution owner, or team members attached to the protoc
 
 ### Scenario Lifecycle
 
-- `POST /api/experiments/{execution_id}/scenarios` persists a new scenario bound to the execution, normalising UUIDs and logging a `scenario.saved` execution event.
-- `PUT /api/experiments/{execution_id}/scenarios/{scenario_id}` updates metadata, overrides, or snapshot bindings (owner/admin only).
+- `POST /api/experiments/{execution_id}/scenario-folders` creates collaboration folders with visibility controls; `PATCH /api/experiments/{execution_id}/scenario-folders/{folder_id}` renames or adjusts visibility as scenarios evolve.
+- `POST /api/experiments/{execution_id}/scenarios` persists a new scenario bound to the execution, normalising UUIDs, binding optional folders, shared team lists, expiration timestamps, and timeline anchors before logging a `scenario.saved` execution event.
+- `PUT /api/experiments/{execution_id}/scenarios/{scenario_id}` updates metadata, overrides, sharing controls, owner transfers, or snapshot bindings (owner/admin only) while emitting `scenario.updated` with folder and expiry metadata.
 - `POST /api/experiments/{execution_id}/scenarios/{scenario_id}/clone` duplicates an existing scenario for rapid iteration, recording a `scenario.cloned` timeline event.
 - `DELETE /api/experiments/{execution_id}/scenarios/{scenario_id}` removes the record and emits `scenario.deleted` for auditability.
 
-The frontend modal (`ScenarioSummary` + updated `PreviewModal`) consumes these APIs via React Query, enabling scientists to iterate on overrides, compare saved scenarios, and run previews without manually copying UUIDs.
+The frontend modal (`ScenarioSummary` + updated `PreviewModal`) consumes these APIs via React Query, enabling scientists to iterate on overrides, organise scenarios inside execution-specific folders, toggle shared visibility by team, schedule expiration pruning, deep-link discussions to timeline events, and run previews without manually copying UUIDs.

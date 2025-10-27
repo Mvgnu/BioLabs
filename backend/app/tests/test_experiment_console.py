@@ -3,6 +3,7 @@ import io
 import json
 import uuid
 import zipfile
+from datetime import datetime, timedelta, timezone
 
 from .conftest import TestingSessionLocal
 from app import models
@@ -20,6 +21,22 @@ def get_headers(client):
     finally:
         db.close()
     return {"Authorization": f"Bearer {token}"}
+
+
+def create_user_headers(email: str | None = None):
+    """Create a user in the test database and return auth headers and metadata."""
+
+    email = email or f"{uuid.uuid4()}@example.com"
+    token = create_access_token({"sub": email})
+    db = TestingSessionLocal()
+    try:
+        user = models.User(email=email, hashed_password="placeholder")
+        db.add(user)
+        db.commit()
+        user_id = user.id
+    finally:
+        db.close()
+    return {"Authorization": f"Bearer {token}"}, user_id, email
 
 
 def test_create_and_update_execution_session(client):
@@ -698,6 +715,7 @@ def test_scenario_workspace_crud_flow(client):
     assert workspace.status_code == 200
     workspace_payload = workspace.json()
     assert workspace_payload["scenarios"] == []
+    assert workspace_payload["folders"] == []
     snapshot_ids = {entry["id"] for entry in workspace_payload["snapshots"]}
     assert str(snapshot_id) in snapshot_ids
 
@@ -716,6 +734,11 @@ def test_scenario_workspace_crud_flow(client):
     scenario_payload = create_resp.json()
     assert scenario_payload["name"] == "Baseline Check"
     assert scenario_payload["stage_overrides"][0]["sla_hours"] == 72
+    assert scenario_payload["folder_id"] is None
+    assert scenario_payload["is_shared"] is False
+    assert scenario_payload["shared_team_ids"] == []
+    assert scenario_payload["expires_at"] is None
+    assert scenario_payload["timeline_event_id"] is None
 
     updated = client.put(
         f"/api/experiments/{execution_id}/scenarios/{scenario_payload['id']}",
@@ -736,6 +759,7 @@ def test_scenario_workspace_crud_flow(client):
     assert updated_payload["name"] == "Updated Scenario"
     assert updated_payload["stage_overrides"][0]["sla_hours"] == 60
     assert updated_payload["stage_overrides"][0]["assignee_id"] == scenario_payload["owner_id"]
+    assert updated_payload["is_shared"] is False
 
     clone_resp = client.post(
         f"/api/experiments/{execution_id}/scenarios/{scenario_payload['id']}/clone",
@@ -769,6 +793,9 @@ def test_scenario_workspace_rbac_blocks_other_users(client):
         json={"name": "RBAC Protocol", "content": "Prep"},
         headers=owner_headers,
     ).json()
+
+    template_uuid = uuid.UUID(template["id"])
+    _, snapshot_id = _create_preview_snapshot(template_uuid)
 
     session_payload = client.post(
         "/api/experiment-console/sessions",
@@ -804,3 +831,129 @@ def test_scenario_workspace_rbac_blocks_other_users(client):
         headers=other_headers,
     )
     assert update_attempt.status_code == 403
+
+
+def test_shared_scenario_visibility_and_expiry(client):
+    owner_headers, owner_id, _ = create_user_headers("owner@example.com")
+    reviewer_headers, reviewer_id, _ = create_user_headers("reviewer@example.com")
+    outsider_headers, _outsider_id, _ = create_user_headers("outsider@example.com")
+
+    db = TestingSessionLocal()
+    try:
+        team = models.Team(name="Governance")
+        db.add(team)
+        db.flush()
+        db.add_all(
+            [
+                models.TeamMember(team_id=team.id, user_id=owner_id, role="lead"),
+                models.TeamMember(team_id=team.id, user_id=reviewer_id, role="reviewer"),
+            ]
+        )
+        db.commit()
+        team_id = team.id
+    finally:
+        db.close()
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Shared Protocol", "content": "Prep"},
+        headers=owner_headers,
+    ).json()
+
+    template_uuid = uuid.UUID(template["id"])
+    _, snapshot_id = _create_preview_snapshot(template_uuid)
+
+    session_payload = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"]},
+        headers=owner_headers,
+    ).json()
+    execution_id = session_payload["execution"]["id"]
+
+    db = TestingSessionLocal()
+    try:
+        template_row = db.get(models.ProtocolTemplate, uuid.UUID(template["id"]))
+        template_row.team_id = team_id
+        db.add(template_row)
+        db.flush()
+
+        execution_row = db.get(models.ProtocolExecution, uuid.UUID(execution_id))
+        execution_row.run_by = owner_id
+        db.add(execution_row)
+        db.flush()
+
+        event = models.ExecutionEvent(
+            execution_id=execution_row.id,
+            event_type="session.annotated",
+            payload={"note": "Initial analysis"},
+            actor_id=owner_id,
+            sequence=99,
+        )
+        db.add(event)
+        db.commit()
+        event_id = str(event.id)
+    finally:
+        db.close()
+
+    folder_resp = client.post(
+        f"/api/experiments/{execution_id}/scenario-folders",
+        json={
+            "name": "Team Reviews",
+            "description": "Shared folder",
+            "visibility": "team",
+            "team_id": str(team_id),
+        },
+        headers=owner_headers,
+    )
+    assert folder_resp.status_code == 201
+    folder_payload = folder_resp.json()
+
+    future_expiry = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    create_resp = client.post(
+        f"/api/experiments/{execution_id}/scenarios",
+        json={
+            "name": "Shared Scenario",
+            "workflow_template_snapshot_id": str(snapshot_id),
+            "folder_id": folder_payload["id"],
+            "is_shared": True,
+            "shared_team_ids": [str(team_id)],
+            "expires_at": future_expiry,
+            "timeline_event_id": event_id,
+        },
+        headers=owner_headers,
+    )
+    assert create_resp.status_code == 201
+    scenario_payload = create_resp.json()
+    assert scenario_payload["folder_id"] == folder_payload["id"]
+    assert scenario_payload["is_shared"] is True
+    assert scenario_payload["shared_team_ids"] == [str(team_id)]
+    assert scenario_payload["timeline_event_id"] == event_id
+
+    past_expiry = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    expired_resp = client.post(
+        f"/api/experiments/{execution_id}/scenarios",
+        json={
+            "name": "Expired Scenario",
+            "workflow_template_snapshot_id": scenario_payload["workflow_template_snapshot_id"],
+            "expires_at": past_expiry,
+        },
+        headers=owner_headers,
+    )
+    assert expired_resp.status_code == 201
+
+    reviewer_workspace = client.get(
+        f"/api/experiments/{execution_id}/scenarios",
+        headers=reviewer_headers,
+    )
+    assert reviewer_workspace.status_code == 200
+    reviewer_payload = reviewer_workspace.json()
+    returned_ids = {entry["id"] for entry in reviewer_payload["scenarios"]}
+    assert scenario_payload["id"] in returned_ids
+    assert reviewer_payload["folders"][0]["id"] == folder_payload["id"]
+    assert all(entry["name"] != "Expired Scenario" for entry in reviewer_payload["scenarios"])
+
+    outsider_workspace = client.get(
+        f"/api/experiments/{execution_id}/scenarios",
+        headers=outsider_headers,
+    )
+    assert outsider_workspace.status_code == 403
