@@ -458,6 +458,70 @@ class ExperimentStepStatus(BaseModel):
     auto_triggers: list[str] = Field(default_factory=list)
 
 
+class ExperimentPreviewResourceOverrides(BaseModel):
+    # purpose: allow scientists to model alternative resource availability
+    # inputs: override identifiers supplied by preview requests
+    # outputs: normalized identifier lists for simulation enrichment
+    # status: pilot
+    inventory_item_ids: list[UUID] = Field(default_factory=list)
+    booking_ids: list[UUID] = Field(default_factory=list)
+    equipment_ids: list[UUID] = Field(default_factory=list)
+
+
+class ExperimentPreviewStageOverride(BaseModel):
+    # purpose: enable temporary adjustments to stage assignments and SLAs
+    # inputs: per-stage override payloads from preview consumers
+    # outputs: normalized override configuration for simulation engine
+    # status: pilot
+    index: int
+    assignee_id: UUID | None = None
+    delegate_id: UUID | None = None
+    sla_hours: int | None = None
+
+
+class ExperimentPreviewRequest(BaseModel):
+    # purpose: capture snapshot bindings and optional simulation overrides
+    # inputs: immutable template snapshot id, optional overrides for preview
+    # outputs: structured preview parameters for backend orchestration
+    # status: pilot
+    workflow_template_snapshot_id: UUID
+    resource_overrides: ExperimentPreviewResourceOverrides | None = None
+    stage_overrides: list[ExperimentPreviewStageOverride] = Field(default_factory=list)
+
+
+class ExperimentPreviewStageInsight(BaseModel):
+    # purpose: surface readiness state and SLA projections per stage
+    # inputs: simulation evaluation results for a stage
+    # outputs: UI-friendly insight payload for preview diff views
+    # status: pilot
+    index: int
+    name: str | None = None
+    required_role: str
+    status: Literal["ready", "blocked"]
+    sla_hours: int | None = None
+    projected_due_at: datetime | None = None
+    blockers: list[str] = Field(default_factory=list)
+    required_actions: list[str] = Field(default_factory=list)
+    auto_triggers: list[str] = Field(default_factory=list)
+    assignee_id: UUID | None = None
+    delegate_id: UUID | None = None
+
+
+class ExperimentPreviewResponse(BaseModel):
+    # purpose: deliver scientist-facing ladder simulation and narrative preview
+    # inputs: execution identifier, snapshot binding, stage insights, narrative
+    # outputs: preview metadata for diff viewers and governance storytelling
+    # status: pilot
+    execution_id: UUID
+    snapshot_id: UUID
+    generated_at: datetime
+    template_name: str | None = None
+    template_version: int | None = None
+    stage_insights: list[ExperimentPreviewStageInsight] = Field(default_factory=list)
+    narrative_preview: str
+    resource_warnings: list[str] = Field(default_factory=list)
+
+
 class ExperimentExecutionSessionCreate(BaseModel):
     template_id: UUID
     title: Optional[str] = None

@@ -15,6 +15,8 @@ The `narratives.py` module transforms ordered `ExecutionEvent` streams into comp
 
 Multi-stage approvals are orchestrated by the experiment console routes: `POST /api/experiment-console/sessions/{execution_id}/exports/narrative/{export_id}/approve` advances the active stage with signature capture and emits timeline events (`narrative_export.approval.stage_started`, `.stage_completed`, `.finalized`, `.rejected`). Delegations (`POST .../stages/{stage_id}/delegate`) and remediation resets (`POST .../stages/{stage_id}/reset`) update assignees, SLA due dates, and action history while keeping React Query caches synchronized. Celery monitors for SLA breaches via `monitor_narrative_approval_slas`, raising `narrative_export.approval.stage_overdue` when deadlines lapse. Evidence discovery routes (`GET /api/notebook/entries/evidence` and `GET /api/data/evidence`) provide paginated descriptors for console attachment pickers, while `/api/experiment-console/exports/narrative/jobs` continues to surface queue telemetry for operations teams.
 
+Scientist-facing previews are handled by the new `/api/experiments/{execution_id}/preview` endpoint located in `routes/experiment_console.py`. The route composes immutable governance snapshots with ladder simulations from `simulation.py`, renders Markdown via `render_preview_narrative`, records telemetry in `GovernanceTemplateAuditLog`, and returns `ExperimentPreviewResponse` payloads for UI diffing.
+
 ## Governance Workflow Templates
 
 Compliance administrators can now curate reusable approval ladders through the governance API surface:

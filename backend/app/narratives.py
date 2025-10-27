@@ -121,3 +121,76 @@ def render_execution_narrative(
     if not document.endswith("\n"):
         document += "\n"
     return document
+
+
+def render_preview_narrative(
+    execution: models.ProtocolExecution,
+    stage_insights: Sequence[object],
+    *,
+    template_snapshot: dict[str, Any] | None = None,
+) -> str:
+    """Build a scientist-facing governance preview narrative."""
+
+    # purpose: annotate governance ladder simulations with SLA projections and blockers
+    # inputs: protocol execution record, ordered stage insights, optional snapshot payload
+    # outputs: Markdown narrative summarizing preview findings
+    # status: pilot
+    header_name = "Governance Preview"
+    if template_snapshot and isinstance(template_snapshot.get("name"), str):
+        header_name = f"Governance Preview — {template_snapshot['name']}"
+
+    lines: list[str] = [f"# {header_name}", ""]
+    lines.append("## Execution Context")
+    lines.append("")
+    lines.append(f"- execution_id: `{execution.id}`")
+    lines.append(f"- protocol_template_id: `{execution.template_id}`")
+    if template_snapshot:
+        version = template_snapshot.get("version")
+        if version is not None:
+            lines.append(f"- template_version: `{version}`")
+        captured_at = template_snapshot.get("captured_at")
+        if captured_at:
+            lines.append(f"- snapshot_captured_at: `{captured_at}`")
+    lines.append("")
+
+    lines.append("## Stage Insights")
+    lines.append("")
+    for insight in stage_insights:
+        index = getattr(insight, "index", None)
+        name = getattr(insight, "name", None)
+        required_role = getattr(insight, "required_role", "unknown")
+        status = getattr(insight, "status", "ready")
+        sla_hours = getattr(insight, "sla_hours", None)
+        projected_due_at = getattr(insight, "projected_due_at", None)
+        blockers = getattr(insight, "blockers", []) or []
+        required_actions = getattr(insight, "required_actions", []) or []
+        auto_triggers = getattr(insight, "auto_triggers", []) or []
+
+        lines.append(f"### Stage {index if index is not None else '?'} — {name or required_role}")
+        lines.append("")
+        lines.append(f"- required_role: `{required_role}`")
+        lines.append(f"- status: `{status}`")
+        if sla_hours is not None:
+            lines.append(f"- sla_hours: `{sla_hours}`")
+        if projected_due_at:
+            lines.append(
+                f"- projected_due_at: `{projected_due_at.isoformat() if hasattr(projected_due_at, 'isoformat') else projected_due_at}`"
+            )
+        if blockers:
+            lines.append("- blockers:")
+            for blocker in blockers:
+                lines.append(f"  - {blocker}")
+        if required_actions:
+            lines.append("- required_actions:")
+            for action in required_actions:
+                lines.append(f"  - {action}")
+        if auto_triggers:
+            lines.append("- auto_triggers:")
+            for trigger in auto_triggers:
+                lines.append(f"  - {trigger}")
+        lines.append("")
+
+    document = "\n".join(lines).strip()
+    if not document.endswith("\n"):
+        document += "\n"
+    return document
