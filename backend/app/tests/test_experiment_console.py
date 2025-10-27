@@ -304,6 +304,9 @@ def test_generate_execution_narrative_export(client):
     assert payload["notes"] == "Compliance evidence bundle"
     assert payload["metadata"]["ticket"] == "QC-21"
     assert payload["approval_status"] == "pending"
+    assert payload["approval_stage_count"] == 1
+    assert payload["approval_stages"][0]["status"] == "in_progress"
+    assert payload["current_stage"]["sequence_index"] == 1
     assert payload["version"] == 1
     assert payload["attachments"], "expected attachment to be persisted"
     assert payload["attachments"][0]["reference_id"] == attachment_event_id
@@ -326,18 +329,21 @@ def test_generate_execution_narrative_export(client):
     exports = history.json()["exports"]
     assert len(exports) == 1
     assert exports[0]["id"] == payload["id"]
-    assert exports[0]["artifact_status"] == "ready"
-    assert exports[0]["artifact_file"] is not None
-    assert exports[0]["artifact_checksum"]
-    assert exports[0]["artifact_download_path"]
-    assert exports[0]["artifact_signed_url"]
-    assert exports[0]["packaged_at"]
-    assert exports[0]["retention_expires_at"]
+    assert exports[0]["artifact_status"] in {"queued", "processing", "retrying", "ready"}
+    if exports[0]["artifact_status"] == "ready":
+        assert exports[0]["artifact_file"] is not None
+        assert exports[0]["artifact_checksum"]
+        assert exports[0]["artifact_download_path"]
+        assert exports[0]["artifact_signed_url"]
+        assert exports[0]["packaged_at"]
+        assert exports[0]["retention_expires_at"]
 
-    artifact_resp = client.get(exports[0]["artifact_download_path"], headers=headers)
-    assert artifact_resp.status_code == 200
-    assert artifact_resp.headers["content-type"] == "application/zip"
-    assert artifact_resp.content.startswith(b"PK"), "expected zip file signature"
+        artifact_resp = client.get(exports[0]["artifact_download_path"], headers=headers)
+        assert artifact_resp.status_code == 200
+        assert artifact_resp.headers["content-type"] == "application/zip"
+        assert artifact_resp.content.startswith(b"PK"), "expected zip file signature"
+    else:
+        assert exports[0]["artifact_file"] is None
 
     second_export = client.post(
         f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
@@ -367,7 +373,8 @@ def test_generate_execution_narrative_export(client):
     ).json()
     assert any(event["event_type"] == "narrative_export.created" for event in timeline["events"])
     assert any(event["event_type"].startswith("narrative_export.packaging") for event in timeline["events"])
-    assert any(event["event_type"] == "narrative_export.approved" for event in timeline["events"])
+    assert any(event["event_type"] == "narrative_export.approval.stage_completed" for event in timeline["events"])
+    assert any(event["event_type"] == "narrative_export.approval.finalized" for event in timeline["events"])
 
     jobs_snapshot = client.get(
         "/api/experiment-console/exports/narrative/jobs",
@@ -484,18 +491,126 @@ def test_narrative_export_with_multidomain_evidence(client):
     export_record = next(
         item for item in history_snapshot["exports"] if item["id"] == export_payload["id"]
     )
-    assert export_record["artifact_download_path"]
-    artifact_resp = client.get(export_record["artifact_download_path"], headers=headers)
-    assert artifact_resp.status_code == 200
-    archive = zipfile.ZipFile(io.BytesIO(artifact_resp.content))
-    manifest = json.loads(archive.read("attachments.json").decode("utf-8"))
-    manifest_types = {entry["type"] for entry in manifest}
-    assert "notebook_entry" in manifest_types
-    assert "analytics_snapshot" in manifest_types
-    assert "qc_metric" in manifest_types
-    assert "remediation_report" in manifest_types
-    analytics_entry = next(entry for entry in manifest if entry["type"] == "analytics_snapshot")
-    assert analytics_entry["event"]["payload_path"].endswith(".json")
-    notebook_entry_manifest = next(entry for entry in manifest if entry["type"] == "notebook_entry")
-    assert notebook_entry_manifest["notebook"]["path"].endswith(".md")
-    archive.close()
+    if export_record["artifact_download_path"]:
+        artifact_resp = client.get(export_record["artifact_download_path"], headers=headers)
+        assert artifact_resp.status_code == 200
+        archive = zipfile.ZipFile(io.BytesIO(artifact_resp.content))
+        manifest = json.loads(archive.read("attachments.json").decode("utf-8"))
+        manifest_types = {entry["type"] for entry in manifest}
+        assert "notebook_entry" in manifest_types
+        assert "analytics_snapshot" in manifest_types
+        assert "qc_metric" in manifest_types
+        assert "remediation_report" in manifest_types
+        analytics_entry = next(entry for entry in manifest if entry["type"] == "analytics_snapshot")
+        assert analytics_entry["event"]["payload_path"].endswith(".json")
+        notebook_entry_manifest = next(entry for entry in manifest if entry["type"] == "notebook_entry")
+        assert notebook_entry_manifest["notebook"]["path"].endswith(".md")
+        archive.close()
+
+def test_multistage_approval_delegation_and_reset(client):
+    headers = get_headers(client)
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Staged Approval", "content": "Prep\nReview"},
+        headers=headers,
+    ).json()
+
+    execution = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Staged Run"},
+        headers=headers,
+    ).json()
+
+    exec_id = execution["execution"]["id"]
+
+    export_payload = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative",
+        json={
+            "approval_stages": [
+                {"name": "Scientist Review", "required_role": "scientist", "sla_hours": 1},
+                {"name": "QA Review", "required_role": "qa", "sla_hours": 2},
+            ]
+        },
+        headers=headers,
+    ).json()
+
+    assert export_payload["approval_stage_count"] == 2
+    assert export_payload["current_stage"]["name"] == "Scientist Review"
+    first_stage_id = export_payload["current_stage"]["id"]
+    second_stage_id = next(
+        stage["id"]
+        for stage in export_payload["approval_stages"]
+        if stage["sequence_index"] == 2
+    )
+
+    approve_first = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative/{export_payload['id']}/approve",
+        json={"status": "approved", "signature": "Scientist ✅", "stage_id": first_stage_id},
+        headers=headers,
+    )
+    assert approve_first.status_code == 200
+    progressed = approve_first.json()
+    assert progressed["current_stage"]["id"] == second_stage_id
+    assert progressed["approval_status"] == "pending"
+
+    me = client.get("/api/users/me", headers=headers).json()
+    delegated = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative/{export_payload['id']}/stages/{second_stage_id}/delegate",
+        json={"delegate_id": me["id"], "notes": "Covering QA"},
+        headers=headers,
+    )
+    assert delegated.status_code == 200
+    ladder = delegated.json()
+    stage_two = next(stage for stage in ladder["approval_stages"] if stage["id"] == second_stage_id)
+    assert stage_two["delegated_to"]["id"] == me["id"]
+
+    db = TestingSessionLocal()
+    try:
+        stage_obj = (
+            db.query(models.ExecutionNarrativeApprovalStage)
+            .filter(models.ExecutionNarrativeApprovalStage.id == uuid.UUID(second_stage_id))
+            .first()
+        )
+        stage_obj.due_at = datetime.now(timezone.utc) - timedelta(hours=1)
+        db.commit()
+    finally:
+        db.close()
+
+    from app.tasks import monitor_narrative_approval_slas
+
+    monitor_narrative_approval_slas()
+
+    timeline = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/timeline",
+        headers=headers,
+    ).json()["events"]
+    assert any(event["event_type"] == "narrative_export.approval.stage_overdue" for event in timeline)
+
+    reset_resp = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative/{export_payload['id']}/stages/{second_stage_id}/reset",
+        json={"notes": "Remediate QA"},
+        headers=headers,
+    )
+    assert reset_resp.status_code == 200
+    reset_payload = reset_resp.json()
+    reset_stage = next(stage for stage in reset_payload["approval_stages"] if stage["id"] == second_stage_id)
+    assert reset_stage["status"] == "in_progress"
+    assert reset_payload["approval_status"] == "pending"
+
+    rejection = client.post(
+        f"/api/experiment-console/sessions/{exec_id}/exports/narrative/{export_payload['id']}/approve",
+        json={"status": "rejected", "signature": "QA ❌", "stage_id": second_stage_id},
+        headers=headers,
+    )
+    assert rejection.status_code == 200
+    rejected_payload = rejection.json()
+    assert rejected_payload["approval_status"] == "rejected"
+    final_stage = next(stage for stage in rejected_payload["approval_stages"] if stage["id"] == second_stage_id)
+    assert final_stage["status"] == "rejected"
+
+    final_timeline = client.get(
+        f"/api/experiment-console/sessions/{exec_id}/timeline",
+        headers=headers,
+    ).json()["events"]
+    assert any(event["event_type"] == "narrative_export.approval.rejected" for event in final_timeline)

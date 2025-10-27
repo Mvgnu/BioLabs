@@ -628,6 +628,82 @@ class NarrativeEvidencePage(BaseModel):
     next_cursor: str | None = None
 
 
+class ExecutionNarrativeApprovalAction(BaseModel):
+    """Audit record describing a decision taken on an approval stage."""
+
+    # purpose: surface approval ladder activity for compliance review
+    # inputs: persisted approval action rows
+    # outputs: detailed history of decisions for timeline rendering
+    # status: pilot
+    id: UUID
+    stage_id: UUID
+    action_type: Literal[
+        "approved",
+        "rejected",
+        "delegated",
+        "reassigned",
+        "reset",
+        "comment",
+    ]
+    signature: str | None = None
+    notes: str | None = None
+    actor: UserOut
+    delegation_target: UserOut | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict, validation_alias="meta")
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class ExecutionNarrativeApprovalStage(BaseModel):
+    """Staged approval checkpoint describing role, SLA, and delegates."""
+
+    # purpose: communicate sequenced approval requirements to clients
+    # inputs: persisted stage configuration and runtime status
+    # outputs: UI ladder representation and audit data
+    # status: pilot
+    id: UUID
+    export_id: UUID
+    sequence_index: int
+    name: str | None = None
+    required_role: str
+    status: Literal[
+        "pending",
+        "in_progress",
+        "approved",
+        "rejected",
+        "delegated",
+        "reset",
+    ]
+    sla_hours: int | None = None
+    due_at: datetime | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    assignee: UserOut | None = None
+    delegated_to: UserOut | None = None
+    overdue_notified_at: datetime | None = None
+    notes: str | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict, validation_alias="meta")
+    actions: list[ExecutionNarrativeApprovalAction] = Field(default_factory=list)
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class ExecutionNarrativeApprovalStageDefinition(BaseModel):
+    """Stage configuration supplied when initializing a workflow."""
+
+    # purpose: allow API consumers to declare staged approval ladders
+    # inputs: narrative export creation payload
+    # outputs: normalized stage blueprint persisted to database
+    # status: pilot
+    name: str | None = None
+    required_role: str
+    assignee_id: UUID | None = None
+    delegate_id: UUID | None = None
+    sla_hours: int | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ExecutionNarrativeExport(BaseModel):
     """Markdown export payload capturing execution evidence."""
 
@@ -645,9 +721,15 @@ class ExecutionNarrativeExport(BaseModel):
     approval_status: Literal["pending", "approved", "rejected"]
     approval_signature: str | None = None
     approved_at: datetime | None = None
+    approval_completed_at: datetime | None = None
+    approval_stage_count: int = 0
+    workflow_template_id: UUID | None = None
+    current_stage: ExecutionNarrativeApprovalStage | None = None
+    current_stage_started_at: datetime | None = None
     requested_by: UserOut
     approved_by: Optional[UserOut] = None
     notes: str | None = None
+    approval_stages: list[ExecutionNarrativeApprovalStage] = Field(default_factory=list)
     attachments: list[ExecutionNarrativeExportAttachmentOut] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict, validation_alias='meta')
     artifact_status: Literal[
@@ -684,6 +766,10 @@ class ExecutionNarrativeExportRequest(BaseModel):
     attachments: List[ExecutionNarrativeAttachmentIn] = Field(default_factory=list)
     notes: str | None = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    workflow_template_id: UUID | None = None
+    approval_stages: list[ExecutionNarrativeApprovalStageDefinition] = Field(
+        default_factory=list
+    )
 
 
 class ExecutionNarrativeApprovalRequest(BaseModel):
@@ -695,7 +781,34 @@ class ExecutionNarrativeApprovalRequest(BaseModel):
     # status: pilot
     status: Literal["approved", "rejected"]
     signature: str
+    stage_id: UUID | None = None
     approver_id: UUID | None = None
+    notes: str | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionNarrativeApprovalDelegationRequest(BaseModel):
+    """Delegation payload enabling reassignment of approval responsibility."""
+
+    # purpose: support dynamic reassignment of approval stages from the UI
+    # inputs: delegation request body from console
+    # outputs: persisted delegation metadata and history action
+    # status: pilot
+    delegate_id: UUID
+    due_at: datetime | None = None
+    notes: str | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionNarrativeApprovalResetRequest(BaseModel):
+    """Reset payload returning a stage to pending for remediation."""
+
+    # purpose: allow remediation loops within approval ladders
+    # inputs: reset request body from console
+    # outputs: persisted reset action with optional comment
+    # status: pilot
+    notes: str | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ExecutionNarrativeExportHistory(BaseModel):
@@ -1443,6 +1556,8 @@ class ItemTypeOut(BaseModel):
 EquipmentTelemetryChannel.model_rebuild()
 ExecutionEventOut.model_rebuild()
 ExecutionNarrativeExportAttachmentOut.model_rebuild()
+ExecutionNarrativeApprovalAction.model_rebuild()
+ExecutionNarrativeApprovalStage.model_rebuild()
 ExecutionNarrativeExport.model_rebuild()
 ExecutionNarrativeExportHistory.model_rebuild()
 ExperimentTimelinePage.model_rebuild()

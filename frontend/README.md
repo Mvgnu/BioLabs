@@ -24,3 +24,11 @@ the **Assistant** page to get project and inventory summaries.
 Launch guided experiment runs through the **Experiment Console**, which unifies protocol steps, live logging, inventory pulls,
 and equipment bookings into a single execution workspace.
 Use the **Search** page to quickly locate items by name.
+
+## Testing
+
+Run the Vitest suite to execute unit coverage for client hooks and UI logic, including the staged approval ladder cache handlers:
+
+```bash
+npm run test
+```
