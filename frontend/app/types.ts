@@ -463,6 +463,30 @@ export interface GovernanceAnalyticsSlaSample {
   within_target?: boolean | null
 }
 
+export interface GovernanceAnalyticsLatencyBand {
+  label: string
+  start_minutes?: number | null
+  end_minutes?: number | null
+  count: number
+}
+
+export interface GovernanceAnalyticsReviewerLoad {
+  reviewer_id: string
+  reviewer_email?: string | null
+  reviewer_name?: string | null
+  assigned_count: number
+  completed_count: number
+  pending_count: number
+  average_latency_minutes?: number | null
+  latency_bands: GovernanceAnalyticsLatencyBand[]
+  recent_blocked_ratio?: number | null
+  baseline_churn?: number | null
+  rollback_precursor_count: number
+  current_publish_streak: number
+  last_publish_at?: string | null
+  streak_alert: boolean
+}
+
 export interface GovernanceAnalyticsPreviewSummary {
   execution_id: string
   preview_event_id: string
@@ -485,6 +509,7 @@ export interface GovernanceAnalyticsPreviewSummary {
   approval_latency_minutes?: number | null
   publication_cadence_days?: number | null
   rollback_count: number
+  blocker_churn_index?: number | null
 }
 
 export interface GovernanceAnalyticsTotals {
@@ -497,10 +522,13 @@ export interface GovernanceAnalyticsTotals {
   total_rollbacks: number
   average_approval_latency_minutes?: number | null
   average_publication_cadence_days?: number | null
+  reviewer_count: number
+  streak_alert_count: number
 }
 
 export interface GovernanceAnalyticsReport {
   results: GovernanceAnalyticsPreviewSummary[]
+  reviewer_loads: GovernanceAnalyticsReviewerLoad[]
   totals: GovernanceAnalyticsTotals
 }
 

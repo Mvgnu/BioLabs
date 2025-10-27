@@ -45,7 +45,7 @@ const formatDurationDays = (value: number | null | undefined) => {
 const pickTopSummaries = (items: GovernanceAnalyticsPreviewSummary[]) => {
   return items
     .slice()
-    .sort((a, b) => (b.rollback_count ?? 0) - (a.rollback_count ?? 0))
+    .sort((a, b) => (b.blocker_churn_index ?? 0) - (a.blocker_churn_index ?? 0))
     .slice(0, 4)
 }
 
@@ -111,15 +111,19 @@ export default function BaselineLifecycleStats({ report }: BaselineLifecycleStat
                       <dt className="uppercase tracking-wide">Cadence</dt>
                       <dd>{formatDurationDays(item.publication_cadence_days ?? null)}</dd>
                     </div>
-                    <div>
-                      <dt className="uppercase tracking-wide">Blocked Ratio</dt>
-                      <dd>{formatNumber(item.blocked_ratio, { style: 'percent', maximumFractionDigits: 1 })}</dd>
-                    </div>
-                  </dl>
-                </li>
-              ))}
-            </ul>
-          )}
+                  <div>
+                    <dt className="uppercase tracking-wide">Blocked Ratio</dt>
+                    <dd>{formatNumber(item.blocked_ratio, { style: 'percent', maximumFractionDigits: 1 })}</dd>
+                  </div>
+                  <div>
+                    <dt className="uppercase tracking-wide">Churn Index</dt>
+                    <dd>{formatNumber(item.blocker_churn_index ?? null, { maximumFractionDigits: 1 })}</dd>
+                  </div>
+                </dl>
+              </li>
+            ))}
+          </ul>
+        )}
         </div>
       </CardBody>
     </Card>
