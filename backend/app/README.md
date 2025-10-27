@@ -6,6 +6,7 @@ This directory contains the FastAPI application modules that power BioLabs serve
 - `models.py`: SQLAlchemy ORM definitions for persistent entities.
 - `schemas.py`: Pydantic schemas for request validation and response shaping.
 - `narratives.py`: Markdown narrative serialization for experiment execution exports.
+- `routes/governance.py`: Administrative APIs for workflow template management and assignments.
 - Supporting helpers for authentication, notifications, orchestration, and integrations.
 
 ## Narrative Exports
@@ -13,6 +14,16 @@ This directory contains the FastAPI application modules that power BioLabs serve
 The `narratives.py` module transforms ordered `ExecutionEvent` streams into compliance-ready Markdown dossiers. Exports are triggered through the experiment console API (`POST /api/experiment-console/sessions/{execution_id}/exports/narrative`) and logged as timeline events for traceability. Each export now persists to `execution_narrative_exports` with bundled evidence attachments (timeline events, files, notebook entries, analytics snapshots, QC metrics, remediation reports), staged approval metadata, version history, and packaged artifact lifecycle metadata accessible via `GET /api/experiment-console/sessions/{execution_id}/exports/narrative`. Packaging jobs are dispatched to the Celery worker in `workers/packaging.py`, which retries failures, increments attempt counters, hydrates notebook markdown and event payload archives, records digest metadata, and enforces retention windows. Scientists can download generated packages via `GET /api/experiment-console/sessions/{execution_id}/exports/narrative/{export_id}/artifact`, which verifies stored checksums before streaming data and raises lifecycle events for expirations or integrity failures. Durable storage helpers (`storage.py`) now generate namespaced paths, optional signed URLs, and checksum validation to guard against drift.
 
 Multi-stage approvals are orchestrated by the experiment console routes: `POST /api/experiment-console/sessions/{execution_id}/exports/narrative/{export_id}/approve` advances the active stage with signature capture and emits timeline events (`narrative_export.approval.stage_started`, `.stage_completed`, `.finalized`, `.rejected`). Delegations (`POST .../stages/{stage_id}/delegate`) and remediation resets (`POST .../stages/{stage_id}/reset`) update assignees, SLA due dates, and action history while keeping React Query caches synchronized. Celery monitors for SLA breaches via `monitor_narrative_approval_slas`, raising `narrative_export.approval.stage_overdue` when deadlines lapse. Evidence discovery routes (`GET /api/notebook/entries/evidence` and `GET /api/data/evidence`) provide paginated descriptors for console attachment pickers, while `/api/experiment-console/exports/narrative/jobs` continues to surface queue telemetry for operations teams.
+
+## Governance Workflow Templates
+
+Compliance administrators can now curate reusable approval ladders through the governance API surface:
+
+- `POST /api/governance/templates` creates published or draft templates, automatically versioning when reusing an existing `template_key` or specifying `forked_from_id`. Each new version retires the previous latest while preserving lineage metadata.
+- `GET /api/governance/templates` (and `/api/governance/templates/{id}`) surfaces template details, including stage blueprints, permitted roles, SLA defaults, and publication status. The optional `include_all` query flag returns historical versions for auditing.
+- `POST /api/governance/templates/{id}/assignments` links templates to teams or protocol templates, allowing contextual rollout of governance policies. Assignments can be enumerated via `GET /api/governance/templates/{id}/assignments` and revoked through `DELETE /api/governance/assignments/{assignment_id}`.
+
+Templates persist to `execution_narrative_workflow_templates` with JSON-encoded stage blueprints and SLA metadata, while assignments live in `execution_narrative_workflow_template_assignments`. Narrative exports referencing a template automatically seed approval stages, stamp the template key/version, and embed a snapshot of the blueprint for audit trails.
 
 ## Testing
 

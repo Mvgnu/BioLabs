@@ -41,6 +41,7 @@ from .routes import (
     forum,
     community,
     compliance,
+    governance,
     equipment,
     experiment_console,
     external,
@@ -118,6 +119,7 @@ app.include_router(services.router)
 app.include_router(forum.router)
 app.include_router(community.router)
 app.include_router(compliance.router)
+app.include_router(governance.router)
 app.include_router(equipment.router)
 app.include_router(experiment_console.router)
 app.include_router(external.router)

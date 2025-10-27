@@ -704,6 +704,74 @@ class ExecutionNarrativeApprovalStageDefinition(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
+class ExecutionNarrativeWorkflowTemplateStage(BaseModel):
+    """Reusable stage blueprint definition stored on templates."""
+
+    # purpose: capture governance-authored approval ladder stages
+    # inputs: governance template authoring UI payloads
+    # outputs: normalized stage definitions persisted with templates
+    # status: draft
+    name: str | None = None
+    required_role: str
+    sla_hours: int | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionNarrativeWorkflowTemplateBase(BaseModel):
+    template_key: str
+    name: str
+    description: str | None = None
+    default_stage_sla_hours: int | None = None
+    permitted_roles: list[str] = Field(default_factory=list)
+    stage_blueprint: list[ExecutionNarrativeWorkflowTemplateStage] = Field(
+        default_factory=list
+    )
+
+
+class ExecutionNarrativeWorkflowTemplateCreate(ExecutionNarrativeWorkflowTemplateBase):
+    forked_from_id: UUID | None = None
+    publish: bool = False
+
+
+class ExecutionNarrativeWorkflowTemplateOut(
+    ExecutionNarrativeWorkflowTemplateBase
+):
+    id: UUID
+    version: int
+    status: str
+    is_latest: bool
+    created_by_id: UUID
+    created_at: datetime
+    updated_at: datetime
+    published_at: datetime | None = None
+    forked_from_id: UUID | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExecutionNarrativeWorkflowTemplateAssignmentCreate(BaseModel):
+    template_id: UUID
+    team_id: UUID | None = None
+    protocol_template_id: UUID | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionNarrativeWorkflowTemplateAssignmentOut(BaseModel):
+    id: UUID
+    template_id: UUID
+    team_id: UUID | None = None
+    protocol_template_id: UUID | None = None
+    created_by_id: UUID
+    created_at: datetime
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias="meta",
+        serialization_alias="metadata",
+    )
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 class ExecutionNarrativeExport(BaseModel):
     """Markdown export payload capturing execution evidence."""
 
@@ -724,6 +792,9 @@ class ExecutionNarrativeExport(BaseModel):
     approval_completed_at: datetime | None = None
     approval_stage_count: int = 0
     workflow_template_id: UUID | None = None
+    workflow_template_key: str | None = None
+    workflow_template_version: int | None = None
+    workflow_template_snapshot: Dict[str, Any] = Field(default_factory=dict)
     current_stage: ExecutionNarrativeApprovalStage | None = None
     current_stage_started_at: datetime | None = None
     requested_by: UserOut

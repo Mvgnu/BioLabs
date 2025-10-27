@@ -34,6 +34,7 @@ modules = [
     'knowledge',
     'forum',
     'community',
+    'governance',
     'workflows',
 ]
 

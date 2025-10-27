@@ -189,6 +189,104 @@ class ExecutionEvent(Base):
     )
 
 
+class ExecutionNarrativeWorkflowTemplate(Base):
+    __tablename__ = "execution_narrative_workflow_templates"
+
+    # purpose: capture reusable approval ladder definitions for narrative exports
+    # status: draft
+    # depends_on: users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_key = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    version = Column(Integer, nullable=False, default=1)
+    stage_blueprint = Column(JSON, default=list, nullable=False)
+    default_stage_sla_hours = Column(Integer, nullable=True)
+    permitted_roles = Column(JSON, default=list, nullable=False)
+    status = Column(String, default="draft", nullable=False)
+    forked_from_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_narrative_workflow_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+    published_at = Column(DateTime, nullable=True)
+    is_latest = Column(Boolean, default=True, nullable=False)
+
+    created_by = relationship("User")
+    forked_from = relationship(
+        "ExecutionNarrativeWorkflowTemplate", remote_side=[id]
+    )
+    assignments = relationship(
+        "ExecutionNarrativeWorkflowTemplateAssignment",
+        back_populates="template",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("template_key", "version", name="uq_template_key_version"),
+    )
+
+
+class ExecutionNarrativeWorkflowTemplateAssignment(Base):
+    __tablename__ = "execution_narrative_workflow_template_assignments"
+
+    # purpose: link workflow templates to organizational contexts (teams/protocols)
+    # status: draft
+    # depends_on: execution_narrative_workflow_templates
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    template_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey(
+            "execution_narrative_workflow_templates.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    protocol_template_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_templates.id"),
+        nullable=True,
+    )
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    meta = Column("metadata", JSON, default=dict)
+
+    template = relationship(
+        "ExecutionNarrativeWorkflowTemplate", back_populates="assignments"
+    )
+    team = relationship("Team")
+    protocol_template = relationship("ProtocolTemplate")
+    created_by = relationship("User")
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "(team_id IS NOT NULL) OR (protocol_template_id IS NOT NULL)",
+            name="ck_template_assignment_target",
+        ),
+        sa.UniqueConstraint(
+            "template_id",
+            "team_id",
+            name="uq_template_assignment_team",
+        ),
+        sa.UniqueConstraint(
+            "template_id",
+            "protocol_template_id",
+            name="uq_template_assignment_protocol",
+        ),
+    )
+
+
 class ExecutionNarrativeExport(Base):
     __tablename__ = "execution_narrative_exports"
 
@@ -215,7 +313,14 @@ class ExecutionNarrativeExport(Base):
     approved_at = Column(DateTime, nullable=True)
     approval_completed_at = Column(DateTime, nullable=True)
     approval_stage_count = Column(Integer, default=0, nullable=False)
-    workflow_template_id = Column(UUID(as_uuid=True), nullable=True)
+    workflow_template_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_narrative_workflow_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    workflow_template_key = Column(String, nullable=True)
+    workflow_template_version = Column(Integer, nullable=True)
+    workflow_template_snapshot = Column(JSON, default=dict)
     current_stage_id = Column(
         UUID(as_uuid=True),
         ForeignKey("execution_narrative_approval_stages.id", ondelete="SET NULL"),
@@ -248,6 +353,10 @@ class ExecutionNarrativeExport(Base):
     requested_by = relationship("User", foreign_keys=[requested_by_id])
     approved_by = relationship("User", foreign_keys=[approved_by_id])
     artifact_file = relationship("File", foreign_keys=[artifact_file_id])
+    workflow_template = relationship(
+        "ExecutionNarrativeWorkflowTemplate",
+        foreign_keys=[workflow_template_id],
+    )
     attachments = relationship(
         "ExecutionNarrativeExportAttachment",
         back_populates="export",
