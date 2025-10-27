@@ -1303,17 +1303,49 @@ def preview_experiment_governance(
             detail="Preview requires a published workflow template snapshot",
         )
 
+    baseline_snapshot: models.ExecutionNarrativeWorkflowTemplateSnapshot | None = None
+    baseline_template = db.get(models.ExecutionNarrativeWorkflowTemplate, snapshot.template_id)
+    if baseline_template and baseline_template.published_snapshot_id:
+        baseline_snapshot = db.get(
+            models.ExecutionNarrativeWorkflowTemplateSnapshot,
+            baseline_template.published_snapshot_id,
+        )
+    if baseline_snapshot is None:
+        baseline_snapshot = snapshot
+
     snapshot_payload = snapshot.snapshot_payload or {}
-    stage_blueprint = []
+    stage_blueprint: list[dict[str, object]] = []
     if isinstance(snapshot_payload, dict):
         blueprint_candidate = snapshot_payload.get("stage_blueprint")
         if isinstance(blueprint_candidate, list):
-            stage_blueprint = blueprint_candidate
+            stage_blueprint = [
+                stage for stage in blueprint_candidate if isinstance(stage, dict)
+            ]
     default_stage_sla = None
     if isinstance(snapshot_payload, dict):
         default_stage_sla = snapshot_payload.get("default_stage_sla_hours")
         if not isinstance(default_stage_sla, int):
             default_stage_sla = None
+
+    baseline_payload = baseline_snapshot.snapshot_payload or {}
+    baseline_stage_blueprint: list[dict[str, object]] = []
+    if isinstance(baseline_payload, dict):
+        baseline_blueprint_candidate = baseline_payload.get("stage_blueprint")
+        if isinstance(baseline_blueprint_candidate, list):
+            baseline_stage_blueprint = [
+                stage
+                for stage in baseline_blueprint_candidate
+                if isinstance(stage, dict)
+            ]
+    baseline_default_stage_sla = None
+    if isinstance(baseline_payload, dict):
+        baseline_default_stage_sla = baseline_payload.get("default_stage_sla_hours")
+        if not isinstance(baseline_default_stage_sla, int):
+            baseline_default_stage_sla = None
+    if not baseline_stage_blueprint:
+        baseline_stage_blueprint = stage_blueprint
+    if baseline_default_stage_sla is None:
+        baseline_default_stage_sla = default_stage_sla
 
     params = execution.params or {}
     inventory_ids = _parse_uuid_list(params.get("inventory_item_ids", []))
@@ -1371,36 +1403,123 @@ def preview_experiment_governance(
                 f"User override {missing_id} not found; preview uses placeholder"
             )
 
-    stage_results = simulation.build_stage_simulation(
+    step_requirements = gate_context.get("step_requirements")
+    baseline_results = simulation.build_stage_simulation(
+        baseline_stage_blueprint,
+        default_stage_sla_hours=baseline_default_stage_sla,
+        stage_overrides={},
+        step_states=steps,
+        step_requirements=step_requirements,
+        generated_at=generated_at,
+    )
+    comparison_results = simulation.build_stage_simulation(
         stage_blueprint,
         default_stage_sla_hours=default_stage_sla,
         stage_overrides=stage_overrides,
         step_states=steps,
+        step_requirements=step_requirements,
         generated_at=generated_at,
     )
 
+    baseline_map: dict[int, simulation.StageSimulationSnapshot] = {
+        entry.index: entry.baseline for entry in baseline_results
+    }
+
     insights: list[schemas.ExperimentPreviewStageInsight] = []
-    for result in stage_results:
-        status = result.status if result.status in {"ready", "blocked"} else "ready"
+    for comparison in comparison_results:
+        simulated = comparison.simulated
+        baseline_snapshot_state = baseline_map.get(comparison.index)
+        baseline_blockers = (
+            list(baseline_snapshot_state.blockers)
+            if baseline_snapshot_state
+            else []
+        )
+        simulated_blockers = list(simulated.blockers)
+        baseline_blocker_set = {blocker for blocker in baseline_blockers}
+        simulated_blocker_set = {blocker for blocker in simulated_blockers}
+        delta_new_blockers = [
+            blocker for blocker in simulated_blockers if blocker not in baseline_blocker_set
+        ]
+        delta_resolved_blockers = [
+            blocker for blocker in baseline_blockers if blocker not in simulated_blocker_set
+        ]
+        delta_status = None
+        if baseline_snapshot_state:
+            if baseline_snapshot_state.status == simulated.status:
+                delta_status = "unchanged"
+            elif simulated.status == "ready":
+                delta_status = "cleared"
+            else:
+                delta_status = "regressed"
+
+        delta_sla_hours = None
+        if (
+            baseline_snapshot_state
+            and baseline_snapshot_state.sla_hours is not None
+            and simulated.sla_hours is not None
+        ):
+            delta_sla_hours = simulated.sla_hours - baseline_snapshot_state.sla_hours
+
+        delta_projected_due_minutes = None
+        if (
+            baseline_snapshot_state
+            and baseline_snapshot_state.projected_due_at
+            and simulated.projected_due_at
+        ):
+            delta_seconds = (
+                simulated.projected_due_at - baseline_snapshot_state.projected_due_at
+            ).total_seconds()
+            delta_projected_due_minutes = int(delta_seconds // 60)
+
+        status_value = simulated.status if simulated.status in {"ready", "blocked"} else "ready"
         insights.append(
             schemas.ExperimentPreviewStageInsight(
-                index=result.index,
-                name=result.name,
-                required_role=result.required_role,
-                status=status,
-                sla_hours=result.sla_hours,
-                projected_due_at=result.projected_due_at,
-                blockers=result.blockers,
-                required_actions=result.required_actions,
-                auto_triggers=result.auto_triggers,
-                assignee_id=result.assignee_id,
-                delegate_id=result.delegate_id,
+                index=comparison.index,
+                name=comparison.name,
+                required_role=comparison.required_role,
+                status=status_value,
+                sla_hours=simulated.sla_hours,
+                projected_due_at=simulated.projected_due_at,
+                blockers=simulated_blockers,
+                required_actions=list(simulated.required_actions),
+                auto_triggers=list(simulated.auto_triggers),
+                assignee_id=simulated.assignee_id,
+                delegate_id=simulated.delegate_id,
+                mapped_step_indexes=list(comparison.mapped_step_indexes),
+                gate_keys=list(comparison.gate_keys),
+                baseline_status=(
+                    baseline_snapshot_state.status if baseline_snapshot_state else None
+                ),
+                baseline_sla_hours=(
+                    baseline_snapshot_state.sla_hours if baseline_snapshot_state else None
+                ),
+                baseline_projected_due_at=(
+                    baseline_snapshot_state.projected_due_at
+                    if baseline_snapshot_state
+                    else None
+                ),
+                baseline_assignee_id=(
+                    baseline_snapshot_state.assignee_id
+                    if baseline_snapshot_state
+                    else None
+                ),
+                baseline_delegate_id=(
+                    baseline_snapshot_state.delegate_id
+                    if baseline_snapshot_state
+                    else None
+                ),
+                baseline_blockers=baseline_blockers,
+                delta_status=delta_status,
+                delta_sla_hours=delta_sla_hours,
+                delta_projected_due_minutes=delta_projected_due_minutes,
+                delta_new_blockers=delta_new_blockers,
+                delta_resolved_blockers=delta_resolved_blockers,
             )
         )
 
     narrative_preview = render_preview_narrative(
         execution,
-        stage_results,
+        insights,
         template_snapshot=snapshot_payload,
     )
 
@@ -1411,8 +1530,8 @@ def preview_experiment_governance(
         action="template.preview.generated",
         detail={
             "execution_id": str(exec_uuid),
-            "stage_count": len(stage_results),
-            "blocked_stage_count": sum(1 for result in stage_results if result.status == "blocked"),
+            "stage_count": len(insights),
+            "blocked_stage_count": sum(1 for result in insights if result.status == "blocked"),
             "override_indexes": sorted(stage_overrides.keys()),
             "warnings": resource_warnings,
         },
@@ -1430,6 +1549,7 @@ def preview_experiment_governance(
     return schemas.ExperimentPreviewResponse(
         execution_id=exec_uuid,
         snapshot_id=snapshot.id,
+        baseline_snapshot_id=baseline_snapshot.id if baseline_snapshot else None,
         generated_at=generated_at,
         template_name=template_name,
         template_version=template_version,

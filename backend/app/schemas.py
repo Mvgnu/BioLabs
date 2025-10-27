@@ -505,6 +505,19 @@ class ExperimentPreviewStageInsight(BaseModel):
     auto_triggers: list[str] = Field(default_factory=list)
     assignee_id: UUID | None = None
     delegate_id: UUID | None = None
+    mapped_step_indexes: list[int] = Field(default_factory=list)
+    gate_keys: list[str] = Field(default_factory=list)
+    baseline_status: Literal["ready", "blocked"] | None = None
+    baseline_sla_hours: int | None = None
+    baseline_projected_due_at: datetime | None = None
+    baseline_assignee_id: UUID | None = None
+    baseline_delegate_id: UUID | None = None
+    baseline_blockers: list[str] = Field(default_factory=list)
+    delta_status: Literal["cleared", "regressed", "unchanged"] | None = None
+    delta_sla_hours: int | None = None
+    delta_projected_due_minutes: int | None = None
+    delta_new_blockers: list[str] = Field(default_factory=list)
+    delta_resolved_blockers: list[str] = Field(default_factory=list)
 
 
 class ExperimentPreviewResponse(BaseModel):
@@ -514,6 +527,7 @@ class ExperimentPreviewResponse(BaseModel):
     # status: pilot
     execution_id: UUID
     snapshot_id: UUID
+    baseline_snapshot_id: UUID | None = None
     generated_at: datetime
     template_name: str | None = None
     template_version: int | None = None
@@ -778,6 +792,8 @@ class ExecutionNarrativeWorkflowTemplateStage(BaseModel):
     name: str | None = None
     required_role: str
     sla_hours: int | None = None
+    stage_step_indexes: list[int] = Field(default_factory=list)
+    stage_gate_keys: list[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
