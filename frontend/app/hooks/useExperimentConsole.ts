@@ -19,6 +19,8 @@ import type {
   ExecutionNarrativeExportRecord,
   ExecutionNarrativeExportCreate,
   ExecutionNarrativeApprovalRequest,
+  ExecutionNarrativeDelegationRequest,
+  ExecutionNarrativeStageResetRequest,
 } from '../types'
 
 const sessionKey = (executionId: string | null) => [
@@ -227,6 +229,72 @@ export const useApproveNarrativeExport = (executionId: string | null) => {
       const resp = await api.post(
         `/api/experiment-console/sessions/${executionId}/exports/narrative/${vars.exportId}/approve`,
         vars.approval,
+      )
+      return resp.data as ExecutionNarrativeExportRecord
+    },
+    onSuccess: (data) => {
+      qc.setQueryData<ExecutionNarrativeExportHistory | undefined>(
+        exportsKey(executionId),
+        (current) => {
+          if (!current) {
+            return { exports: [data] }
+          }
+          const remaining = current.exports.filter((entry) => entry.id !== data.id)
+          return { exports: [data, ...remaining] }
+        },
+      )
+      invalidateTimelineQueries(qc, executionId)
+    },
+  })
+}
+
+export const useDelegateNarrativeApprovalStage = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      exportId: string
+      stageId: string
+      delegation: ExecutionNarrativeDelegationRequest
+    }): Promise<ExecutionNarrativeExportRecord> => {
+      if (!executionId) {
+        throw new Error('Execution id required for stage delegation')
+      }
+      const resp = await api.post(
+        `/api/experiment-console/sessions/${executionId}/exports/narrative/${vars.exportId}/stages/${vars.stageId}/delegate`,
+        vars.delegation,
+      )
+      return resp.data as ExecutionNarrativeExportRecord
+    },
+    onSuccess: (data) => {
+      qc.setQueryData<ExecutionNarrativeExportHistory | undefined>(
+        exportsKey(executionId),
+        (current) => {
+          if (!current) {
+            return { exports: [data] }
+          }
+          const remaining = current.exports.filter((entry) => entry.id !== data.id)
+          return { exports: [data, ...remaining] }
+        },
+      )
+      invalidateTimelineQueries(qc, executionId)
+    },
+  })
+}
+
+export const useResetNarrativeApprovalStage = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      exportId: string
+      stageId: string
+      reset: ExecutionNarrativeStageResetRequest
+    }): Promise<ExecutionNarrativeExportRecord> => {
+      if (!executionId) {
+        throw new Error('Execution id required for stage reset')
+      }
+      const resp = await api.post(
+        `/api/experiment-console/sessions/${executionId}/exports/narrative/${vars.exportId}/stages/${vars.stageId}/reset`,
+        vars.reset,
       )
       return resp.data as ExecutionNarrativeExportRecord
     },

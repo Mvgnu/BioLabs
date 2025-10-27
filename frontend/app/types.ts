@@ -411,6 +411,37 @@ export interface ExecutionNarrativeAttachment {
   created_at: string
 }
 
+export interface ExecutionNarrativeApprovalAction {
+  id: string
+  stage_id: string
+  action_type: 'approved' | 'rejected' | 'delegated' | 'reassigned' | 'reset' | 'comment'
+  signature?: string | null
+  notes?: string | null
+  actor: UserIdentity
+  delegation_target?: UserIdentity | null
+  metadata: Record<string, any>
+  created_at: string
+}
+
+export interface ExecutionNarrativeApprovalStage {
+  id: string
+  export_id: string
+  sequence_index: number
+  name?: string | null
+  required_role: string
+  status: 'pending' | 'in_progress' | 'approved' | 'rejected' | 'delegated' | 'reset'
+  sla_hours?: number | null
+  due_at?: string | null
+  started_at?: string | null
+  completed_at?: string | null
+  assignee?: UserIdentity | null
+  delegated_to?: UserIdentity | null
+  overdue_notified_at?: string | null
+  notes?: string | null
+  metadata: Record<string, any>
+  actions: ExecutionNarrativeApprovalAction[]
+}
+
 export interface ExecutionNarrativeExportRecord {
   id: string
   execution_id: string
@@ -422,12 +453,18 @@ export interface ExecutionNarrativeExportRecord {
   approval_status: 'pending' | 'approved' | 'rejected'
   approval_signature?: string | null
   approved_at?: string | null
+  approval_completed_at?: string | null
+  approval_stage_count: number
+  workflow_template_id?: string | null
+  current_stage?: ExecutionNarrativeApprovalStage | null
+  current_stage_started_at?: string | null
   requested_by: UserIdentity
   approved_by?: UserIdentity | null
   notes?: string | null
+  approval_stages: ExecutionNarrativeApprovalStage[]
   attachments: ExecutionNarrativeAttachment[]
   metadata: Record<string, any>
-  artifact_status: 'queued' | 'processing' | 'ready' | 'failed'
+  artifact_status: 'queued' | 'processing' | 'ready' | 'retrying' | 'failed' | 'expired'
   artifact_checksum?: string | null
   artifact_error?: string | null
   artifact_file?: FileMeta | null
@@ -440,16 +477,42 @@ export interface ExecutionNarrativeExportHistory {
   exports: ExecutionNarrativeExportRecord[]
 }
 
+export interface ExecutionNarrativeStageDefinition {
+  name?: string | null
+  required_role: string
+  assignee_id?: string | null
+  delegate_id?: string | null
+  sla_hours?: number | null
+  metadata?: Record<string, any>
+}
+
 export interface ExecutionNarrativeExportCreate {
   notes?: string | null
   metadata?: Record<string, any>
   attachments?: NarrativeExportAttachmentInput[]
+  workflow_template_id?: string | null
+  approval_stages?: ExecutionNarrativeStageDefinition[]
 }
 
 export interface ExecutionNarrativeApprovalRequest {
   status: 'approved' | 'rejected'
   signature: string
   approver_id?: string | null
+  stage_id?: string | null
+  notes?: string | null
+  metadata?: Record<string, any>
+}
+
+export interface ExecutionNarrativeDelegationRequest {
+  delegate_id: string
+  due_at?: string | null
+  notes?: string | null
+  metadata?: Record<string, any>
+}
+
+export interface ExecutionNarrativeStageResetRequest {
+  notes?: string | null
+  metadata?: Record<string, any>
 }
 
 export interface ExperimentRemediationResult {

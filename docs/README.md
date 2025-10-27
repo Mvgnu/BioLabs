@@ -4,6 +4,7 @@ This directory houses living documentation for the narrative export platform. Ea
 
 ## Contents
 - `narrative_lifecycle_overview.md`: Summarizes the current narrative export capabilities and outlines the planned evolution tracks.
+- `approval_workflow_design.md`: Details the staged approval orchestration blueprint covering data models, APIs, frontend, and testing.
 
 ## Maintenance
 - Update this index whenever new documentation is added or existing guides significantly change.

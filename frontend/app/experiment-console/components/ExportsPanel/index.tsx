@@ -9,7 +9,9 @@ import type {
 import {
   useApproveNarrativeExport,
   useCreateNarrativeExport,
+  useDelegateNarrativeApprovalStage,
   useExecutionNarrativeExports,
+  useResetNarrativeApprovalStage,
 } from '../../../hooks/useExperimentConsole'
 
 const statusBadge: Record<string, string> = {
@@ -18,24 +20,40 @@ const statusBadge: Record<string, string> = {
   rejected: 'bg-rose-100 text-rose-700 border-rose-200',
 }
 
-const artifactStatusBadge: Record<
-  ExecutionNarrativeExportRecord['artifact_status'],
-  string
-> = {
-  queued: 'bg-neutral-100 text-neutral-600 border-neutral-200',
-  processing: 'bg-blue-100 text-blue-700 border-blue-200',
-  ready: 'bg-emerald-100 text-emerald-700 border-emerald-200',
-  failed: 'bg-rose-100 text-rose-700 border-rose-200',
+const stageStatusBadge: Record<string, string> = {
+  pending: 'bg-neutral-50 text-neutral-600 border-neutral-200',
+  in_progress: 'bg-blue-100 text-blue-700 border-blue-200',
+  approved: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  rejected: 'bg-rose-100 text-rose-700 border-rose-200',
+  delegated: 'bg-indigo-100 text-indigo-700 border-indigo-200',
+  reset: 'bg-amber-50 text-amber-600 border-amber-200',
 }
 
-const artifactStatusLabel: Record<
-  ExecutionNarrativeExportRecord['artifact_status'],
-  string
-> = {
+const stageStatusLabel: Record<string, string> = {
+  pending: 'Pending',
+  in_progress: 'In progress',
+  approved: 'Approved',
+  rejected: 'Rejected',
+  delegated: 'Delegated',
+  reset: 'Reset',
+}
+
+const artifactStatusBadge: Record<ExecutionNarrativeExportRecord['artifact_status'], string> = {
+  queued: 'bg-neutral-100 text-neutral-600 border-neutral-200',
+  processing: 'bg-blue-100 text-blue-700 border-blue-200',
+  retrying: 'bg-amber-100 text-amber-700 border-amber-200',
+  ready: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+  failed: 'bg-rose-100 text-rose-700 border-rose-200',
+  expired: 'bg-neutral-200 text-neutral-600 border-neutral-300',
+}
+
+const artifactStatusLabel: Record<ExecutionNarrativeExportRecord['artifact_status'], string> = {
   queued: 'Queued',
   processing: 'Packaging',
+  retrying: 'Retrying',
   ready: 'Ready',
   failed: 'Failed',
+  expired: 'Expired',
 }
 
 const formatDateTime = (value?: string | null) => {
@@ -72,6 +90,8 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
   const exportsQuery = useExecutionNarrativeExports(executionId)
   const createMutation = useCreateNarrativeExport(executionId)
   const approveMutation = useApproveNarrativeExport(executionId)
+  const delegateMutation = useDelegateNarrativeApprovalStage(executionId)
+  const resetStageMutation = useResetNarrativeApprovalStage(executionId)
 
   const [selectedEventIds, setSelectedEventIds] = useState<string[]>([])
   const [notes, setNotes] = useState('')
@@ -79,6 +99,10 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
   const [formError, setFormError] = useState<string | null>(null)
   const [signatureInputs, setSignatureInputs] = useState<Record<string, string>>({})
   const [signatureErrors, setSignatureErrors] = useState<Record<string, string>>({})
+  const [approvalNotes, setApprovalNotes] = useState<Record<string, string>>({})
+  const [delegationInputs, setDelegationInputs] = useState<Record<string, string>>({})
+  const [delegationDueInputs, setDelegationDueInputs] = useState<Record<string, string>>({})
+  const [stageErrors, setStageErrors] = useState<Record<string, string>>({})
 
   const recentEvents = useMemo(() => timelineEvents.slice(0, 10), [timelineEvents])
 
@@ -118,28 +142,102 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
 
   const handleApproval = async (
     record: ExecutionNarrativeExportRecord,
+    stageId: string,
     status: 'approved' | 'rejected',
   ) => {
-    const signature = signatureInputs[record.id]?.trim()
+    const signature = signatureInputs[stageId]?.trim()
     if (!signature) {
-      setSignatureErrors((prev) => ({ ...prev, [record.id]: 'Signature is required' }))
+      setSignatureErrors((prev) => ({ ...prev, [stageId]: 'Signature is required' }))
       return
     }
-    setSignatureErrors((prev) => ({ ...prev, [record.id]: '' }))
+    setSignatureErrors((prev) => ({ ...prev, [stageId]: '' }))
+    setStageErrors((prev) => ({ ...prev, [stageId]: '' }))
+    const notes = approvalNotes[stageId]?.trim()
     try {
       await approveMutation.mutateAsync({
         exportId: record.id,
-        approval: { status, signature },
+        approval: {
+          status,
+          signature,
+          stage_id: stageId,
+          notes: notes ? notes : undefined,
+        },
       })
-      setSignatureInputs((prev) => ({ ...prev, [record.id]: '' }))
+      setSignatureInputs((prev) => ({ ...prev, [stageId]: '' }))
+      setApprovalNotes((prev) => ({ ...prev, [stageId]: '' }))
     } catch (error: any) {
       const detail =
         error?.response?.data?.detail ??
         error?.message ??
         'Unable to record approval'
-      setSignatureErrors((prev) => ({
+      setStageErrors((prev) => ({
         ...prev,
-        [record.id]: typeof detail === 'string' ? detail : 'Unable to record approval',
+        [stageId]: typeof detail === 'string' ? detail : 'Unable to record approval',
+      }))
+    }
+  }
+
+  const handleDelegation = async (
+    record: ExecutionNarrativeExportRecord,
+    stageId: string,
+  ) => {
+    const delegateId = delegationInputs[stageId]?.trim()
+    if (!delegateId) {
+      setStageErrors((prev) => ({ ...prev, [stageId]: 'Delegate user id is required' }))
+      return
+    }
+    const rawDue = delegationDueInputs[stageId]?.trim()
+    let due_at: string | undefined
+    if (rawDue) {
+      try {
+        due_at = new Date(rawDue).toISOString()
+      } catch (error) {
+        setStageErrors((prev) => ({ ...prev, [stageId]: 'Invalid due date' }))
+        return
+      }
+    }
+    const notes = approvalNotes[stageId]?.trim()
+    try {
+      await delegateMutation.mutateAsync({
+        exportId: record.id,
+        stageId,
+        delegation: {
+          delegate_id: delegateId,
+          due_at,
+          notes: notes ? notes : undefined,
+        },
+      })
+      setStageErrors((prev) => ({ ...prev, [stageId]: '' }))
+      setDelegationInputs((prev) => ({ ...prev, [stageId]: '' }))
+      setDelegationDueInputs((prev) => ({ ...prev, [stageId]: '' }))
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ?? error?.message ?? 'Unable to delegate stage'
+      setStageErrors((prev) => ({
+        ...prev,
+        [stageId]: typeof detail === 'string' ? detail : 'Unable to delegate stage',
+      }))
+    }
+  }
+
+  const handleResetStage = async (
+    record: ExecutionNarrativeExportRecord,
+    stageId: string,
+  ) => {
+    const notes = approvalNotes[stageId]?.trim()
+    try {
+      await resetStageMutation.mutateAsync({
+        exportId: record.id,
+        stageId,
+        reset: { notes: notes ? notes : undefined },
+      })
+      setStageErrors((prev) => ({ ...prev, [stageId]: '' }))
+    } catch (error: any) {
+      const detail =
+        error?.response?.data?.detail ?? error?.message ?? 'Unable to reset stage'
+      setStageErrors((prev) => ({
+        ...prev,
+        [stageId]: typeof detail === 'string' ? detail : 'Unable to reset stage',
       }))
     }
   }
@@ -247,11 +345,12 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
       {exports.length > 0 && (
         <div className="space-y-4">
           {exports.map((record) => {
-            const canDecide = record.approval_status === 'pending'
+            const currentStage = record.current_stage
+            const stageError = currentStage ? stageErrors[currentStage.id] : undefined
             return (
               <article
                 key={record.id}
-                className="border border-neutral-200 rounded-md p-4 space-y-3 bg-neutral-50"
+                className="border border-neutral-200 rounded-md p-4 space-y-4 bg-neutral-50"
               >
                 <header className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
                   <div className="space-y-1">
@@ -298,6 +397,187 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                     {record.content}
                   </pre>
                 </details>
+
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-neutral-700">Approval ladder</h4>
+                    {record.approved_by && (
+                      <span className="text-xs text-neutral-500">
+                        Completed {formatDateTime(record.approval_completed_at)} by{' '}
+                        {record.approved_by.full_name ?? record.approved_by.email}
+                      </span>
+                    )}
+                  </div>
+                  <div className="space-y-3">
+                    {record.approval_stages.map((stage) => {
+                      const isCurrent = currentStage?.id === stage.id
+                      const actionHistory = stage.actions.slice(-3).reverse()
+                      const signatureValue = signatureInputs[stage.id] ?? ''
+                      const notesValue = approvalNotes[stage.id] ?? ''
+                      const delegateValue = delegationInputs[stage.id] ?? ''
+                      const delegateDueValue = delegationDueInputs[stage.id] ?? ''
+                      return (
+                        <div
+                          key={stage.id}
+                          className={`rounded-md border px-3 py-3 bg-white ${
+                            isCurrent ? 'border-blue-200 shadow-sm' : 'border-neutral-200'
+                          }`}
+                        >
+                          <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                            <div className="space-y-1">
+                              <p className="text-sm font-medium text-neutral-700">
+                                Stage {stage.sequence_index}:{' '}
+                                {stage.name ?? `Stage ${stage.sequence_index}`}
+                              </p>
+                              <p className="text-xs text-neutral-500">
+                                Role: <span className="font-medium">{stage.required_role}</span>
+                              </p>
+                              <p className="text-xs text-neutral-500">
+                                Assignee:{' '}
+                                {stage.assignee?.full_name ?? stage.assignee?.email ?? 'Unassigned'}
+                              </p>
+                              <p className="text-xs text-neutral-500">
+                                Delegate:{' '}
+                                {stage.delegated_to?.full_name ?? stage.delegated_to?.email ?? 'None'}
+                              </p>
+                              {stage.due_at && (
+                                <p className="text-xs text-neutral-500">
+                                  Due {formatDateTime(stage.due_at)}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex flex-col items-end gap-1">
+                              <span
+                                className={`text-xs font-medium px-2 py-1 rounded-full border ${
+                                  stageStatusBadge[stage.status] ?? stageStatusBadge.pending
+                                }`}
+                              >
+                                {stageStatusLabel[stage.status] ?? stage.status}
+                              </span>
+                              {stage.completed_at && (
+                                <span className="text-xs text-neutral-400">
+                                  Completed {formatDateTime(stage.completed_at)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          {actionHistory.length > 0 && (
+                            <div className="mt-2 space-y-1 text-xs text-neutral-500">
+                              <p className="font-medium text-neutral-600">Recent activity</p>
+                              <ul className="space-y-1">
+                                {actionHistory.map((action) => (
+                                  <li key={action.id}>
+                                    {stageStatusLabel[action.action_type] ?? action.action_type} •{' '}
+                                    {action.actor.full_name ?? action.actor.email} •{' '}
+                                    {formatDateTime(action.created_at)}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {isCurrent && (
+                            <div className="mt-3 space-y-3 border-t border-neutral-200 pt-3">
+                              <div className="space-y-2">
+                                <label className="block text-xs font-medium text-neutral-600">
+                                  Approval signature
+                                </label>
+                                <input
+                                  className="w-full rounded-md border border-neutral-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  placeholder="Type full name or e-signature text"
+                                  value={signatureValue}
+                                  onChange={(event) =>
+                                    setSignatureInputs((prev) => ({
+                                      ...prev,
+                                      [stage.id]: event.target.value,
+                                    }))
+                                  }
+                                  disabled={approveMutation.isLoading}
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <label className="block text-xs font-medium text-neutral-600">
+                                  Stage notes (optional)
+                                </label>
+                                <textarea
+                                  className="w-full rounded-md border border-neutral-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  rows={2}
+                                  value={notesValue}
+                                  onChange={(event) =>
+                                    setApprovalNotes((prev) => ({
+                                      ...prev,
+                                      [stage.id]: event.target.value,
+                                    }))
+                                  }
+                                />
+                              </div>
+                              {stageError && (
+                                <p className="text-xs text-rose-600">{stageError}</p>
+                              )}
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:bg-neutral-300"
+                                  onClick={() => handleApproval(record, stage.id, 'approved')}
+                                  disabled={approveMutation.isLoading}
+                                >
+                                  Approve stage
+                                </button>
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center rounded-md bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-700 disabled:bg-neutral-300"
+                                  onClick={() => handleApproval(record, stage.id, 'rejected')}
+                                  disabled={approveMutation.isLoading}
+                                >
+                                  Reject stage
+                                </button>
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center rounded-md bg-neutral-200 px-3 py-1.5 text-xs font-medium text-neutral-700 hover:bg-neutral-300 disabled:bg-neutral-300"
+                                  onClick={() => handleResetStage(record, stage.id)}
+                                  disabled={resetStageMutation.isLoading}
+                                >
+                                  Reset stage
+                                </button>
+                              </div>
+                              <div className="grid gap-2 md:grid-cols-[2fr,1fr,auto]">
+                                <input
+                                  className="rounded-md border border-neutral-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  placeholder="Delegate user id"
+                                  value={delegateValue}
+                                  onChange={(event) =>
+                                    setDelegationInputs((prev) => ({
+                                      ...prev,
+                                      [stage.id]: event.target.value,
+                                    }))
+                                  }
+                                />
+                                <input
+                                  type="datetime-local"
+                                  className="rounded-md border border-neutral-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                  value={delegateDueValue}
+                                  onChange={(event) =>
+                                    setDelegationDueInputs((prev) => ({
+                                      ...prev,
+                                      [stage.id]: event.target.value,
+                                    }))
+                                  }
+                                />
+                                <button
+                                  type="button"
+                                  className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:bg-neutral-300"
+                                  onClick={() => handleDelegation(record, stage.id)}
+                                  disabled={delegateMutation.isLoading}
+                                >
+                                  Delegate stage
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
 
                 <div className="flex flex-col gap-1 text-xs text-neutral-600">
                   <div className="flex flex-wrap items-center gap-2">
@@ -347,48 +627,6 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                 <div className="text-xs text-neutral-600">
                   <p className="font-medium text-neutral-700">Bundled evidence</p>
                   <p>{summarizeAttachment(record)}</p>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="block text-xs font-medium text-neutral-600">
-                    Approval signature
-                  </label>
-                  <input
-                    className="w-full rounded-md border border-neutral-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Type full name or e-signature text"
-                    value={signatureInputs[record.id] ?? ''}
-                    onChange={(event) =>
-                      setSignatureInputs((prev) => ({ ...prev, [record.id]: event.target.value }))
-                    }
-                    disabled={!canDecide}
-                  />
-                  {signatureErrors[record.id] && (
-                    <p className="text-xs text-rose-600">{signatureErrors[record.id]}</p>
-                  )}
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:bg-neutral-300"
-                      onClick={() => handleApproval(record, 'approved')}
-                      disabled={approveMutation.isLoading || !canDecide}
-                    >
-                      Approve export
-                    </button>
-                    <button
-                      type="button"
-                      className="inline-flex items-center rounded-md bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-700 disabled:bg-neutral-300"
-                      onClick={() => handleApproval(record, 'rejected')}
-                      disabled={approveMutation.isLoading || !canDecide}
-                    >
-                      Reject export
-                    </button>
-                    {record.approval_signature && (
-                      <span className="text-xs text-neutral-500">
-                        Signed {formatDateTime(record.approved_at)} by{' '}
-                        {record.approved_by?.full_name ?? record.approved_by?.email}
-                      </span>
-                    )}
-                  </div>
                 </div>
               </article>
             )

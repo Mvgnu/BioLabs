@@ -213,6 +213,15 @@ class ExecutionNarrativeExport(Base):
     approval_status = Column(String, default="pending", nullable=False)
     approval_signature = Column(String, nullable=True)
     approved_at = Column(DateTime, nullable=True)
+    approval_completed_at = Column(DateTime, nullable=True)
+    approval_stage_count = Column(Integer, default=0, nullable=False)
+    workflow_template_id = Column(UUID(as_uuid=True), nullable=True)
+    current_stage_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_narrative_approval_stages.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    current_stage_started_at = Column(DateTime, nullable=True)
     notes = Column(String, nullable=True)
     meta = Column("metadata", JSON, default=dict)
     artifact_status = Column(String, default="queued", nullable=False)
@@ -244,6 +253,102 @@ class ExecutionNarrativeExport(Base):
         back_populates="export",
         cascade="all, delete-orphan",
     )
+    approval_stages = relationship(
+        "ExecutionNarrativeApprovalStage",
+        back_populates="export",
+        cascade="all, delete-orphan",
+        order_by="ExecutionNarrativeApprovalStage.sequence_index",
+        foreign_keys="ExecutionNarrativeApprovalStage.export_id",
+    )
+    current_stage = relationship(
+        "ExecutionNarrativeApprovalStage",
+        foreign_keys=[current_stage_id],
+        post_update=True,
+    )
+
+
+class ExecutionNarrativeApprovalStage(Base):
+    __tablename__ = "execution_narrative_approval_stages"
+
+    # purpose: orchestrate multi-role approval ladder for narrative exports
+    # status: pilot
+    # depends_on: execution_narrative_exports
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    export_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_narrative_exports.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence_index = Column(Integer, nullable=False)
+    name = Column(String, nullable=True)
+    required_role = Column(String, nullable=False)
+    status = Column(String, default="pending", nullable=False)
+    sla_hours = Column(Integer, nullable=True)
+    due_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    assignee_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    delegated_to_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    overdue_notified_at = Column(DateTime, nullable=True)
+    notes = Column(String, nullable=True)
+    meta = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+    )
+
+    export = relationship(
+        "ExecutionNarrativeExport",
+        back_populates="approval_stages",
+        foreign_keys=[export_id],
+    )
+    assignee = relationship("User", foreign_keys=[assignee_id])
+    delegated_to = relationship("User", foreign_keys=[delegated_to_id])
+    actions = relationship(
+        "ExecutionNarrativeApprovalAction",
+        back_populates="stage",
+        cascade="all, delete-orphan",
+        order_by="ExecutionNarrativeApprovalAction.created_at",
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("export_id", "sequence_index"),
+    )
+
+
+class ExecutionNarrativeApprovalAction(Base):
+    __tablename__ = "execution_narrative_approval_actions"
+
+    # purpose: capture granular lifecycle actions performed on approval stages
+    # status: pilot
+    # depends_on: execution_narrative_approval_stages
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    stage_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_narrative_approval_stages.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    actor_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    action_type = Column(String, nullable=False)
+    signature = Column(String, nullable=True)
+    notes = Column(Text, nullable=True)
+    delegation_target_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=True,
+    )
+    meta = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    stage = relationship("ExecutionNarrativeApprovalStage", back_populates="actions")
+    actor = relationship("User", foreign_keys=[actor_id])
+    delegation_target = relationship("User", foreign_keys=[delegation_target_id])
 
 
 class ExecutionNarrativeExportAttachment(Base):

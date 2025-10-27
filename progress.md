@@ -1,5 +1,9 @@
 # Progress Log
 
+## 2025-07-03
+- Authored `docs/approval_workflow_design.md` capturing staged approval models, APIs, worker hooks, frontend ladder UX, and test matrix.
+- Updated documentation index to reference the new design and logged follow-on compliance considerations.
+
 ## 2025-07-02
 - Initialized progress log.
 

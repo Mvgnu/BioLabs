@@ -194,6 +194,10 @@ def package_execution_narrative_export(self, export_identifier: str) -> str:
             _logger.warning("Narrative export %s missing", export_uuid)
             return "missing"
 
+        if export.approval_status != "approved":
+            _logger.info("Narrative export %s awaiting staged approvals", export_uuid)
+            return "pending_approval"
+
         if export.artifact_status == "ready" and export.artifact_file_id:
             return "noop"
 
