@@ -551,3 +551,66 @@ export interface ExperimentTimelinePage {
   events: ExecutionEvent[]
   next_cursor?: string | null
 }
+
+// governance template modeling
+export interface GovernanceStageBlueprint {
+  // purpose: stage blueprint definition consumed by governance UI
+  // inputs: governance author ladder builder state
+  // outputs: serialized stage blueprint sent to backend
+  // status: experimental
+  name?: string | null
+  required_role: string
+  sla_hours?: number | null
+  metadata?: Record<string, any>
+}
+
+export interface GovernanceTemplate {
+  // purpose: unify workflow template payload for admin workspace
+  // inputs: backend governance template responses
+  // outputs: typed React state for template editor
+  // status: experimental
+  id: string
+  template_key: string
+  name: string
+  description?: string | null
+  version: number
+  status: string
+  default_stage_sla_hours?: number | null
+  permitted_roles: string[]
+  stage_blueprint: GovernanceStageBlueprint[]
+  forked_from_id?: string | null
+  is_latest: boolean
+  created_at: string
+  updated_at: string
+  published_at?: string | null
+  created_by_id: string
+}
+
+export interface GovernanceTemplateDraft {
+  // purpose: capture mutable authoring state before persistence
+  // inputs: governance editor form values
+  // outputs: payload for template create API
+  // status: experimental
+  template_key: string
+  name: string
+  description?: string | null
+  default_stage_sla_hours?: number | null
+  permitted_roles: string[]
+  stage_blueprint: GovernanceStageBlueprint[]
+  forked_from_id?: string | null
+  publish?: boolean
+}
+
+export interface GovernanceTemplateAssignment {
+  // purpose: describe assignment targets for governance mapping
+  // inputs: backend assignment responses
+  // outputs: UI assignment tables
+  // status: experimental
+  id: string
+  template_id: string
+  team_id?: string | null
+  protocol_template_id?: string | null
+  metadata: Record<string, any>
+  created_at: string
+  created_by_id: string
+}

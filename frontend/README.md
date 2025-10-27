@@ -25,6 +25,11 @@ Launch guided experiment runs through the **Experiment Console**, which unifies 
 and equipment bookings into a single execution workspace.
 Use the **Search** page to quickly locate items by name.
 
+Administrators can now access the **Governance** workspace to author narrative workflow templates. The console surfaces the
+template library, version-aware editor, and a React Flow powered ladder builder for stage design. Persist drafts or publish new
+versions directly against the backend governance APIs, then map templates to teams or protocol templates via the assignment
+panel.
+
 ## Testing
 
 Run the Vitest suite to execute unit coverage for client hooks and UI logic, including the staged approval ladder cache handlers:
