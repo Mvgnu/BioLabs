@@ -17,6 +17,11 @@ import type {
   ExperimentRemediationResponse,
   ExperimentStepStatusUpdate,
   ExperimentTimelinePage,
+  ExperimentScenario,
+  ExperimentScenarioCloneRequest,
+  ExperimentScenarioCreateRequest,
+  ExperimentScenarioUpdateRequest,
+  ExperimentScenarioWorkspace,
   ExecutionNarrativeExportHistory,
   ExecutionNarrativeExportRecord,
   ExecutionNarrativeExportCreate,
@@ -44,6 +49,12 @@ const timelineKey = (
 const exportsKey = (executionId: string | null) => [
   'experiment-console',
   'exports',
+  executionId,
+]
+
+const scenarioWorkspaceKey = (executionId: string | null) => [
+  'experiment-console',
+  'scenarios',
   executionId,
 ]
 
@@ -231,6 +242,102 @@ export const useExperimentPreview = (executionId: string | null) => {
         payload,
       )
       return resp.data as ExperimentPreviewResponse
+    },
+  })
+}
+
+export const useScenarioWorkspace = (executionId: string | null) => {
+  return useQuery({
+    queryKey: scenarioWorkspaceKey(executionId),
+    enabled: Boolean(executionId),
+    queryFn: async () => {
+      if (!executionId) {
+        throw new Error('Execution id required for scenario workspace queries')
+      }
+      const resp = await api.get(`/api/experiments/${executionId}/scenarios`)
+      return resp.data as ExperimentScenarioWorkspace
+    },
+  })
+}
+
+export const useCreateScenario = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (
+      payload: ExperimentScenarioCreateRequest,
+    ): Promise<ExperimentScenario> => {
+      if (!executionId) {
+        throw new Error('Execution id required for scenario creation')
+      }
+      const resp = await api.post(
+        `/api/experiments/${executionId}/scenarios`,
+        payload,
+      )
+      return resp.data as ExperimentScenario
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: scenarioWorkspaceKey(executionId) })
+    },
+  })
+}
+
+export const useUpdateScenario = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      scenarioId: string
+      payload: ExperimentScenarioUpdateRequest
+    }): Promise<ExperimentScenario> => {
+      if (!executionId) {
+        throw new Error('Execution id required for scenario updates')
+      }
+      const resp = await api.put(
+        `/api/experiments/${executionId}/scenarios/${vars.scenarioId}`,
+        vars.payload,
+      )
+      return resp.data as ExperimentScenario
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: scenarioWorkspaceKey(executionId) })
+    },
+  })
+}
+
+export const useCloneScenario = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      scenarioId: string
+      payload: ExperimentScenarioCloneRequest
+    }): Promise<ExperimentScenario> => {
+      if (!executionId) {
+        throw new Error('Execution id required for scenario cloning')
+      }
+      const resp = await api.post(
+        `/api/experiments/${executionId}/scenarios/${vars.scenarioId}/clone`,
+        vars.payload,
+      )
+      return resp.data as ExperimentScenario
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: scenarioWorkspaceKey(executionId) })
+    },
+  })
+}
+
+export const useDeleteScenario = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (scenarioId: string) => {
+      if (!executionId) {
+        throw new Error('Execution id required for scenario deletion')
+      }
+      await api.delete(
+        `/api/experiments/${executionId}/scenarios/${scenarioId}`,
+      )
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: scenarioWorkspaceKey(executionId) })
     },
   })
 }
