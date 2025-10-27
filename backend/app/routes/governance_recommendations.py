@@ -9,7 +9,9 @@ from .. import models, schemas
 from ..auth import get_current_user
 from ..database import get_db
 from ..recommendations.governance import generate_override_recommendations
+from ..recommendations import actions as recommendation_actions
 from .experiment_console import _ensure_execution_access, _get_user_team_ids
+from .governance_baselines import _assert_baseline_visibility, _load_baseline
 
 router = APIRouter(
     prefix="/api/governance/recommendations",
@@ -54,4 +56,145 @@ def read_governance_override_recommendations(
 
     db.flush()
     return report
+
+
+
+def _prepare_override_context(
+    db: Session,
+    user: models.User,
+    payload: schemas.GovernanceOverrideActionRequest,
+) -> tuple[
+    models.ProtocolExecution,
+    models.GovernanceBaselineVersion | None,
+    models.User | None,
+]:
+    team_ids = _get_user_team_ids(db, user)
+    execution = db.get(models.ProtocolExecution, payload.execution_id)
+    if execution is None:
+        raise HTTPException(status_code=404, detail="Execution not found")
+    _ensure_execution_access(db, execution, user, team_ids)
+
+    baseline: models.GovernanceBaselineVersion | None = None
+    if payload.baseline_id is not None:
+        baseline = _load_baseline(db, payload.baseline_id)
+        if baseline is None:
+            raise HTTPException(status_code=404, detail="Baseline not found")
+        if baseline.execution_id != execution.id:
+            raise HTTPException(status_code=400, detail="Baseline does not belong to execution")
+        _assert_baseline_visibility(db, baseline, user, team_ids)
+
+    target: models.User | None = None
+    if payload.target_reviewer_id is not None:
+        target = db.get(models.User, payload.target_reviewer_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="Target reviewer not found")
+
+    return execution, baseline, target
+
+
+@router.post(
+    "/override/{recommendation_id}/accept",
+    response_model=schemas.GovernanceOverrideActionOutcome,
+)
+def accept_governance_override(
+    recommendation_id: str,
+    payload: schemas.GovernanceOverrideActionRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> schemas.GovernanceOverrideActionOutcome:
+    """Accept an override recommendation and persist pending action state."""
+
+    try:
+        execution, baseline, _ = _prepare_override_context(db, user, payload)
+        record, _ = recommendation_actions.accept_override(
+            db,
+            actor=user,
+            recommendation_id=recommendation_id,
+            action=payload.action,
+            execution=execution,
+            baseline=baseline,
+            target_reviewer_id=payload.target_reviewer_id,
+            notes=payload.notes,
+            metadata=payload.metadata,
+        )
+        db.commit()
+        db.refresh(record)
+        return record
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post(
+    "/override/{recommendation_id}/decline",
+    response_model=schemas.GovernanceOverrideActionOutcome,
+)
+def decline_governance_override(
+    recommendation_id: str,
+    payload: schemas.GovernanceOverrideActionRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> schemas.GovernanceOverrideActionOutcome:
+    """Decline an override recommendation and log lineage."""
+
+    try:
+        execution, baseline, _ = _prepare_override_context(db, user, payload)
+        record, _ = recommendation_actions.decline_override(
+            db,
+            actor=user,
+            recommendation_id=recommendation_id,
+            action=payload.action,
+            execution=execution,
+            baseline=baseline,
+            notes=payload.notes,
+            metadata=payload.metadata,
+        )
+        db.commit()
+        db.refresh(record)
+        return record
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post(
+    "/override/{recommendation_id}/execute",
+    response_model=schemas.GovernanceOverrideActionOutcome,
+)
+def execute_governance_override(
+    recommendation_id: str,
+    payload: schemas.GovernanceOverrideActionRequest,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> schemas.GovernanceOverrideActionOutcome:
+    """Execute an override recommendation and apply staffing adjustments."""
+
+    try:
+        execution, baseline, target = _prepare_override_context(db, user, payload)
+        record, _ = recommendation_actions.execute_override(
+            db,
+            actor=user,
+            recommendation_id=recommendation_id,
+            action=payload.action,
+            execution=execution,
+            baseline=baseline,
+            target_reviewer_id=getattr(target, "id", None),
+            notes=payload.notes,
+            metadata=payload.metadata,
+        )
+        db.commit()
+        db.refresh(record)
+        return record
+    except HTTPException:
+        db.rollback()
+        raise
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
 

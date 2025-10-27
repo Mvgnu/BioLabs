@@ -821,6 +821,51 @@ def build_governance_override_recommendation(
 
 
 # purpose: assemble GovernanceOverrideRecommendationReport from recommendations and timestamp
+
+class GovernanceOverrideActionRequest(BaseModel):
+    # purpose: validate override action invocations for governance routes
+    # inputs: execution scope, optional baseline context, reviewer targets, metadata
+    # outputs: normalized payload ready for override workflow execution
+    # status: pilot
+    execution_id: UUID
+    action: Literal["reassign", "cooldown", "escalate"]
+    baseline_id: UUID | None = None
+    target_reviewer_id: UUID | None = None
+    notes: str | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_action(self) -> "GovernanceOverrideActionRequest":
+        if self.action == "reassign":
+            if self.baseline_id is None:
+                raise ValueError("Reassign overrides require a baseline identifier")
+            if self.target_reviewer_id is None:
+                raise ValueError("Reassign overrides require a target reviewer")
+        return self
+
+
+class GovernanceOverrideActionOutcome(BaseModel):
+    # purpose: serialize override action records for governance clients
+    # inputs: GovernanceOverrideAction ORM instances with optional metadata
+    # outputs: API payload describing action status and lineage links
+    # status: pilot
+    id: UUID
+    recommendation_id: str
+    action: Literal["reassign", "cooldown", "escalate"]
+    status: Literal["accepted", "declined", "executed", "reversed"]
+    execution_id: UUID | None = None
+    baseline_id: UUID | None = None
+    target_reviewer_id: UUID | None = None
+    actor_id: UUID
+    reversible: bool = False
+    notes: str | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict, alias="meta")
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 def build_governance_override_report(
     *,
     generated_at: datetime,
