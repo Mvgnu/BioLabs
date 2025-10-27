@@ -674,6 +674,164 @@ class GovernanceReviewerCadenceReport(BaseModel):
     totals: GovernanceReviewerCadenceTotals
 
 
+# purpose: helper to normalise reviewer load band histograms for cadence payloads
+def build_reviewer_load_band_counts(
+    *, light: int = 0, steady: int = 0, saturated: int = 0
+) -> GovernanceReviewerLoadBandCounts:
+    return GovernanceReviewerLoadBandCounts(
+        light=light, steady=steady, saturated=saturated
+    )
+
+
+# purpose: construct GovernanceReviewerCadenceSummary objects from aggregation primitives
+def build_reviewer_cadence_summary(
+    *,
+    reviewer_id: UUID,
+    reviewer_email: EmailStr | None = None,
+    reviewer_name: str | None = None,
+    assignment_count: int = 0,
+    completion_count: int = 0,
+    pending_count: int = 0,
+    load_band: Literal["light", "steady", "saturated"] = "light",
+    average_latency_minutes: float | None = None,
+    latency_p50_minutes: float | None = None,
+    latency_p90_minutes: float | None = None,
+    latency_bands: list[GovernanceAnalyticsLatencyBand] | None = None,
+    blocked_ratio_trailing: float | None = None,
+    churn_signal: float | None = None,
+    rollback_precursor_count: int = 0,
+    publish_streak: int = 0,
+    last_publish_at: datetime | None = None,
+    streak_alert: bool = False,
+) -> GovernanceReviewerCadenceSummary:
+    return GovernanceReviewerCadenceSummary(
+        reviewer_id=reviewer_id,
+        reviewer_email=reviewer_email,
+        reviewer_name=reviewer_name,
+        assignment_count=assignment_count,
+        completion_count=completion_count,
+        pending_count=pending_count,
+        load_band=load_band,
+        average_latency_minutes=average_latency_minutes,
+        latency_p50_minutes=latency_p50_minutes,
+        latency_p90_minutes=latency_p90_minutes,
+        latency_bands=latency_bands or [],
+        blocked_ratio_trailing=blocked_ratio_trailing,
+        churn_signal=churn_signal,
+        rollback_precursor_count=rollback_precursor_count,
+        publish_streak=publish_streak,
+        last_publish_at=last_publish_at,
+        streak_alert=streak_alert,
+    )
+
+
+# purpose: build GovernanceReviewerCadenceTotals with consistent load band payloads
+def build_reviewer_cadence_totals(
+    *,
+    reviewer_count: int,
+    streak_alert_count: int,
+    reviewer_latency_p50_minutes: float | None,
+    reviewer_latency_p90_minutes: float | None,
+    load_band_counts: GovernanceReviewerLoadBandCounts
+    | dict[str, int],
+) -> GovernanceReviewerCadenceTotals:
+    counts_model = (
+        load_band_counts
+        if isinstance(load_band_counts, GovernanceReviewerLoadBandCounts)
+        else GovernanceReviewerLoadBandCounts(**load_band_counts)
+    )
+    return GovernanceReviewerCadenceTotals(
+        reviewer_count=reviewer_count,
+        streak_alert_count=streak_alert_count,
+        reviewer_latency_p50_minutes=reviewer_latency_p50_minutes,
+        reviewer_latency_p90_minutes=reviewer_latency_p90_minutes,
+        load_band_counts=counts_model,
+    )
+
+
+# purpose: central mapper for GovernanceReviewerCadenceReport responses
+def build_reviewer_cadence_report(
+    reviewers: list[GovernanceReviewerCadenceSummary],
+    totals: GovernanceReviewerCadenceTotals,
+) -> GovernanceReviewerCadenceReport:
+    return GovernanceReviewerCadenceReport(reviewers=reviewers, totals=totals)
+
+
+class GovernanceOverrideRecommendation(BaseModel):
+    # purpose: express deterministic governance override advisories for operators
+    # inputs: rule identifier, reviewer context, action summary, metric payload
+    # outputs: override recommendation cards consumed by experiment console surfaces
+    # status: pilot
+    recommendation_id: str
+    rule_key: str
+    action: Literal["reassign", "cooldown", "escalate"]
+    priority: Literal["low", "medium", "high"]
+    summary: str
+    detail: str | None = None
+    reviewer_id: UUID | None = None
+    reviewer_name: str | None = None
+    reviewer_email: EmailStr | None = None
+    triggered_at: datetime
+    related_execution_ids: list[UUID] = Field(default_factory=list)
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    allow_opt_out: bool = True
+
+
+class GovernanceOverrideRecommendationReport(BaseModel):
+    # purpose: bundle governance override recommendations with generation metadata
+    # inputs: recommendation collection, generation timestamp, optional context
+    # outputs: response payload for governance recommendation routes
+    # status: pilot
+    generated_at: datetime
+    recommendations: list[GovernanceOverrideRecommendation] = Field(default_factory=list)
+
+
+# purpose: construct GovernanceOverrideRecommendation payloads with consistent defaults
+def build_governance_override_recommendation(
+    *,
+    recommendation_id: str,
+    rule_key: str,
+    action: Literal["reassign", "cooldown", "escalate"],
+    priority: Literal["low", "medium", "high"],
+    summary: str,
+    detail: str | None,
+    reviewer_id: UUID | None,
+    reviewer_name: str | None,
+    reviewer_email: EmailStr | None,
+    triggered_at: datetime,
+    related_execution_ids: list[UUID],
+    metrics: Dict[str, Any],
+    allow_opt_out: bool = True,
+) -> GovernanceOverrideRecommendation:
+    return GovernanceOverrideRecommendation(
+        recommendation_id=recommendation_id,
+        rule_key=rule_key,
+        action=action,
+        priority=priority,
+        summary=summary,
+        detail=detail,
+        reviewer_id=reviewer_id,
+        reviewer_name=reviewer_name,
+        reviewer_email=reviewer_email,
+        triggered_at=triggered_at,
+        related_execution_ids=related_execution_ids,
+        metrics=metrics,
+        allow_opt_out=allow_opt_out,
+    )
+
+
+# purpose: assemble GovernanceOverrideRecommendationReport from recommendations and timestamp
+def build_governance_override_report(
+    *,
+    generated_at: datetime,
+    recommendations: list[GovernanceOverrideRecommendation],
+) -> GovernanceOverrideRecommendationReport:
+    return GovernanceOverrideRecommendationReport(
+        generated_at=generated_at,
+        recommendations=recommendations,
+    )
+
+
 class BaselineLifecycleLabel(BaseModel):
     # purpose: express structured metadata tags applied to baseline submissions
     # status: draft

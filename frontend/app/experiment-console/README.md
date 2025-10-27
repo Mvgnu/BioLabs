@@ -17,6 +17,6 @@
   - The `Timeline` component under `components/Timeline` virtualises event rows, fetches paginated history via `useExecutionTimeline`, and supports type filtering plus inline annotations stored client-side for coaching notes.
   - When the dedicated timeline endpoint is still loading the initial page, the UI hydrates using `timeline_preview` from the session payload to keep the narrative responsive.
   - The `ExportsPanel` component surfaces persisted narrative exports, allows scientists to bundle recent events as evidence, and captures approval signatures that post back to the backend export endpoints.
-  - `PreviewModal` provides a governance preview workflow that drives the `/api/experiments/{execution_id}/preview` endpoint, storing scenario history in `localStorage` and coordinating persisted scenarios through the new folder and sharing-aware workspace APIs.
+  - `PreviewModal` provides a governance preview workflow that drives the `/api/experiments/{execution_id}/preview` endpoint, storing scenario history in `localStorage` and coordinating persisted scenarios through the new folder and sharing-aware workspace APIs. It also consumes `useGovernanceRecommendations` to fetch `/api/governance/recommendations/override`, rendering priority-labelled banners with cadence metrics and inline acknowledgement toggles for operators.
 
 Update this README whenever step gating semantics or CTA routing logic changes.

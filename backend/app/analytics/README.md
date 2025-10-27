@@ -6,6 +6,8 @@
 
 This package currently exposes `governance.py`, which condenses preview ladder insights, execution step completions, and baseline lifecycle cadence into `GovernanceAnalyticsReport` payloads. These payloads power the `/api/governance/analytics` endpoint and drive SLA accuracy, blocker heatmaps, ladder load visualisations, and baseline approval/publishing intelligence on the experiment console. Reviewer cadence totals now include percentile latency guardrails and load band histograms so downstream clients can surface staffing KPIs without reprocessing raw samples.
 
+`reviewer.py` factors the reviewer cadence aggregation into reusable helpers that normalise RBAC-scoped reviewer summaries. The helpers return `GovernanceReviewerCadenceReport` payloads (via schema mappers) and expose deterministic percentile/load-band calculations so governance analytics, recommendation services, and future forecasting modules can compose a consistent cadence dataset without duplicating ORM traversal.
+
 ## Reviewer Cadence Summary
 
 - purpose: deliver RBAC-safe reviewer throughput analytics suitable for staffing dashboards

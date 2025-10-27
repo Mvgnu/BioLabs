@@ -59,15 +59,16 @@ def read_governance_analytics(
 
     if view == "reviewer":
         totals = report.totals
-        return schemas.GovernanceReviewerCadenceReport(
-            reviewers=report.reviewer_cadence,
-            totals=schemas.GovernanceReviewerCadenceTotals(
-                reviewer_count=totals.reviewer_count,
-                streak_alert_count=totals.streak_alert_count,
-                reviewer_latency_p50_minutes=totals.reviewer_latency_p50_minutes,
-                reviewer_latency_p90_minutes=totals.reviewer_latency_p90_minutes,
-                load_band_counts=totals.reviewer_load_band_counts,
-            ),
+        cadence_totals = schemas.build_reviewer_cadence_totals(
+            reviewer_count=totals.reviewer_count,
+            streak_alert_count=totals.streak_alert_count,
+            reviewer_latency_p50_minutes=totals.reviewer_latency_p50_minutes,
+            reviewer_latency_p90_minutes=totals.reviewer_latency_p90_minutes,
+            load_band_counts=totals.reviewer_load_band_counts,
+        )
+        return schemas.build_reviewer_cadence_report(
+            report.reviewer_cadence,
+            cadence_totals,
         )
 
     return report

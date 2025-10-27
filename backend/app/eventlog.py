@@ -71,3 +71,33 @@ def record_baseline_event(
     db.add(event)
     return event
 
+
+def record_governance_recommendation_event(
+    db: Session,
+    execution: models.ProtocolExecution,
+    rule_key: str,
+    recommendation: dict[str, Any],
+    actor: models.User | None = None,
+    opted_out: bool = False,
+) -> models.ExecutionEvent:
+    """Persist governance override recommendation events with provenance."""
+
+    # purpose: log governance override recommendations for audit and replay
+    # inputs: execution context, rule identifier, recommendation payload, actor, opt-out flag
+    # outputs: ExecutionEvent entries capturing override advice lineage
+    # status: pilot
+
+    payload = {
+        "rule_key": rule_key,
+        "recommendation": recommendation,
+        "reviewer_id": recommendation.get("reviewer_id"),
+        "opted_out": opted_out,
+    }
+    return record_execution_event(
+        db,
+        execution,
+        event_type="governance.recommendation.override",
+        payload=payload,
+        actor=actor,
+    )
+

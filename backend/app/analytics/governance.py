@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from datetime import datetime, timezone
-from math import ceil, floor
 from statistics import mean
 from typing import Any, Iterable, Sequence, Set
 from uuid import UUID
@@ -13,6 +11,12 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
+from .reviewer import (
+    REVIEWER_LATENCY_BANDS,
+    ReviewerCadenceAccumulator,
+    build_reviewer_cadence_report,
+    ensure_reviewer_stat,
+)
 
 # purpose: derive leadership-ready governance analytics from preview telemetry and execution results
 # inputs: SQLAlchemy session, authenticated user context, execution identifiers (optional)
@@ -33,16 +37,6 @@ def _parse_iso_timestamp(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
-
-
-REVIEWER_LATENCY_BANDS: tuple[tuple[str, int | None, int | None], ...] = (
-    ("under_2h", None, 120),
-    ("two_to_eight_h", 120, 480),
-    ("eight_to_day", 480, 1440),
-    ("over_day", 1440, None),
-)
-
-REVIEWER_LOAD_RANK = {"saturated": 3, "steady": 2, "light": 1}
 
 
 def _coerce_uuid(value: object) -> UUID | None:
@@ -77,83 +71,6 @@ def _classify_latency_band(minutes: float | None) -> str | None:
         if lower_bound <= normalised < upper_bound:
             return label
     return REVIEWER_LATENCY_BANDS[-1][0]
-
-
-def _calculate_percentile(samples: Sequence[float], percentile: float) -> float | None:
-    """Return percentile estimate for provided samples using linear interpolation."""
-
-    if not samples:
-        return None
-    ordered = sorted(samples)
-    if not ordered:
-        return None
-    clamped = max(0.0, min(100.0, percentile))
-    if clamped == 0.0:
-        return float(ordered[0])
-    if clamped == 100.0:
-        return float(ordered[-1])
-    rank = (clamped / 100.0) * (len(ordered) - 1)
-    lower_index = floor(rank)
-    upper_index = ceil(rank)
-    lower_value = float(ordered[lower_index])
-    upper_value = float(ordered[upper_index])
-    if lower_index == upper_index:
-        return lower_value
-    fraction = rank - lower_index
-    return lower_value + (upper_value - lower_value) * fraction
-
-
-def _determine_load_band(assignment_count: int, pending_count: int) -> str:
-    """Classify reviewer cadence load using assignment and pending volumes."""
-
-    if pending_count >= 8 or assignment_count >= 12:
-        return "saturated"
-    if pending_count >= 4 or assignment_count >= 6:
-        return "steady"
-    return "light"
-
-
-def _build_latency_band_payload(
-    counts: dict[str, int]
-) -> list[schemas.GovernanceAnalyticsLatencyBand]:
-    """Convert latency histogram counts into structured band payloads."""
-
-    payload: list[schemas.GovernanceAnalyticsLatencyBand] = []
-    for label, start, end in REVIEWER_LATENCY_BANDS:
-        payload.append(
-            schemas.GovernanceAnalyticsLatencyBand(
-                label=label,
-                start_minutes=start,
-                end_minutes=end,
-                count=counts.get(label, 0),
-            )
-        )
-    return payload
-
-
-def _calculate_publish_streak(
-    published_at_values: list[datetime],
-) -> tuple[int, datetime | None]:
-    """Determine the contiguous publish streak (<=72h gaps) for a reviewer."""
-
-    if not published_at_values:
-        return 0, None
-    ordered = sorted(
-        [value for value in published_at_values if isinstance(value, datetime)]
-    )
-    if not ordered:
-        return 0, None
-    streak = 1
-    last_value = ordered[-1]
-    threshold_seconds = 72 * 60 * 60
-    for candidate in reversed(ordered[:-1]):
-        delta_seconds = (last_value - candidate).total_seconds()
-        if delta_seconds <= threshold_seconds:
-            streak += 1
-            last_value = candidate
-        else:
-            break
-    return streak, ordered[-1]
 
 
 def _collect_step_completion_map(execution: models.ProtocolExecution) -> dict[int, datetime]:
@@ -236,26 +153,7 @@ def compute_governance_analytics(
     approval_latency_samples: list[float] = []
     publication_cadence_samples: list[float] = []
 
-    reviewer_stats: dict[UUID, dict[str, Any]] = {}
-    global_latency_samples: list[float] = []
-    load_band_totals = {"light": 0, "steady": 0, "saturated": 0}
-
-    def _ensure_reviewer_stat(reviewer_id: UUID) -> dict[str, Any]:
-        stats = reviewer_stats.get(reviewer_id)
-        if stats is None:
-            stats = {
-                "assigned": 0,
-                "completed": 0,
-                "pending": 0,
-                "latency_samples": [],
-                "latency_band_counts": defaultdict(int),
-                "blocked_samples": [],
-                "churn_samples": [],
-                "rollback_precursors": 0,
-                "publish_dates": [],
-            }
-            reviewer_stats[reviewer_id] = stats
-        return stats
+    reviewer_stats: dict[UUID, ReviewerCadenceAccumulator] = {}
 
     for event in events:
         execution = event.execution
@@ -318,10 +216,12 @@ def compute_governance_analytics(
                     continue
                 assigned_reviewers.append(reviewer_uuid)
                 summary_reviewer_ids.add(reviewer_uuid)
-                stats = _ensure_reviewer_stat(reviewer_uuid)
-                stats["assigned"] += 1
+                accumulator = ensure_reviewer_stat(
+                    reviewer_stats, reviewer_uuid
+                )
+                accumulator.assigned += 1
                 if reviewed_at is None:
-                    stats["pending"] += 1
+                    accumulator.pending += 1
             if submitted_at and reviewed_at:
                 delta_minutes = (reviewed_at - submitted_at).total_seconds() / 60
                 baseline_approval_latencies.append(delta_minutes)
@@ -330,27 +230,34 @@ def compute_governance_analytics(
             actual_reviewer_id = getattr(baseline, "reviewed_by_id", None)
             if actual_reviewer_id:
                 summary_reviewer_ids.add(actual_reviewer_id)
-                stats = _ensure_reviewer_stat(actual_reviewer_id)
+                accumulator = ensure_reviewer_stat(
+                    reviewer_stats, actual_reviewer_id
+                )
                 if actual_reviewer_id not in assigned_reviewers:
-                    stats["assigned"] += 1
-                stats["completed"] += 1
+                    accumulator.assigned += 1
+                accumulator.completed += 1
                 normalised_latency = _normalise_minutes(delta_minutes)
                 if normalised_latency is not None:
-                    stats["latency_samples"].append(normalised_latency)
+                    accumulator.latency_samples.append(normalised_latency)
                     band_label = _classify_latency_band(normalised_latency)
                     if band_label:
-                        stats["latency_band_counts"][band_label] += 1
+                        accumulator.latency_band_counts[band_label] += 1
                 if baseline.status == "rolled_back" or baseline.rolled_back_at is not None:
-                    stats["rollback_precursors"] += 1
+                    accumulator.rollback_precursors += 1
             publisher_id = getattr(baseline, "published_by_id", None)
             if publisher_id:
                 summary_reviewer_ids.add(publisher_id)
-                stats = _ensure_reviewer_stat(publisher_id)
-                if publisher_id not in assigned_reviewers and publisher_id != actual_reviewer_id:
-                    stats["assigned"] += 1
+                accumulator = ensure_reviewer_stat(
+                    reviewer_stats, publisher_id
+                )
+                if (
+                    publisher_id not in assigned_reviewers
+                    and publisher_id != actual_reviewer_id
+                ):
+                    accumulator.assigned += 1
                 publish_at = getattr(baseline, "published_at", None)
                 if isinstance(publish_at, datetime):
-                    stats["publish_dates"].append(publish_at)
+                    accumulator.publish_dates.append(publish_at)
             if baseline.status == "rolled_back" or baseline.rolled_back_at is not None:
                 baseline_rollback_count += 1
 
@@ -454,9 +361,11 @@ def compute_governance_analytics(
         )
 
         for reviewer_id in summary_reviewer_ids:
-            stats = _ensure_reviewer_stat(reviewer_id)
-            stats["blocked_samples"].append(blocked_ratio)
-            stats["churn_samples"].append(len(baseline_versions) + baseline_rollback_count)
+            accumulator = ensure_reviewer_stat(reviewer_stats, reviewer_id)
+            accumulator.blocked_samples.append(blocked_ratio)
+            accumulator.churn_samples.append(
+                len(baseline_versions) + baseline_rollback_count
+            )
 
         preview_count += 1
         if include_previews:
@@ -499,90 +408,11 @@ def compute_governance_analytics(
         else None
     )
 
-    reviewer_cadence: list[schemas.GovernanceReviewerCadenceSummary] = []
-    streak_alert_count = 0
-    if reviewer_stats:
-        reviewer_ids = list(reviewer_stats.keys())
-        reviewer_users = {
-            user.id: user
-            for user in db.query(models.User)
-            .filter(models.User.id.in_(reviewer_ids))
-            .all()
-        }
-
-        allowed_reviewer_ids: set[UUID]
-        if user.is_admin or not membership_ids:
-            allowed_reviewer_ids = set(reviewer_ids)
-        else:
-            allowed_reviewer_ids = {
-                membership.user_id
-                for membership in db.query(models.TeamMember)
-                .filter(models.TeamMember.team_id.in_(list(membership_ids)))
-                .all()
-            }
-            allowed_reviewer_ids.add(user.id)
-
-        for reviewer_id, stats in reviewer_stats.items():
-            if reviewer_id not in allowed_reviewer_ids:
-                continue
-            user = reviewer_users.get(reviewer_id)
-            latency_samples: list[float] = stats["latency_samples"]
-            average_latency = (
-                mean(latency_samples) if latency_samples else None
-            )
-            latency_payload = _build_latency_band_payload(
-                dict(stats["latency_band_counts"])
-            )
-            blocked_ratio_sample = (
-                mean(stats["blocked_samples"])
-                if stats["blocked_samples"]
-                else None
-            )
-            churn_sample = (
-                mean(stats["churn_samples"])
-                if stats["churn_samples"]
-                else None
-            )
-            streak, last_publish = _calculate_publish_streak(stats["publish_dates"])
-            streak_alert = streak >= 3
-            if streak_alert:
-                streak_alert_count += 1
-            load_band = _determine_load_band(stats["assigned"], stats["pending"])
-            load_band_totals[load_band] = load_band_totals.get(load_band, 0) + 1
-            global_latency_samples.extend(latency_samples)
-            reviewer_cadence.append(
-                schemas.GovernanceReviewerCadenceSummary(
-                    reviewer_id=reviewer_id,
-                    reviewer_email=getattr(user, "email", None),
-                    reviewer_name=getattr(user, "full_name", None),
-                    assignment_count=stats["assigned"],
-                    completion_count=stats["completed"],
-                    pending_count=stats["pending"],
-                    load_band=load_band,
-                    average_latency_minutes=average_latency,
-                    latency_p50_minutes=_calculate_percentile(
-                        latency_samples, 50.0
-                    ),
-                    latency_p90_minutes=_calculate_percentile(
-                        latency_samples, 90.0
-                    ),
-                    latency_bands=latency_payload,
-                    blocked_ratio_trailing=blocked_ratio_sample,
-                    churn_signal=churn_sample,
-                    rollback_precursor_count=stats["rollback_precursors"],
-                    publish_streak=streak,
-                    last_publish_at=last_publish,
-                    streak_alert=streak_alert,
-                )
-            )
-
-    reviewer_cadence.sort(
-        key=lambda item: (
-            REVIEWER_LOAD_RANK.get(item.load_band, 0),
-            item.completion_count,
-        ),
-        reverse=True,
+    reviewer_cadence_report = build_reviewer_cadence_report(
+        db, reviewer_stats, user, membership_ids
     )
+    reviewer_cadence = reviewer_cadence_report.reviewers
+    cadence_totals = reviewer_cadence_report.totals
 
     totals = schemas.GovernanceAnalyticsTotals(
         preview_count=preview_count,
@@ -594,17 +424,11 @@ def compute_governance_analytics(
         total_rollbacks=total_rollbacks,
         average_approval_latency_minutes=average_approval_latency,
         average_publication_cadence_days=average_publication_cadence,
-        reviewer_count=len(reviewer_cadence),
-        streak_alert_count=streak_alert_count,
-        reviewer_latency_p50_minutes=_calculate_percentile(
-            global_latency_samples, 50.0
-        ),
-        reviewer_latency_p90_minutes=_calculate_percentile(
-            global_latency_samples, 90.0
-        ),
-        reviewer_load_band_counts=schemas.GovernanceReviewerLoadBandCounts(
-            **load_band_totals
-        ),
+        reviewer_count=cadence_totals.reviewer_count,
+        streak_alert_count=cadence_totals.streak_alert_count,
+        reviewer_latency_p50_minutes=cadence_totals.reviewer_latency_p50_minutes,
+        reviewer_latency_p90_minutes=cadence_totals.reviewer_latency_p90_minutes,
+        reviewer_load_band_counts=cadence_totals.load_band_counts,
     )
 
     return schemas.GovernanceAnalyticsReport(

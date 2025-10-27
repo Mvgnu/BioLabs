@@ -559,6 +559,30 @@ export interface GovernanceReviewerCadenceReport {
   totals: GovernanceReviewerCadenceTotals
 }
 
+export type GovernanceOverrideAction = 'reassign' | 'cooldown' | 'escalate'
+export type GovernanceOverridePriority = 'low' | 'medium' | 'high'
+
+export interface GovernanceOverrideRecommendation {
+  recommendation_id: string
+  rule_key: string
+  action: GovernanceOverrideAction
+  priority: GovernanceOverridePriority
+  summary: string
+  detail?: string | null
+  reviewer_id?: string | null
+  reviewer_name?: string | null
+  reviewer_email?: string | null
+  triggered_at: string
+  related_execution_ids: string[]
+  metrics: Record<string, any>
+  allow_opt_out: boolean
+}
+
+export interface GovernanceOverrideRecommendationReport {
+  generated_at: string
+  recommendations: GovernanceOverrideRecommendation[]
+}
+
 export interface BaselineLifecycleLabel {
   key: string
   value: string
