@@ -16,6 +16,7 @@ import type {
   GovernanceReviewerCadenceReport,
   GovernanceReviewerCadenceTotals,
   GovernanceReviewerLoadBandCounts,
+  GovernanceOverrideRecommendationReport,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -110,6 +111,13 @@ export const governanceApi = {
       { params: { ...params, view: 'reviewer' } },
     )
     return mapGovernanceReviewerCadenceReport(response.data)
+  },
+  async getOverrideRecommendations(params?: { execution_id?: string; limit?: number | null }) {
+    const response = await api.get<GovernanceOverrideRecommendationReport>(
+      '/api/governance/recommendations/override',
+      { params },
+    )
+    return response.data
   },
   async getBaseline(baselineId: string) {
     const response = await api.get<GovernanceBaselineVersion>(

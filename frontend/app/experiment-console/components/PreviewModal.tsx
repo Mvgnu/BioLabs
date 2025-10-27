@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Button, Card, CardBody, Input } from '../../components/ui'
+import { Alert, Button, Card, CardBody, Input } from '../../components/ui'
 import { Dialog } from '../../components/ui/Dialog'
 import ScenarioSummary from './ScenarioSummary'
 import {
@@ -14,12 +14,14 @@ import {
   useScenarioWorkspace,
   useUpdateScenario,
 } from '../../hooks/useExperimentConsole'
+import { useGovernanceRecommendations } from '../hooks/useGovernanceRecommendations'
 import type {
   ExperimentPreviewRequest,
   ExperimentPreviewResponse,
   ExperimentPreviewStageOverride,
   ExperimentScenario,
   ExperimentScenarioSnapshot,
+  GovernanceOverridePriority,
 } from '../../types'
 
 interface PreviewModalProps {
@@ -130,6 +132,15 @@ const buildResourceOverridePayload = (
   equipment_ids: parseCsv(draft.equipment),
 })
 
+const recommendationVariantMap: Record<
+  GovernanceOverridePriority,
+  'error' | 'warning' | 'info'
+> = {
+  high: 'error',
+  medium: 'warning',
+  low: 'info',
+}
+
 export default function PreviewModal({ executionId, open, onClose }: PreviewModalProps) {
   const workspace = useScenarioWorkspace(executionId)
   const previewMutation = useExperimentPreview(executionId)
@@ -138,6 +149,7 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
   const updateScenario = useUpdateScenario(executionId)
   const cloneScenario = useCloneScenario(executionId)
   const deleteScenario = useDeleteScenario(executionId)
+  const governanceRecommendations = useGovernanceRecommendations({ executionId })
 
   const [history, setHistory] = useState<ExperimentPreviewResponse[]>([])
   const [selectedRun, setSelectedRun] = useState(0)
@@ -163,7 +175,17 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
   const [folderTeamDraft, setFolderTeamDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+  const [acknowledgedRecommendations, setAcknowledgedRecommendations] = useState<string[]>([])
   const preventAutoSelectRef = useRef(false)
+
+  const toggleAcknowledgedRecommendation = useCallback((recommendationId: string) => {
+    setAcknowledgedRecommendations((prev) => {
+      if (prev.includes(recommendationId)) {
+        return prev.filter((id) => id !== recommendationId)
+      }
+      return [...prev, recommendationId]
+    })
+  }, [])
 
   useEffect(() => {
     if (!open) return
@@ -537,6 +559,112 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
             {successMessage && <p className="text-sm text-emerald-600">{successMessage}</p>}
           </div>
         )}
+
+        <section className="space-y-3 rounded-md border border-neutral-200 p-4">
+          <header className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+            <h3 className="text-sm font-semibold text-neutral-900">Override recommendations</h3>
+            <div className="flex flex-wrap items-center gap-3 text-[11px] text-neutral-500">
+              <span>High · {governanceRecommendations.priorityBuckets.high}</span>
+              <span>Medium · {governanceRecommendations.priorityBuckets.medium}</span>
+              <span>Low · {governanceRecommendations.priorityBuckets.low}</span>
+              {governanceRecommendations.hasRecommendations && (
+                <span>
+                  Generated{' '}
+                  {new Date(governanceRecommendations.generatedAt).toLocaleString()}
+                </span>
+              )}
+            </div>
+          </header>
+
+          {governanceRecommendations.isLoading ? (
+            <p className="text-xs text-neutral-600">Loading override suggestions…</p>
+          ) : governanceRecommendations.isError ? (
+            <p className="text-xs text-rose-600">Unable to load override recommendations.</p>
+          ) : !governanceRecommendations.hasRecommendations ? (
+            <p className="text-xs text-neutral-600">
+              No override recommendations detected for this execution.
+            </p>
+          ) : (
+            <div className="space-y-3">
+              {governanceRecommendations.recommendations.map((recommendation) => {
+                const isAcknowledged = acknowledgedRecommendations.includes(
+                  recommendation.recommendation_id,
+                )
+                const metrics = recommendation.metrics ?? {}
+                const metricDescriptions: string[] = []
+                if (typeof metrics.load_band === 'string') {
+                  metricDescriptions.push(`Load: ${metrics.load_band}`)
+                }
+                const latencySample =
+                  typeof metrics.latency_p90_minutes === 'number'
+                    ? metrics.latency_p90_minutes
+                    : typeof metrics.average_latency_minutes === 'number'
+                      ? metrics.average_latency_minutes
+                      : null
+                if (latencySample !== null) {
+                  metricDescriptions.push(`Latency p90: ${Math.round(latencySample)}m`)
+                }
+                const blockedRatio =
+                  typeof metrics.blocked_ratio === 'number'
+                    ? metrics.blocked_ratio
+                    : typeof metrics.blocked_ratio_trailing === 'number'
+                      ? metrics.blocked_ratio_trailing
+                      : null
+                if (blockedRatio !== null) {
+                  metricDescriptions.push(`Blocked: ${(blockedRatio * 100).toFixed(0)}%`)
+                }
+                if (typeof metrics.churn === 'number') {
+                  metricDescriptions.push(`Churn: ${metrics.churn.toFixed(1)}`)
+                } else if (typeof metrics.churn_signal === 'number') {
+                  metricDescriptions.push(`Churn: ${metrics.churn_signal.toFixed(1)}`)
+                }
+                if (typeof metrics.publish_streak === 'number' && metrics.publish_streak > 0) {
+                  metricDescriptions.push(`Streak: ${metrics.publish_streak}`)
+                }
+
+                return (
+                  <Alert
+                    key={recommendation.recommendation_id}
+                    variant={recommendationVariantMap[recommendation.priority]}
+                    title={recommendation.summary}
+                    className={isAcknowledged ? 'opacity-75' : undefined}
+                  >
+                    <div className="space-y-2">
+                      {recommendation.detail && (
+                        <p className="text-xs text-neutral-700">{recommendation.detail}</p>
+                      )}
+                      {metricDescriptions.length > 0 && (
+                        <p className="text-[11px] text-neutral-500">
+                          {metricDescriptions.join(' · ')}
+                        </p>
+                      )}
+                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500">
+                        <span>
+                          Action: {recommendation.action} · Priority: {recommendation.priority}
+                        </span>
+                        <span>
+                          Triggered {new Date(recommendation.triggered_at).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-end">
+                        <Button
+                          size="sm"
+                          variant={isAcknowledged ? 'secondary' : 'ghost'}
+                          onClick={() =>
+                            toggleAcknowledgedRecommendation(recommendation.recommendation_id)
+                          }
+                          aria-pressed={isAcknowledged}
+                        >
+                          {isAcknowledged ? 'Acknowledged' : 'Acknowledge'}
+                        </Button>
+                      </div>
+                    </div>
+                  </Alert>
+                )
+              })}
+            </div>
+          )}
+        </section>
 
         {isWorkspaceLoading ? (
           <p className="text-sm text-neutral-600">Loading scenario workspace…</p>
