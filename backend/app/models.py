@@ -165,6 +165,12 @@ class ProtocolExecution(Base):
     )
     template = relationship("ProtocolTemplate")
     runner = relationship("User")
+    baseline_versions = relationship(
+        "GovernanceBaselineVersion",
+        back_populates="execution",
+        cascade="all, delete-orphan",
+        order_by="GovernanceBaselineVersion.created_at.desc()",
+    )
 
 
 class ExperimentScenarioFolder(Base):
@@ -439,6 +445,111 @@ class GovernanceTemplateAuditLog(Base):
     template = relationship("ExecutionNarrativeWorkflowTemplate")
     snapshot = relationship("ExecutionNarrativeWorkflowTemplateSnapshot")
     actor = relationship("User")
+
+
+class GovernanceBaselineVersion(Base):
+    __tablename__ = "governance_baseline_versions"
+
+    # purpose: catalog baseline lifecycle submissions for governance oversight
+    # status: draft
+    # depends_on: protocol_executions, protocol_templates, users, teams
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    template_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_templates.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    status = Column(String, default="submitted", nullable=False)
+    labels = Column(JSON, default=list, nullable=False)
+    reviewer_ids = Column(JSON, default=list, nullable=False)
+    version_number = Column(Integer, nullable=True)
+    is_current = Column(Boolean, default=False, nullable=False)
+    submitted_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    submitted_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    reviewed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    reviewed_at = Column(DateTime, nullable=True)
+    review_notes = Column(Text, nullable=True)
+    published_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    published_at = Column(DateTime, nullable=True)
+    publish_notes = Column(Text, nullable=True)
+    rollback_of_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_baseline_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    rolled_back_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    rolled_back_at = Column(DateTime, nullable=True)
+    rollback_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    execution = relationship("ProtocolExecution", back_populates="baseline_versions")
+    template = relationship("ProtocolTemplate")
+    team = relationship("Team")
+    submitted_by = relationship("User", foreign_keys=[submitted_by_id])
+    reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
+    published_by = relationship("User", foreign_keys=[published_by_id])
+    rolled_back_by = relationship("User", foreign_keys=[rolled_back_by_id])
+    rollback_of = relationship("GovernanceBaselineVersion", remote_side=[id])
+    events = relationship(
+        "GovernanceBaselineEvent",
+        back_populates="baseline",
+        cascade="all, delete-orphan",
+        order_by="GovernanceBaselineEvent.created_at.desc()",
+    )
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "status IN ('submitted', 'approved', 'rejected', 'published', 'rolled_back')",
+            name="ck_governance_baseline_status",
+        ),
+        sa.UniqueConstraint(
+            "template_id",
+            "version_number",
+            name="uq_governance_baseline_template_version",
+        ),
+    )
+
+
+class GovernanceBaselineEvent(Base):
+    __tablename__ = "governance_baseline_events"
+
+    # purpose: capture auditable baseline lifecycle transitions and metadata snapshots
+    # status: draft
+    # depends_on: governance_baseline_versions, users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    baseline_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_baseline_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action = Column(String, nullable=False)
+    notes = Column(Text, nullable=True)
+    detail = Column(JSON, default=dict, nullable=False)
+    performed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    baseline = relationship("GovernanceBaselineVersion", back_populates="events")
+    actor = relationship("User")
+
 
 class ExecutionNarrativeWorkflowTemplateAssignment(Base):
     __tablename__ = "execution_narrative_workflow_template_assignments"

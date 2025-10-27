@@ -43,3 +43,31 @@ def record_execution_event(
     db.add(event)
     return event
 
+
+def record_baseline_event(
+    db: Session,
+    baseline: models.GovernanceBaselineVersion,
+    action: str,
+    detail: dict[str, Any],
+    actor: models.User,
+    notes: str | None = None,
+) -> models.GovernanceBaselineEvent:
+    """Persist auditable baseline lifecycle events."""
+
+    # purpose: capture baseline governance lifecycle transitions for auditing
+    # inputs: session handle, baseline entity, action name, detail payload, actor
+    # outputs: GovernanceBaselineEvent row persisted for traceability
+    # status: draft
+
+    payload_dict = detail if isinstance(detail, dict) else {}
+    event = models.GovernanceBaselineEvent(
+        baseline_id=baseline.id,
+        action=action,
+        detail=payload_dict,
+        notes=notes,
+        performed_by_id=actor.id,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(event)
+    return event
+

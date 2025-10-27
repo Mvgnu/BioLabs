@@ -30,6 +30,10 @@ Compliance administrators can now curate reusable approval ladders through the g
 
 Templates persist to `execution_narrative_workflow_templates` with JSON-encoded stage blueprints and SLA metadata, while assignments live in `execution_narrative_workflow_template_assignments`. Narrative exports referencing a template now require immutable published snapshots sourced from `execution_narrative_workflow_template_snapshots`, ensuring lifecycle enforcement and drift detection. Published/archived transitions emit structured audit entries inside `governance_template_audit_logs` for review.
 
+## Baseline Governance Lifecycle
+
+Baseline submissions are now catalogued via `/api/governance/baselines`. Scientists can submit execution-tied proposals with reviewer assignments, reviewers can approve or reject, and authorized actors can publish approved baselines, promoting them to the active standard (`is_current=True`) while versioning per protocol template. Admins retain the ability to roll back published baselines and optionally reinstate a prior version. All transitions generate `GovernanceBaselineEvent` rows through `record_baseline_event` for auditability. See `docs/governance/baselines.md` for workflow details and RBAC expectations.
+
 ### Governance CLI
 
 - Run `python -m backend.app.cli migrate-exports` to backfill historical narrative exports with published snapshot identifiers. Use `--dry-run` to preview impact without applying updates.

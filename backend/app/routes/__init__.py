@@ -22,6 +22,7 @@ modules = [
     'search',
     'analytics',
     'governance_analytics',
+    'governance_baselines',
     'audit',
     'equipment',
     'experiment_console',
