@@ -15,6 +15,8 @@ import {
   useExperimentPreview,
   useScenarioWorkspace,
   useUpdateScenario,
+  invalidateGovernanceAnalyticsQueries,
+  invalidateTimelineQueries,
 } from '../../hooks/useExperimentConsole'
 import { useGovernanceRecommendations } from '../hooks/useGovernanceRecommendations'
 import { governanceApi } from '../../api/governance'
@@ -247,6 +249,8 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
           : [...previous, variables.recommendationId],
       )
       queryClient.invalidateQueries({ queryKey: ['governance', 'override-recommendations'] })
+      invalidateTimelineQueries(queryClient, executionId)
+      invalidateGovernanceAnalyticsQueries(queryClient, executionId)
     },
     onError: () => {
       setError('Unable to process override action.')

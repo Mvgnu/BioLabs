@@ -619,6 +619,9 @@ class GovernanceAnalyticsPreviewSummary(BaseModel):
     blocked_stage_count: int
     blocked_ratio: float
     overrides_applied: int
+    override_actions_executed: int = 0
+    override_actions_reversed: int = 0
+    override_cooldown_minutes: float | None = None
     new_blocker_count: int
     resolved_blocker_count: int
     ladder_load: float
