@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   useScenarioWorkspace: vi.fn(),
   useExperimentPreview: vi.fn(),
   useCreateScenario: vi.fn(),
+  useCreateScenarioFolder: vi.fn(),
   useUpdateScenario: vi.fn(),
   useCloneScenario: vi.fn(),
   useDeleteScenario: vi.fn(),
@@ -19,6 +20,7 @@ const {
   useScenarioWorkspace: mockUseScenarioWorkspace,
   useExperimentPreview: mockUseExperimentPreview,
   useCreateScenario: mockUseCreateScenario,
+  useCreateScenarioFolder: mockUseCreateScenarioFolder,
   useUpdateScenario: mockUseUpdateScenario,
   useCloneScenario: mockUseCloneScenario,
   useDeleteScenario: mockUseDeleteScenario,
@@ -69,8 +71,26 @@ describe('PreviewModal', () => {
           },
         ],
         cloned_from_id: null,
+        folder_id: null,
+        is_shared: false,
+        shared_team_ids: [],
+        expires_at: null,
+        timeline_event_id: null,
         created_at: new Date('2024-01-01T12:00:00Z').toISOString(),
         updated_at: new Date('2024-01-02T12:00:00Z').toISOString(),
+      },
+    ],
+    folders: [
+      {
+        id: 'folder-1',
+        execution_id: 'exec-1',
+        name: 'Team Reviews',
+        description: 'Shared scenarios',
+        owner_id: 'user-1',
+        team_id: null,
+        visibility: 'private',
+        created_at: new Date('2024-01-01T10:00:00Z').toISOString(),
+        updated_at: new Date('2024-01-01T10:00:00Z').toISOString(),
       },
     ],
   }
@@ -128,6 +148,7 @@ describe('PreviewModal', () => {
       reset: vi.fn(),
     })
     mockUseCreateScenario.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })
+    mockUseCreateScenarioFolder.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })
     mockUseUpdateScenario.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })
     mockUseCloneScenario.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })
     mockUseDeleteScenario.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })

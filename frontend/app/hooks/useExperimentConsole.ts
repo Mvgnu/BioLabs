@@ -20,6 +20,9 @@ import type {
   ExperimentScenario,
   ExperimentScenarioCloneRequest,
   ExperimentScenarioCreateRequest,
+  ExperimentScenarioFolder,
+  ExperimentScenarioFolderCreateRequest,
+  ExperimentScenarioFolderUpdateRequest,
   ExperimentScenarioUpdateRequest,
   ExperimentScenarioWorkspace,
   ExecutionNarrativeExportHistory,
@@ -274,6 +277,49 @@ export const useCreateScenario = (executionId: string | null) => {
         payload,
       )
       return resp.data as ExperimentScenario
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: scenarioWorkspaceKey(executionId) })
+    },
+  })
+}
+
+export const useCreateScenarioFolder = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (
+      payload: ExperimentScenarioFolderCreateRequest,
+    ): Promise<ExperimentScenarioFolder> => {
+      if (!executionId) {
+        throw new Error('Execution id required for folder creation')
+      }
+      const resp = await api.post(
+        `/api/experiments/${executionId}/scenario-folders`,
+        payload,
+      )
+      return resp.data as ExperimentScenarioFolder
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: scenarioWorkspaceKey(executionId) })
+    },
+  })
+}
+
+export const useUpdateScenarioFolder = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      folderId: string
+      payload: ExperimentScenarioFolderUpdateRequest
+    }): Promise<ExperimentScenarioFolder> => {
+      if (!executionId) {
+        throw new Error('Execution id required for folder updates')
+      }
+      const resp = await api.patch(
+        `/api/experiments/${executionId}/scenario-folders/${vars.folderId}`,
+        vars.payload,
+      )
+      return resp.data as ExperimentScenarioFolder
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: scenarioWorkspaceKey(executionId) })

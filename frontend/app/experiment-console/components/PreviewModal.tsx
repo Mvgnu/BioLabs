@@ -8,6 +8,7 @@ import ScenarioSummary from './ScenarioSummary'
 import {
   useCloneScenario,
   useCreateScenario,
+  useCreateScenarioFolder,
   useDeleteScenario,
   useExperimentPreview,
   useScenarioWorkspace,
@@ -68,6 +69,24 @@ const resourceDraftFromScenario = (scenario: ExperimentScenario): ResourceDraft 
   equipment: (scenario.resource_overrides?.equipment_ids ?? []).join(', '),
 })
 
+const toDateTimeLocalInput = (value?: string | null) => {
+  if (!value) return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const offsetMinutes = date.getTimezoneOffset()
+  const adjusted = new Date(date.getTime() - offsetMinutes * 60000)
+  return adjusted.toISOString().slice(0, 16)
+}
+
+const isoFromLocalInput = (value: string) => {
+  if (!value.trim()) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const offsetMinutes = date.getTimezoneOffset()
+  const adjusted = new Date(date.getTime() - offsetMinutes * 60000)
+  return adjusted.toISOString()
+}
+
 const scenarioPreviewPayload = (
   scenario: ExperimentScenario,
 ): ExperimentPreviewRequest => ({
@@ -115,6 +134,7 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
   const workspace = useScenarioWorkspace(executionId)
   const previewMutation = useExperimentPreview(executionId)
   const createScenario = useCreateScenario(executionId)
+  const createFolder = useCreateScenarioFolder(executionId)
   const updateScenario = useUpdateScenario(executionId)
   const cloneScenario = useCloneScenario(executionId)
   const deleteScenario = useDeleteScenario(executionId)
@@ -131,6 +151,16 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
     bookings: '',
     equipment: '',
   })
+  const [formFolderId, setFormFolderId] = useState('')
+  const [formShared, setFormShared] = useState(false)
+  const [formSharedTeams, setFormSharedTeams] = useState('')
+  const [formExpiresAt, setFormExpiresAt] = useState('')
+  const [formTimelineEventId, setFormTimelineEventId] = useState('')
+  const [visibleFolderId, setVisibleFolderId] = useState<string>('all')
+  const [folderNameDraft, setFolderNameDraft] = useState('')
+  const [folderDescriptionDraft, setFolderDescriptionDraft] = useState('')
+  const [folderVisibility, setFolderVisibility] = useState<'private' | 'team' | 'execution'>('private')
+  const [folderTeamDraft, setFolderTeamDraft] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const preventAutoSelectRef = useRef(false)
@@ -163,7 +193,22 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
 
   const snapshots = workspace.data?.snapshots ?? []
   const scenarios = workspace.data?.scenarios ?? []
+  const folders = workspace.data?.folders ?? []
   const defaultSnapshotId = snapshots[0]?.id ?? ''
+
+  const folderLookup = useMemo(() => {
+    return new Map(folders.map((folder) => [folder.id, folder]))
+  }, [folders])
+
+  const filteredScenarios = useMemo(() => {
+    if (visibleFolderId === 'all') {
+      return scenarios
+    }
+    if (visibleFolderId === 'unfiled') {
+      return scenarios.filter((scenario) => !scenario.folder_id)
+    }
+    return scenarios.filter((scenario) => scenario.folder_id === visibleFolderId)
+  }, [scenarios, visibleFolderId])
 
   const selectedScenario = useMemo(
     () => scenarios.find((scenario) => scenario.id === selectedScenarioId) ?? null,
@@ -205,6 +250,11 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
       setFormSnapshotId(selectedScenario.workflow_template_snapshot_id)
       setStageDrafts(stageDraftsFromScenario(selectedScenario))
       setResourceDraft(resourceDraftFromScenario(selectedScenario))
+      setFormFolderId(selectedScenario.folder_id ?? '')
+      setFormShared(Boolean(selectedScenario.is_shared))
+      setFormSharedTeams(selectedScenario.shared_team_ids.join(', '))
+      setFormExpiresAt(toDateTimeLocalInput(selectedScenario.expires_at))
+      setFormTimelineEventId(selectedScenario.timeline_event_id ?? '')
       return
     }
     setFormName('')
@@ -212,6 +262,11 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
     setFormSnapshotId(defaultSnapshotId)
     setStageDrafts([])
     setResourceDraft({ inventory: '', bookings: '', equipment: '' })
+    setFormFolderId('')
+    setFormShared(false)
+    setFormSharedTeams('')
+    setFormExpiresAt('')
+    setFormTimelineEventId('')
   }, [selectedScenario, defaultSnapshotId, open])
 
   const activePreview = useMemo(() => {
@@ -225,6 +280,11 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
     setFormSnapshotId(defaultSnapshotId)
     setStageDrafts([])
     setResourceDraft({ inventory: '', bookings: '', equipment: '' })
+    setFormFolderId('')
+    setFormShared(false)
+    setFormSharedTeams('')
+    setFormExpiresAt('')
+    setFormTimelineEventId('')
     setSelectedScenarioId(null)
   }, [defaultSnapshotId])
 
@@ -267,6 +327,46 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
     await handleRunPreviewPayload(scenarioPreviewPayload(scenario))
   }
 
+  const handleCreateFolder = async () => {
+    if (!folderNameDraft.trim()) {
+      setError('Folder name is required to create a scenario folder')
+      return
+    }
+    if (folderVisibility === 'team' && !folderTeamDraft.trim()) {
+      setError('Team visibility requires a team identifier')
+      return
+    }
+    try {
+      setError(null)
+      setSuccessMessage(null)
+      const newFolder = await createFolder.mutateAsync({
+        name: folderNameDraft.trim(),
+        description: folderDescriptionDraft.trim() || undefined,
+        visibility: folderVisibility,
+        team_id:
+          folderVisibility === 'team' && folderTeamDraft.trim()
+            ? folderTeamDraft.trim()
+            : folderVisibility !== 'team' && folderTeamDraft.trim()
+            ? folderTeamDraft.trim()
+            : undefined,
+      })
+      setFolderNameDraft('')
+      setFolderDescriptionDraft('')
+      setFolderTeamDraft('')
+      setFormFolderId(newFolder.id)
+      setVisibleFolderId(newFolder.id)
+      setSuccessMessage('Scenario folder created')
+    } catch (requestError: any) {
+      const detail =
+        requestError?.response?.data?.detail ??
+        requestError?.message ??
+        'Unable to create scenario folder'
+      setError(
+        typeof detail === 'string' ? detail : 'Unable to create scenario folder',
+      )
+    }
+  }
+
   const handleSaveScenario = async () => {
     if (!formName.trim()) {
       setError('Scenario name is required')
@@ -277,18 +377,41 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
       return
     }
 
-    const payload = {
-      name: formName.trim(),
-      description: formDescription.trim() || undefined,
-      workflow_template_snapshot_id: formSnapshotId,
-      stage_overrides: buildStageOverridePayload(stageDrafts),
-      resource_overrides: buildResourceOverridePayload(resourceDraft),
-    }
+    const sharedTeams = parseCsv(formSharedTeams)
+    const folderValue = formFolderId.trim()
+    const expiresIso = formExpiresAt ? isoFromLocalInput(formExpiresAt) : null
+    const timelineValue = formTimelineEventId.trim()
+    const stageOverridesPayload = buildStageOverridePayload(stageDrafts)
+    const resourceOverridesPayload = buildResourceOverridePayload(resourceDraft)
 
     try {
       setError(null)
       setSuccessMessage(null)
       if (selectedScenario) {
+        const payload: ExperimentScenarioUpdateRequest = {
+          name: formName.trim(),
+          description: formDescription.trim() || undefined,
+          workflow_template_snapshot_id: formSnapshotId,
+          stage_overrides: stageOverridesPayload,
+          resource_overrides: resourceOverridesPayload,
+          is_shared: formShared,
+          shared_team_ids: sharedTeams,
+        }
+        if (folderValue) {
+          payload.folder_id = folderValue
+        } else if (selectedScenario.folder_id) {
+          payload.folder_id = null
+        }
+        if (expiresIso) {
+          payload.expires_at = expiresIso
+        } else if (selectedScenario.expires_at) {
+          payload.expires_at = null
+        }
+        if (timelineValue) {
+          payload.timeline_event_id = timelineValue
+        } else if (selectedScenario.timeline_event_id) {
+          payload.timeline_event_id = null
+        }
         const updatedScenario = await updateScenario.mutateAsync({
           scenarioId: selectedScenario.id,
           payload,
@@ -296,6 +419,24 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
         setSuccessMessage('Scenario updated')
         setSelectedScenarioId(updatedScenario.id)
       } else {
+        const payload: ExperimentScenarioCreateRequest = {
+          name: formName.trim(),
+          description: formDescription.trim() || undefined,
+          workflow_template_snapshot_id: formSnapshotId,
+          stage_overrides: stageOverridesPayload,
+          resource_overrides: resourceOverridesPayload,
+          is_shared: formShared,
+          shared_team_ids: sharedTeams,
+        }
+        if (folderValue) {
+          payload.folder_id = folderValue
+        }
+        if (expiresIso) {
+          payload.expires_at = expiresIso
+        }
+        if (timelineValue) {
+          payload.timeline_event_id = timelineValue
+        }
         const createdScenario = await createScenario.mutateAsync(payload)
         setSuccessMessage('Scenario saved')
         setSelectedScenarioId(createdScenario.id)
@@ -467,12 +608,96 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
                 </div>
               </header>
 
-              {scenarios.length === 0 ? (
-                <p className="text-xs text-neutral-600">No saved scenarios yet. Capture a draft to store it here.</p>
+              <div className="grid gap-2 rounded-md border border-neutral-200 p-3 text-xs text-neutral-700">
+                <label className="flex flex-col font-medium">
+                  Filter by folder
+                  <select
+                    className="mt-1 rounded-md border border-neutral-200 px-2 py-2 text-sm text-neutral-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                    value={visibleFolderId}
+                    onChange={(event) => setVisibleFolderId(event.target.value)}
+                  >
+                    <option value="all">All folders</option>
+                    <option value="unfiled">Unfiled</option>
+                    {folders.map((folder) => (
+                      <option key={folder.id} value={folder.id}>
+                        {folder.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="rounded-md border border-dashed border-neutral-300 p-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-semibold text-neutral-800">Create folder</h4>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleCreateFolder}
+                      loading={createFolder.isPending}
+                      disabled={createFolder.isPending}
+                    >
+                      Save
+                    </Button>
+                  </div>
+                  <div className="mt-2 grid gap-2">
+                    <label className="flex flex-col font-medium">
+                      Name
+                      <Input
+                        value={folderNameDraft}
+                        onChange={(event) => setFolderNameDraft(event.target.value)}
+                        placeholder="Review backlog"
+                      />
+                    </label>
+                    <label className="flex flex-col font-medium">
+                      Description
+                      <Input
+                        value={folderDescriptionDraft}
+                        onChange={(event) => setFolderDescriptionDraft(event.target.value)}
+                        placeholder="Optional context"
+                      />
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <label className="flex flex-col font-medium">
+                        Visibility
+                        <select
+                          className="mt-1 rounded-md border border-neutral-200 px-2 py-2 text-sm text-neutral-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                          value={folderVisibility}
+                          onChange={(event) =>
+                            setFolderVisibility(event.target.value as 'private' | 'team' | 'execution')
+                          }
+                        >
+                          <option value="private">Private</option>
+                          <option value="team">Team</option>
+                          <option value="execution">Execution</option>
+                        </select>
+                      </label>
+                      <label className="flex flex-col font-medium">
+                        Team ID (optional)
+                        <Input
+                          value={folderTeamDraft}
+                          onChange={(event) => setFolderTeamDraft(event.target.value)}
+                          placeholder="team uuid"
+                        />
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {filteredScenarios.length === 0 ? (
+                <p className="text-xs text-neutral-600">
+                  {scenarios.length === 0
+                    ? 'No saved scenarios yet. Capture a draft to store it here.'
+                    : 'No scenarios match this folder filter.'}
+                </p>
               ) : (
                 <ul className="space-y-2">
-                  {scenarios.map((scenario) => {
+                  {filteredScenarios.map((scenario) => {
                     const isSelected = scenario.id === selectedScenarioId
+                    const scenarioFolder = scenario.folder_id
+                      ? folderLookup.get(scenario.folder_id)?.name ?? 'Folder unavailable'
+                      : 'Unfiled'
+                    const expiresAt = scenario.expires_at ? new Date(scenario.expires_at) : null
                     return (
                       <li key={scenario.id} className="rounded border border-neutral-200 p-3">
                         <div className="flex items-center justify-between gap-2">
@@ -494,9 +719,16 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
                             Run
                           </Button>
                         </div>
-                        <p className="mt-1 text-[11px] text-neutral-500">
-                          Updated {new Date(scenario.updated_at).toLocaleString()}
-                        </p>
+                        <div className="mt-1 space-y-1 text-[11px] text-neutral-500">
+                          <p>Updated {new Date(scenario.updated_at).toLocaleString()}</p>
+                          <p>
+                            {scenarioFolder}
+                            {scenario.is_shared ? ' · Shared' : ''}
+                          </p>
+                          {expiresAt && !Number.isNaN(expiresAt.getTime()) && (
+                            <p>Expires {expiresAt.toLocaleString()}</p>
+                          )}
+                        </div>
                       </li>
                     )
                   })}
@@ -504,7 +736,15 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
               )}
 
               {selectedScenario && (
-                <ScenarioSummary scenario={selectedScenario} snapshot={selectedSnapshot} />
+                <ScenarioSummary
+                  scenario={selectedScenario}
+                  snapshot={selectedSnapshot}
+                  folderName={
+                    selectedScenario.folder_id
+                      ? folderLookup.get(selectedScenario.folder_id)?.name ?? 'Unfiled'
+                      : 'Unfiled'
+                  }
+                />
               )}
             </section>
 
@@ -544,6 +784,61 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
                     </option>
                   ))}
                 </select>
+              </label>
+
+              <label className="flex flex-col text-xs font-medium text-neutral-700">
+                Folder
+                <select
+                  className="mt-1 rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  value={formFolderId}
+                  onChange={(event) => setFormFolderId(event.target.value)}
+                >
+                  <option value="">Unfiled</option>
+                  {folders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {folder.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-xs font-medium text-neutral-700">
+                  <input
+                    type="checkbox"
+                    checked={formShared}
+                    onChange={(event) => setFormShared(event.target.checked)}
+                    className="h-4 w-4 rounded border-neutral-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  Share scenario with teams
+                </label>
+                <label className="flex flex-col text-xs font-medium text-neutral-700">
+                  Shared team IDs
+                  <Input
+                    value={formSharedTeams}
+                    onChange={(event) => setFormSharedTeams(event.target.value)}
+                    placeholder="team uuid, team uuid"
+                  />
+                </label>
+              </div>
+
+              <label className="flex flex-col text-xs font-medium text-neutral-700">
+                Expiration
+                <input
+                  type="datetime-local"
+                  value={formExpiresAt}
+                  onChange={(event) => setFormExpiresAt(event.target.value)}
+                  className="mt-1 rounded-md border border-neutral-200 px-3 py-2 text-sm text-neutral-700 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                />
+              </label>
+
+              <label className="flex flex-col text-xs font-medium text-neutral-700">
+                Timeline anchor event ID
+                <Input
+                  value={formTimelineEventId}
+                  onChange={(event) => setFormTimelineEventId(event.target.value)}
+                  placeholder="timeline event uuid"
+                />
               </label>
 
               <div className="space-y-2">

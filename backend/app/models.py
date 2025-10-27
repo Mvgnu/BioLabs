@@ -167,6 +167,43 @@ class ProtocolExecution(Base):
     runner = relationship("User")
 
 
+class ExperimentScenarioFolder(Base):
+    __tablename__ = "experiment_preview_scenario_folders"
+
+    # purpose: organize execution scenarios for collaborative review cycles
+    # status: pilot
+    # depends_on: protocol_executions, users, teams
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    visibility = Column(String, default="private", nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    execution = relationship("ProtocolExecution")
+    owner = relationship("User")
+    team = relationship("Team")
+    scenarios = relationship(
+        "ExperimentScenario",
+        back_populates="folder",
+        cascade="all, delete-orphan",
+    )
+
+
 class ExperimentScenario(Base):
     __tablename__ = "experiment_preview_scenarios"
 
@@ -196,9 +233,23 @@ class ExperimentScenario(Base):
     description = Column(Text, nullable=True)
     resource_overrides = Column(JSON, default=dict, nullable=False)
     stage_overrides = Column(JSON, default=list, nullable=False)
+    folder_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("experiment_preview_scenario_folders.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     cloned_from_id = Column(
         UUID(as_uuid=True),
         ForeignKey("experiment_preview_scenarios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    is_shared = Column(Boolean, default=False, nullable=False)
+    shared_team_ids = Column(JSON, default=list, nullable=False)
+    expires_at = Column(DateTime, nullable=True)
+    timeline_event_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_events.id", ondelete="SET NULL"),
         nullable=True,
     )
     created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
@@ -214,6 +265,8 @@ class ExperimentScenario(Base):
     team = relationship("Team")
     snapshot = relationship("ExecutionNarrativeWorkflowTemplateSnapshot")
     cloned_from = relationship("ExperimentScenario", remote_side=[id])
+    folder = relationship("ExperimentScenarioFolder", back_populates="scenarios")
+    timeline_event = relationship("ExecutionEvent")
 
 
 class ExecutionEvent(Base):

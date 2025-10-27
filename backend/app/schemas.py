@@ -536,6 +536,39 @@ class ExperimentPreviewResponse(BaseModel):
     resource_warnings: list[str] = Field(default_factory=list)
 
 
+class ExperimentScenarioFolder(BaseModel):
+    # purpose: describe scenario folder metadata for workspace navigation
+    # status: pilot
+    id: UUID
+    execution_id: UUID
+    name: str
+    description: str | None = None
+    owner_id: UUID | None = None
+    team_id: UUID | None = None
+    visibility: str
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ExperimentScenarioFolderCreate(BaseModel):
+    # purpose: capture creation payload for scenario folders
+    # status: pilot
+    name: str
+    description: str | None = None
+    visibility: Literal["private", "team", "execution"] = "private"
+    team_id: UUID | None = None
+
+
+class ExperimentScenarioFolderUpdate(BaseModel):
+    # purpose: allow selective folder metadata updates
+    # status: pilot
+    name: str | None = None
+    description: str | None = None
+    visibility: Literal["private", "team", "execution"] | None = None
+    team_id: UUID | None = None
+
+
 class ExperimentScenarioBase(BaseModel):
     # purpose: normalize persisted scenario payloads for CRUD operations
     # inputs: scenario metadata including snapshot binding and overrides
@@ -544,8 +577,13 @@ class ExperimentScenarioBase(BaseModel):
     name: str
     description: str | None = None
     workflow_template_snapshot_id: UUID
+    folder_id: UUID | None = None
+    is_shared: bool = False
+    shared_team_ids: list[UUID] = Field(default_factory=list)
     resource_overrides: ExperimentPreviewResourceOverrides | None = None
     stage_overrides: list[ExperimentPreviewStageOverride] = Field(default_factory=list)
+    expires_at: datetime | None = None
+    timeline_event_id: UUID | None = None
 
 
 class ExperimentScenarioCreate(ExperimentScenarioBase):
@@ -562,6 +600,12 @@ class ExperimentScenarioUpdate(BaseModel):
     workflow_template_snapshot_id: UUID | None = None
     resource_overrides: ExperimentPreviewResourceOverrides | None = None
     stage_overrides: list[ExperimentPreviewStageOverride] | None = None
+    folder_id: UUID | None = None
+    is_shared: bool | None = None
+    shared_team_ids: list[UUID] | None = None
+    expires_at: datetime | None = None
+    timeline_event_id: UUID | None = None
+    transfer_owner_id: UUID | None = None
 
 
 class ExperimentScenario(BaseModel):
@@ -577,6 +621,11 @@ class ExperimentScenario(BaseModel):
     resource_overrides: ExperimentPreviewResourceOverrides | None = None
     stage_overrides: list[ExperimentPreviewStageOverride] = Field(default_factory=list)
     cloned_from_id: UUID | None = None
+    folder_id: UUID | None = None
+    is_shared: bool
+    shared_team_ids: list[UUID] = Field(default_factory=list)
+    expires_at: datetime | None = None
+    timeline_event_id: UUID | None = None
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
@@ -619,6 +668,7 @@ class ExperimentScenarioWorkspace(BaseModel):
     execution: ExperimentScenarioExecutionSummary
     snapshots: list[ExperimentScenarioSnapshot] = Field(default_factory=list)
     scenarios: list[ExperimentScenario] = Field(default_factory=list)
+    folders: list[ExperimentScenarioFolder] = Field(default_factory=list)
 
 
 class ExperimentExecutionSessionCreate(BaseModel):

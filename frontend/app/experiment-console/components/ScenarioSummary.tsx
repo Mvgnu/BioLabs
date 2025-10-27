@@ -11,12 +11,17 @@ import type {
 interface ScenarioSummaryProps {
   scenario: ExperimentScenario
   snapshot?: ExperimentScenarioSnapshot | null
+  folderName?: string | null
 }
 
 // purpose: render shareable summary cards for experiment preview scenarios
 // status: pilot
 
-export default function ScenarioSummary({ scenario, snapshot }: ScenarioSummaryProps) {
+export default function ScenarioSummary({
+  scenario,
+  snapshot,
+  folderName,
+}: ScenarioSummaryProps) {
   const resourceCounts = {
     inventory: scenario.resource_overrides?.inventory_item_ids?.length ?? 0,
     bookings: scenario.resource_overrides?.booking_ids?.length ?? 0,
@@ -27,7 +32,12 @@ export default function ScenarioSummary({ scenario, snapshot }: ScenarioSummaryP
     .slice()
     .sort((a, b) => a.index - b.index)
 
-  const deepLink = `/experiment-console/${scenario.execution_id}?scenario=${scenario.id}`
+  const deepLinkBase = `/experiment-console/${scenario.execution_id}?scenario=${scenario.id}`
+  const deepLink = scenario.timeline_event_id
+    ? `${deepLinkBase}&timeline=${scenario.timeline_event_id}`
+    : deepLinkBase
+
+  const expiration = scenario.expires_at ? new Date(scenario.expires_at) : null
 
   return (
     <Card variant="outlined" className="shadow-sm" data-testid="scenario-summary-card">
@@ -38,6 +48,23 @@ export default function ScenarioSummary({ scenario, snapshot }: ScenarioSummaryP
             {scenario.description && (
               <p className="mt-1 text-xs text-neutral-600">{scenario.description}</p>
             )}
+            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-neutral-500">
+              <span>{folderName ?? 'Unfiled'}</span>
+              {scenario.is_shared && (
+                <span className="rounded bg-indigo-50 px-2 py-0.5 font-medium text-[11px] text-indigo-700">
+                  Shared
+                </span>
+              )}
+              {scenario.shared_team_ids.length > 0 && (
+                <span>Teams: {scenario.shared_team_ids.join(', ')}</span>
+              )}
+              {expiration && (
+                <span>
+                  Expires {Number.isNaN(expiration.getTime()) ? '—' : expiration.toLocaleString()}
+                </span>
+              )}
+              {scenario.timeline_event_id && <span>Timeline anchor linked</span>}
+            </div>
           </div>
           <Link
             href={deepLink}
