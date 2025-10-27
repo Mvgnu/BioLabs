@@ -237,6 +237,8 @@ def compute_governance_analytics(
     publication_cadence_samples: list[float] = []
 
     reviewer_stats: dict[UUID, dict[str, Any]] = {}
+    global_latency_samples: list[float] = []
+    load_band_totals = {"light": 0, "steady": 0, "saturated": 0}
 
     def _ensure_reviewer_stat(reviewer_id: UUID) -> dict[str, Any]:
         stats = reviewer_stats.get(reviewer_id)
@@ -545,6 +547,9 @@ def compute_governance_analytics(
             streak_alert = streak >= 3
             if streak_alert:
                 streak_alert_count += 1
+            load_band = _determine_load_band(stats["assigned"], stats["pending"])
+            load_band_totals[load_band] = load_band_totals.get(load_band, 0) + 1
+            global_latency_samples.extend(latency_samples)
             reviewer_cadence.append(
                 schemas.GovernanceReviewerCadenceSummary(
                     reviewer_id=reviewer_id,
@@ -553,9 +558,7 @@ def compute_governance_analytics(
                     assignment_count=stats["assigned"],
                     completion_count=stats["completed"],
                     pending_count=stats["pending"],
-                    load_band=_determine_load_band(
-                        stats["assigned"], stats["pending"]
-                    ),
+                    load_band=load_band,
                     average_latency_minutes=average_latency,
                     latency_p50_minutes=_calculate_percentile(
                         latency_samples, 50.0
@@ -593,6 +596,15 @@ def compute_governance_analytics(
         average_publication_cadence_days=average_publication_cadence,
         reviewer_count=len(reviewer_cadence),
         streak_alert_count=streak_alert_count,
+        reviewer_latency_p50_minutes=_calculate_percentile(
+            global_latency_samples, 50.0
+        ),
+        reviewer_latency_p90_minutes=_calculate_percentile(
+            global_latency_samples, 90.0
+        ),
+        reviewer_load_band_counts=schemas.GovernanceReviewerLoadBandCounts(
+            **load_band_totals
+        ),
     )
 
     return schemas.GovernanceAnalyticsReport(

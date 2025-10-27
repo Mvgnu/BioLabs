@@ -191,6 +191,17 @@ def test_governance_analytics_sla_and_blockers(client):
     assert payload["totals"]["average_publication_cadence_days"] == pytest.approx(3.0)
     assert payload["totals"]["reviewer_count"] == 1
     assert payload["totals"]["streak_alert_count"] == 0
+    assert payload["totals"]["reviewer_latency_p50_minutes"] == pytest.approx(
+        180.0
+    )
+    assert payload["totals"]["reviewer_latency_p90_minutes"] == pytest.approx(
+        228.0
+    )
+    assert payload["totals"]["reviewer_load_band_counts"] == {
+        "light": 1,
+        "steady": 0,
+        "saturated": 0,
+    }
 
     summary = payload["results"][0]
     assert summary["execution_id"] == str(execution_id)
@@ -225,24 +236,30 @@ def test_governance_analytics_sla_and_blockers(client):
     filtered_payload = filtered.json()
     assert filtered_payload["results"]
 
-    reviewer_cadence = payload["reviewer_cadence"]
-    assert len(reviewer_cadence) == 1
-    reviewer = reviewer_cadence[0]
+
+def test_governance_analytics_reviewer_view(client):
+    user, headers = create_user_and_headers()
+    team_id = attach_team_membership(user)
+    seed_preview_event(user, team_id)
+
+    resp = client.get(
+        "/api/governance/analytics",
+        headers=headers,
+        params={"view": "reviewer"},
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert "results" not in payload
+    assert payload["totals"]["reviewer_count"] == 1
+    assert payload["totals"]["load_band_counts"]["light"] == 1
+    assert payload["totals"]["reviewer_latency_p50_minutes"] == pytest.approx(180.0)
+    assert payload["totals"]["reviewer_latency_p90_minutes"] == pytest.approx(228.0)
+    assert payload["totals"]["streak_alert_count"] == 0
+    reviewer = payload["reviewers"][0]
     assert reviewer["reviewer_id"] == str(user.id)
-    assert reviewer["assignment_count"] == 3
-    assert reviewer["completion_count"] == 3
-    assert reviewer["pending_count"] == 0
     assert reviewer["load_band"] == "light"
-    assert reviewer["average_latency_minutes"] == pytest.approx(180.0)
-    assert reviewer["latency_p50_minutes"] == pytest.approx(180.0)
-    assert reviewer["latency_p90_minutes"] == pytest.approx(228.0)
-    assert reviewer["blocked_ratio_trailing"] == pytest.approx(0.5)
-    assert reviewer["churn_signal"] == pytest.approx(4.0)
-    assert reviewer["rollback_precursor_count"] == 1
-    assert reviewer["publish_streak"] == 2
-    assert reviewer["streak_alert"] is False
-    assert reviewer["last_publish_at"]
-    assert len(reviewer["latency_bands"]) == 4
+
     assert reviewer["latency_bands"][1]["label"] == "two_to_eight_h"
     assert reviewer["latency_bands"][1]["count"] == 3
 

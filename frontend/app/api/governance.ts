@@ -13,6 +13,9 @@ import type {
   GovernanceAnalyticsPreviewSummary,
   GovernanceReviewerCadenceSummary,
   GovernanceAnalyticsLatencyBand,
+  GovernanceReviewerCadenceReport,
+  GovernanceReviewerCadenceTotals,
+  GovernanceReviewerLoadBandCounts,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -97,9 +100,16 @@ export const governanceApi = {
   async getAnalytics(params?: { execution_id?: string; limit?: number | null }) {
     const response = await api.get<GovernanceAnalyticsReport>(
       '/api/governance/analytics',
-      { params },
+      { params: { ...params, view: 'full' } },
     )
     return mapGovernanceAnalyticsReport(response.data)
+  },
+  async getReviewerCadence(params?: { execution_id?: string; limit?: number | null }) {
+    const response = await api.get<GovernanceReviewerCadenceReport>(
+      '/api/governance/analytics',
+      { params: { ...params, view: 'reviewer' } },
+    )
+    return mapGovernanceReviewerCadenceReport(response.data)
   },
   async getBaseline(baselineId: string) {
     const response = await api.get<GovernanceBaselineVersion>(
@@ -179,6 +189,14 @@ const mapLatencyBand = (
   count: Number(band.count ?? 0),
 })
 
+const mapLoadBandCounts = (
+  counts: GovernanceReviewerLoadBandCounts,
+): GovernanceReviewerLoadBandCounts => ({
+  light: Number(counts.light ?? 0),
+  steady: Number(counts.steady ?? 0),
+  saturated: Number(counts.saturated ?? 0),
+})
+
 export const mapGovernanceReviewerCadence = (
   cadence: GovernanceReviewerCadenceSummary,
 ): GovernanceReviewerCadenceSummary => ({
@@ -216,9 +234,39 @@ export const mapGovernanceAnalyticsReport = (
     ),
     reviewer_count: Number(report.totals.reviewer_count ?? 0),
     streak_alert_count: Number(report.totals.streak_alert_count ?? 0),
+    reviewer_latency_p50_minutes: coerceNumber(
+      report.totals.reviewer_latency_p50_minutes,
+    ),
+    reviewer_latency_p90_minutes: coerceNumber(
+      report.totals.reviewer_latency_p90_minutes,
+    ),
+    reviewer_load_band_counts: mapLoadBandCounts(
+      report.totals.reviewer_load_band_counts,
+    ),
   },
   results: report.results.map((item) => mapGovernanceAnalyticsSummary(item)),
   reviewer_cadence: report.reviewer_cadence.map((item) =>
     mapGovernanceReviewerCadence(item),
   ),
+})
+
+const mapGovernanceReviewerCadenceTotals = (
+  totals: GovernanceReviewerCadenceTotals,
+): GovernanceReviewerCadenceTotals => ({
+  reviewer_count: Number(totals.reviewer_count ?? 0),
+  streak_alert_count: Number(totals.streak_alert_count ?? 0),
+  reviewer_latency_p50_minutes: coerceNumber(
+    totals.reviewer_latency_p50_minutes,
+  ),
+  reviewer_latency_p90_minutes: coerceNumber(
+    totals.reviewer_latency_p90_minutes,
+  ),
+  load_band_counts: mapLoadBandCounts(totals.load_band_counts),
+})
+
+export const mapGovernanceReviewerCadenceReport = (
+  report: GovernanceReviewerCadenceReport,
+): GovernanceReviewerCadenceReport => ({
+  reviewers: report.reviewers.map((item) => mapGovernanceReviewerCadence(item)),
+  totals: mapGovernanceReviewerCadenceTotals(report.totals),
 })

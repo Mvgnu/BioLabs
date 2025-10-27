@@ -20,7 +20,13 @@ router = APIRouter(prefix="/api/governance/analytics", tags=["governance-analyti
 # status: pilot
 
 
-@router.get("", response_model=schemas.GovernanceAnalyticsReport)
+@router.get(
+    "",
+    response_model=(
+        schemas.GovernanceAnalyticsReport
+        | schemas.GovernanceReviewerCadenceReport
+    ),
+)
 def read_governance_analytics(
     execution_id: UUID | None = Query(default=None),
     limit: int | None = Query(default=50, ge=1, le=200),
@@ -42,7 +48,7 @@ def read_governance_analytics(
 
     include_previews = view != "reviewer"
 
-    return compute_governance_analytics(
+    report = compute_governance_analytics(
         db,
         user,
         team_ids=team_ids,
@@ -50,3 +56,18 @@ def read_governance_analytics(
         limit=limit,
         include_previews=include_previews,
     )
+
+    if view == "reviewer":
+        totals = report.totals
+        return schemas.GovernanceReviewerCadenceReport(
+            reviewers=report.reviewer_cadence,
+            totals=schemas.GovernanceReviewerCadenceTotals(
+                reviewer_count=totals.reviewer_count,
+                streak_alert_count=totals.streak_alert_count,
+                reviewer_latency_p50_minutes=totals.reviewer_latency_p50_minutes,
+                reviewer_latency_p90_minutes=totals.reviewer_latency_p90_minutes,
+                load_band_counts=totals.reviewer_load_band_counts,
+            ),
+        )
+
+    return report

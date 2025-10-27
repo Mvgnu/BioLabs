@@ -583,6 +583,28 @@ class GovernanceReviewerCadenceSummary(BaseModel):
     streak_alert: bool = False
 
 
+class GovernanceReviewerLoadBandCounts(BaseModel):
+    # purpose: capture reviewer load distribution for governance cadence payloads
+    # inputs: reviewer cadence aggregation buckets (light/steady/saturated)
+    # outputs: reusable load band histogram for analytics dashboards
+    # status: pilot
+    light: int = 0
+    steady: int = 0
+    saturated: int = 0
+
+
+class GovernanceReviewerCadenceTotals(BaseModel):
+    # purpose: deliver aggregate reviewer cadence guardrails for staffing insights
+    # inputs: reviewer cadence aggregation outputs from governance analytics
+    # outputs: summary metrics powering alert badges and density heatmaps
+    # status: pilot
+    reviewer_count: int = 0
+    streak_alert_count: int = 0
+    reviewer_latency_p50_minutes: float | None = None
+    reviewer_latency_p90_minutes: float | None = None
+    load_band_counts: GovernanceReviewerLoadBandCounts = Field(default_factory=GovernanceReviewerLoadBandCounts)
+
+
 class GovernanceAnalyticsPreviewSummary(BaseModel):
     # purpose: summarise governance preview telemetry blended with execution history and baseline lifecycle metrics
     # inputs: aggregated metrics produced by compute_governance_analytics
@@ -628,6 +650,9 @@ class GovernanceAnalyticsTotals(BaseModel):
     average_publication_cadence_days: float | None = None
     reviewer_count: int = 0
     streak_alert_count: int = 0
+    reviewer_latency_p50_minutes: float | None = None
+    reviewer_latency_p90_minutes: float | None = None
+    reviewer_load_band_counts: GovernanceReviewerLoadBandCounts = Field(default_factory=GovernanceReviewerLoadBandCounts)
 
 
 class GovernanceAnalyticsReport(BaseModel):
@@ -638,6 +663,15 @@ class GovernanceAnalyticsReport(BaseModel):
     results: list[GovernanceAnalyticsPreviewSummary] = Field(default_factory=list)
     reviewer_cadence: list[GovernanceReviewerCadenceSummary] = Field(default_factory=list)
     totals: GovernanceAnalyticsTotals
+
+
+class GovernanceReviewerCadenceReport(BaseModel):
+    # purpose: expose lean reviewer cadence analytics payloads for staffing dashboards
+    # inputs: reviewer cadence summaries and aggregate guardrails filtered via RBAC
+    # outputs: lightweight report consumed when requesting view=reviewer
+    # status: pilot
+    reviewers: list[GovernanceReviewerCadenceSummary] = Field(default_factory=list)
+    totals: GovernanceReviewerCadenceTotals
 
 
 class BaselineLifecycleLabel(BaseModel):
