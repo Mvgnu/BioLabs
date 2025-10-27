@@ -8,6 +8,8 @@
 
 The `/api/experiments/{execution_id}/preview` endpoint exposes a read-only projection of a governance ladder against a live protocol execution. The route pulls immutable template snapshots, applies optional stage/resource overrides, evaluates gating via `simulation.py`, renders Markdown through `render_preview_narrative`, and records a `template.preview.generated` entry inside `GovernanceTemplateAuditLog` for traceability.
 
+Each preview also emits a `governance.preview.summary` execution event containing stage predictions, blocked stage indexes, override counts, and resource warning totals. These minimal payloads power `/api/governance/analytics`, where the backend blends preview telemetry with step completion history to compute SLA accuracy ratios, blocker heatmaps, ladder load, and risk posture. Frontend dashboards consume `GovernanceAnalyticsReport` responses to visualise trends without introducing additional telemetry capture.
+
 ### Stage Mapping Metadata
 
 Each governance template stage can declare associated execution telemetry via `stage_step_indexes` and/or `stage_gate_keys`. The

@@ -8,6 +8,7 @@
   - Provides an "Attempt Orchestrated Advance" button that calls `/api/experiment-console/sessions/{execution_id}/steps/{step_index}/advance` and reports blockers to the user when transitions fail.
   - The governance preview modal now hydrates a persistent scenario workspace by calling `/api/experiments/{execution_id}/scenarios`, rendering saved scenarios via `ScenarioSummary`, and supporting create/update/clone/delete flows (plus folder creation) in-line with the backend RBAC rules.
   - Scientists can organise scenarios into execution-scoped folders, toggle shared team visibility, bind previews to timeline events, and schedule expirations directly from the modal UI.
+- The governance analytics panel (`components/Analytics/AnalyticsPanel`) queries `/api/governance/analytics` to surface SLA accuracy, blocker heatmaps, and ladder load metrics derived from preview telemetry and execution outcomes.
 - **Action handling**:
   - Guided wizard collects context for booking creation/adjustments and equipment maintenance requests before invoking remediation.
   - Automatic remediation results (executed, scheduled, skipped, failed) are surfaced beneath the step banner with semantic colour coding.

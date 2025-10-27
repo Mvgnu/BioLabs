@@ -453,6 +453,49 @@ export interface ExperimentPreviewResponse {
   resource_warnings: string[]
 }
 
+export type GovernanceRiskLevel = 'low' | 'medium' | 'high'
+
+export interface GovernanceAnalyticsSlaSample {
+  stage_index: number
+  predicted_due_at?: string | null
+  actual_completed_at?: string | null
+  delta_minutes?: number | null
+  within_target?: boolean | null
+}
+
+export interface GovernanceAnalyticsPreviewSummary {
+  execution_id: string
+  preview_event_id: string
+  snapshot_id?: string | null
+  baseline_snapshot_id?: string | null
+  generated_at: string
+  stage_count: number
+  blocked_stage_count: number
+  blocked_ratio: number
+  overrides_applied: number
+  new_blocker_count: number
+  resolved_blocker_count: number
+  ladder_load: number
+  sla_within_target_ratio?: number | null
+  mean_sla_delta_minutes?: number | null
+  sla_samples: GovernanceAnalyticsSlaSample[]
+  blocker_heatmap: number[]
+  risk_level: GovernanceRiskLevel
+}
+
+export interface GovernanceAnalyticsTotals {
+  preview_count: number
+  average_blocked_ratio: number
+  total_new_blockers: number
+  total_resolved_blockers: number
+  average_sla_within_target_ratio?: number | null
+}
+
+export interface GovernanceAnalyticsReport {
+  results: GovernanceAnalyticsPreviewSummary[]
+  totals: GovernanceAnalyticsTotals
+}
+
 export interface ExperimentScenario {
   id: string
   execution_id: string

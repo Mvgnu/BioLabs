@@ -536,6 +536,63 @@ class ExperimentPreviewResponse(BaseModel):
     resource_warnings: list[str] = Field(default_factory=list)
 
 
+class GovernanceAnalyticsSlaSample(BaseModel):
+    # purpose: capture predicted vs actual SLA outcomes for governance preview stages
+    # inputs: preview projection timestamps and execution completion telemetry
+    # outputs: per-stage SLA delta metrics powering analytics visualisations
+    # status: pilot
+    stage_index: int
+    predicted_due_at: datetime | None = None
+    actual_completed_at: datetime | None = None
+    delta_minutes: int | None = None
+    within_target: bool | None = None
+
+
+class GovernanceAnalyticsPreviewSummary(BaseModel):
+    # purpose: summarise governance preview telemetry blended with execution history
+    # inputs: aggregated metrics produced by compute_governance_analytics
+    # outputs: dashboard-ready analytics payload for experiment console panels
+    # status: pilot
+    execution_id: UUID
+    preview_event_id: UUID
+    snapshot_id: UUID | None = None
+    baseline_snapshot_id: UUID | None = None
+    generated_at: datetime
+    stage_count: int
+    blocked_stage_count: int
+    blocked_ratio: float
+    overrides_applied: int
+    new_blocker_count: int
+    resolved_blocker_count: int
+    ladder_load: float
+    sla_within_target_ratio: float | None = None
+    mean_sla_delta_minutes: float | None = None
+    sla_samples: list[GovernanceAnalyticsSlaSample] = Field(default_factory=list)
+    blocker_heatmap: list[int] = Field(default_factory=list)
+    risk_level: Literal["low", "medium", "high"]
+
+
+class GovernanceAnalyticsTotals(BaseModel):
+    # purpose: provide aggregate governance analytics context for dashboards
+    # inputs: preview summary collection metrics
+    # outputs: dataset totals to render trend summaries and KPIs
+    # status: pilot
+    preview_count: int
+    average_blocked_ratio: float
+    total_new_blockers: int
+    total_resolved_blockers: int
+    average_sla_within_target_ratio: float | None = None
+
+
+class GovernanceAnalyticsReport(BaseModel):
+    # purpose: deliver structured governance analytics response payloads
+    # inputs: preview summary list and aggregate totals
+    # outputs: API response consumed by governance analytics clients
+    # status: pilot
+    results: list[GovernanceAnalyticsPreviewSummary] = Field(default_factory=list)
+    totals: GovernanceAnalyticsTotals
+
+
 class ExperimentScenarioFolder(BaseModel):
     # purpose: describe scenario folder metadata for workspace navigation
     # status: pilot

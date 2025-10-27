@@ -12,6 +12,7 @@ import {
 import type { ExperimentRemediationResult } from '../../types'
 import Timeline from '../components/Timeline'
 import ExportsPanel from '../components/ExportsPanel'
+import GovernanceAnalyticsPanel from '../components/Analytics/AnalyticsPanel'
 
 const statusColors: Record<string, string> = {
   pending: 'bg-neutral-200 text-neutral-800',
@@ -365,6 +366,8 @@ export default function ExperimentConsolePage() {
             {formatDateTime(session.execution.created_at)}
           </p>
         </header>
+
+        <GovernanceAnalyticsPanel executionId={executionId} />
 
         <ExportsPanel executionId={executionId} timelineEvents={timelineEvents} />
 
