@@ -496,6 +496,83 @@ export interface GovernanceAnalyticsReport {
   totals: GovernanceAnalyticsTotals
 }
 
+export interface BaselineLifecycleLabel {
+  key: string
+  value: string
+}
+
+export interface GovernanceBaselineEvent {
+  id: string
+  baseline_id: string
+  action: string
+  notes?: string | null
+  detail: Record<string, any>
+  performed_by_id: string
+  created_at: string
+}
+
+export type GovernanceBaselineStatus =
+  | 'submitted'
+  | 'approved'
+  | 'rejected'
+  | 'published'
+  | 'rolled_back'
+
+export interface GovernanceBaselineVersion {
+  id: string
+  execution_id: string
+  template_id?: string | null
+  team_id?: string | null
+  name: string
+  description?: string | null
+  status: GovernanceBaselineStatus
+  labels: BaselineLifecycleLabel[]
+  reviewer_ids: string[]
+  version_number?: number | null
+  is_current: boolean
+  submitted_by_id: string
+  submitted_at: string
+  reviewed_by_id?: string | null
+  reviewed_at?: string | null
+  review_notes?: string | null
+  published_by_id?: string | null
+  published_at?: string | null
+  publish_notes?: string | null
+  rollback_of_id?: string | null
+  rolled_back_by_id?: string | null
+  rolled_back_at?: string | null
+  rollback_notes?: string | null
+  created_at: string
+  updated_at: string
+  events: GovernanceBaselineEvent[]
+}
+
+export interface GovernanceBaselineCollection {
+  items: GovernanceBaselineVersion[]
+}
+
+export interface BaselineSubmissionDraft {
+  execution_id: string
+  name: string
+  description?: string | null
+  reviewer_ids: string[]
+  labels: BaselineLifecycleLabel[]
+}
+
+export interface BaselineReviewDecision {
+  decision: 'approve' | 'reject'
+  notes?: string | null
+}
+
+export interface BaselinePublishRequest {
+  notes?: string | null
+}
+
+export interface BaselineRollbackRequest {
+  reason: string
+  target_version_id?: string | null
+}
+
 export interface ExperimentScenario {
   id: string
   execution_id: string

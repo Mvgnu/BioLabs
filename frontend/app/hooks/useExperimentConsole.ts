@@ -8,6 +8,7 @@ import {
 } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 import api from '../api/client'
+import { governanceApi } from '../api/governance'
 import type {
   ExperimentExecutionSession,
   ExperimentExecutionSessionCreate,
@@ -32,6 +33,12 @@ import type {
   ExecutionNarrativeDelegationRequest,
   ExecutionNarrativeStageResetRequest,
   GovernanceAnalyticsReport,
+  GovernanceBaselineCollection,
+  GovernanceBaselineVersion,
+  BaselineSubmissionDraft,
+  BaselineReviewDecision,
+  BaselinePublishRequest,
+  BaselineRollbackRequest,
 } from '../types'
 
 const sessionKey = (executionId: string | null) => [
@@ -68,6 +75,16 @@ const governanceAnalyticsKey = (executionId: string | null) => [
   executionId ?? 'all',
 ]
 
+const governanceBaselinesKey = (
+  executionId: string | null,
+  templateId: string | null,
+) => [
+  'experiment-console',
+  'baselines',
+  executionId ?? 'all',
+  templateId ?? 'all',
+]
+
 const invalidateTimelineQueries = (qc: QueryClient, executionId: string | null) => {
   if (!executionId) return
   qc.invalidateQueries({
@@ -76,6 +93,15 @@ const invalidateTimelineQueries = (qc: QueryClient, executionId: string | null) 
       query.queryKey[0] === 'experiment-console' &&
       query.queryKey[1] === 'timeline' &&
       query.queryKey[2] === executionId,
+  })
+}
+
+const invalidateBaselineQueries = (qc: QueryClient) => {
+  qc.invalidateQueries({
+    predicate: (query) =>
+      Array.isArray(query.queryKey) &&
+      query.queryKey[0] === 'experiment-console' &&
+      query.queryKey[1] === 'baselines',
   })
 }
 
@@ -221,6 +247,150 @@ export const useGovernanceAnalytics = (
       }
       const resp = await api.get('/api/governance/analytics', { params })
       return resp.data as GovernanceAnalyticsReport
+    },
+  })
+}
+
+export const useGovernanceBaselines = (
+  executionId: string | null,
+  templateId: string | null,
+) => {
+  return useQuery<GovernanceBaselineVersion[]>({
+    queryKey: governanceBaselinesKey(executionId, templateId),
+    enabled: Boolean(executionId || templateId),
+    queryFn: async () => {
+      const response: GovernanceBaselineCollection =
+        await governanceApi.listBaselines({
+          execution_id: executionId ?? undefined,
+          template_id: templateId ?? undefined,
+        })
+      return response.items
+    },
+  })
+}
+
+type SubmitBaselinePayload = Omit<BaselineSubmissionDraft, 'execution_id'> & {
+  execution_id?: string
+}
+
+export const useSubmitBaseline = (
+  executionId: string | null,
+  templateId: string | null,
+) => {
+  const qc = useQueryClient()
+  const key = governanceBaselinesKey(executionId, templateId)
+  return useMutation({
+    mutationFn: async (payload: SubmitBaselinePayload) => {
+      const execution = payload.execution_id ?? executionId
+      if (!execution) {
+        throw new Error('Execution id required for baseline submission')
+      }
+      const submission: BaselineSubmissionDraft = {
+        ...payload,
+        execution_id: execution,
+        labels: payload.labels ?? [],
+        reviewer_ids: payload.reviewer_ids ?? [],
+      }
+      return governanceApi.submitBaseline(submission)
+    },
+    onMutate: async (payload) => {
+      await qc.cancelQueries({ queryKey: key })
+      const previous = qc.getQueryData<GovernanceBaselineVersion[] | undefined>(key)
+      const targetExecution = payload.execution_id ?? executionId
+      if (!targetExecution) {
+        return { previous, optimisticId: undefined }
+      }
+      const now = new Date().toISOString()
+      const optimistic: GovernanceBaselineVersion = {
+        id: `optimistic-${Date.now()}`,
+        execution_id: targetExecution,
+        template_id: templateId,
+        team_id: null,
+        name: payload.name,
+        description: payload.description ?? null,
+        status: 'submitted',
+        labels: payload.labels ?? [],
+        reviewer_ids: payload.reviewer_ids ?? [],
+        version_number: null,
+        is_current: false,
+        submitted_by_id: 'pending',
+        submitted_at: now,
+        reviewed_by_id: null,
+        reviewed_at: null,
+        review_notes: null,
+        published_by_id: null,
+        published_at: null,
+        publish_notes: null,
+        rollback_of_id: null,
+        rolled_back_by_id: null,
+        rolled_back_at: null,
+        rollback_notes: null,
+        created_at: now,
+        updated_at: now,
+        events: [],
+      }
+      qc.setQueryData<GovernanceBaselineVersion[]>(key, (existing = []) => [
+        optimistic,
+        ...existing,
+      ])
+      return { previous, optimisticId: optimistic.id }
+    },
+    onError: (_error, _vars, ctx) => {
+      if (ctx?.previous) {
+        qc.setQueryData(key, ctx.previous)
+      }
+    },
+    onSuccess: (data, _vars, ctx) => {
+      qc.setQueryData<GovernanceBaselineVersion[]>(key, (existing = []) => {
+        const filtered = existing.filter((item) => item.id !== ctx?.optimisticId)
+        return [data, ...filtered]
+      })
+      invalidateBaselineQueries(qc)
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: key })
+    },
+  })
+}
+
+export const useReviewBaseline = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      baselineId: string
+      payload: BaselineReviewDecision
+    }) => governanceApi.reviewBaseline(vars.baselineId, vars.payload),
+    onSuccess: (data) => {
+      invalidateBaselineQueries(qc)
+      return data
+    },
+  })
+}
+
+export const usePublishBaseline = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      baselineId: string
+      payload: BaselinePublishRequest
+    }) => governanceApi.publishBaseline(vars.baselineId, vars.payload),
+    onSuccess: (data) => {
+      invalidateBaselineQueries(qc)
+      return data
+    },
+  })
+}
+
+export const useRollbackBaseline = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      baselineId: string
+      payload: BaselineRollbackRequest
+    }) => governanceApi.rollbackBaseline(vars.baselineId, vars.payload),
+    onSuccess: (data) => {
+      invalidateBaselineQueries(qc)
+      return data
     },
   })
 }

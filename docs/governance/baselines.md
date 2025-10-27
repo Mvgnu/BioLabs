@@ -34,6 +34,16 @@ All routes require authentication. RBAC is enforced via execution workspace memb
 3. **Publish** – Approved baselines can be published by reviewers or administrators. Publishing assigns an incremental `version_number` per protocol template and flips the `is_current` flag while retiring previous versions.
 4. **Rollback** – Administrators can roll back an active baseline, optionally reinstating a prior version. Both actions emit audit events.
 
+## Experiment Console Workflow
+
+The experiment console exposes a "Baseline governance" panel that mirrors the lifecycle API:
+
+- **Submission form** – Scientists draft proposals directly within an execution workspace. The form captures a name, narrative context, reviewer identifiers, and lifecycle labels. RBAC gates submission: controls remain visible for context but are disabled unless the viewer is an execution owner or administrator.
+- **Reviewer queue** – Active baselines appear with status badges, assignments, and quick actions. Reviewers can approve or reject submissions, while administrators (or approved reviewers) can publish or roll back. Actions prompt for optional notes which are persisted via `/api/governance/baselines/*` endpoints.
+- **Event timeline** – A live timeline reflects the `governance_baseline_events` audit trail. Each transition surfaces timestamps, actor notes, and structured metadata to support investigations.
+
+React Query hooks in `useExperimentConsole` perform optimistic updates so queue state remains responsive. All controls respect RBAC checks and fall back to view-only mode when permissions are insufficient.
+
 ## Data Model Highlights
 
 - `governance_baseline_versions` stores lifecycle metadata, reviewer assignments, and publication history.
