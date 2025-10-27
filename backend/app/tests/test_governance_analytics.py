@@ -225,18 +225,21 @@ def test_governance_analytics_sla_and_blockers(client):
     filtered_payload = filtered.json()
     assert filtered_payload["results"]
 
-    reviewer_loads = payload["reviewer_loads"]
-    assert len(reviewer_loads) == 1
-    reviewer = reviewer_loads[0]
+    reviewer_cadence = payload["reviewer_cadence"]
+    assert len(reviewer_cadence) == 1
+    reviewer = reviewer_cadence[0]
     assert reviewer["reviewer_id"] == str(user.id)
-    assert reviewer["assigned_count"] == 3
-    assert reviewer["completed_count"] == 3
+    assert reviewer["assignment_count"] == 3
+    assert reviewer["completion_count"] == 3
     assert reviewer["pending_count"] == 0
+    assert reviewer["load_band"] == "light"
     assert reviewer["average_latency_minutes"] == pytest.approx(180.0)
-    assert reviewer["recent_blocked_ratio"] == pytest.approx(0.5)
-    assert reviewer["baseline_churn"] == pytest.approx(4.0)
+    assert reviewer["latency_p50_minutes"] == pytest.approx(180.0)
+    assert reviewer["latency_p90_minutes"] == pytest.approx(228.0)
+    assert reviewer["blocked_ratio_trailing"] == pytest.approx(0.5)
+    assert reviewer["churn_signal"] == pytest.approx(4.0)
     assert reviewer["rollback_precursor_count"] == 1
-    assert reviewer["current_publish_streak"] == 2
+    assert reviewer["publish_streak"] == 2
     assert reviewer["streak_alert"] is False
     assert reviewer["last_publish_at"]
     assert len(reviewer["latency_bands"]) == 4

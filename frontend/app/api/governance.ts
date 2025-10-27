@@ -11,7 +11,7 @@ import type {
   GovernanceTemplateDraft,
   GovernanceAnalyticsReport,
   GovernanceAnalyticsPreviewSummary,
-  GovernanceAnalyticsReviewerLoad,
+  GovernanceReviewerCadenceSummary,
   GovernanceAnalyticsLatencyBand,
 } from '../types'
 
@@ -179,14 +179,19 @@ const mapLatencyBand = (
   count: Number(band.count ?? 0),
 })
 
-export const mapGovernanceReviewerLoad = (
-  load: GovernanceAnalyticsReviewerLoad,
-): GovernanceAnalyticsReviewerLoad => ({
-  ...load,
-  average_latency_minutes: coerceNumber(load.average_latency_minutes),
-  recent_blocked_ratio: coerceNumber(load.recent_blocked_ratio),
-  baseline_churn: coerceNumber(load.baseline_churn),
-  latency_bands: load.latency_bands.map((band) => mapLatencyBand(band)),
+export const mapGovernanceReviewerCadence = (
+  cadence: GovernanceReviewerCadenceSummary,
+): GovernanceReviewerCadenceSummary => ({
+  ...cadence,
+  assignment_count: Number(cadence.assignment_count ?? 0),
+  completion_count: Number(cadence.completion_count ?? 0),
+  pending_count: Number(cadence.pending_count ?? 0),
+  average_latency_minutes: coerceNumber(cadence.average_latency_minutes),
+  latency_p50_minutes: coerceNumber(cadence.latency_p50_minutes),
+  latency_p90_minutes: coerceNumber(cadence.latency_p90_minutes),
+  blocked_ratio_trailing: coerceNumber(cadence.blocked_ratio_trailing),
+  churn_signal: coerceNumber(cadence.churn_signal),
+  latency_bands: cadence.latency_bands.map((band) => mapLatencyBand(band)),
 })
 
 export const mapGovernanceAnalyticsReport = (
@@ -213,5 +218,7 @@ export const mapGovernanceAnalyticsReport = (
     streak_alert_count: Number(report.totals.streak_alert_count ?? 0),
   },
   results: report.results.map((item) => mapGovernanceAnalyticsSummary(item)),
-  reviewer_loads: report.reviewer_loads.map((item) => mapGovernanceReviewerLoad(item)),
+  reviewer_cadence: report.reviewer_cadence.map((item) =>
+    mapGovernanceReviewerCadence(item),
+  ),
 })

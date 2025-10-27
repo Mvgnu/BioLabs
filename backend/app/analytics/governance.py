@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
+from math import ceil, floor
 from statistics import mean
 from typing import Any, Iterable, Sequence, Set
 from uuid import UUID
@@ -41,6 +42,8 @@ REVIEWER_LATENCY_BANDS: tuple[tuple[str, int | None, int | None], ...] = (
     ("over_day", 1440, None),
 )
 
+REVIEWER_LOAD_RANK = {"saturated": 3, "steady": 2, "light": 1}
+
 
 def _coerce_uuid(value: object) -> UUID | None:
     """Best-effort coercion of arbitrary values into UUID objects."""
@@ -74,6 +77,40 @@ def _classify_latency_band(minutes: float | None) -> str | None:
         if lower_bound <= normalised < upper_bound:
             return label
     return REVIEWER_LATENCY_BANDS[-1][0]
+
+
+def _calculate_percentile(samples: Sequence[float], percentile: float) -> float | None:
+    """Return percentile estimate for provided samples using linear interpolation."""
+
+    if not samples:
+        return None
+    ordered = sorted(samples)
+    if not ordered:
+        return None
+    clamped = max(0.0, min(100.0, percentile))
+    if clamped == 0.0:
+        return float(ordered[0])
+    if clamped == 100.0:
+        return float(ordered[-1])
+    rank = (clamped / 100.0) * (len(ordered) - 1)
+    lower_index = floor(rank)
+    upper_index = ceil(rank)
+    lower_value = float(ordered[lower_index])
+    upper_value = float(ordered[upper_index])
+    if lower_index == upper_index:
+        return lower_value
+    fraction = rank - lower_index
+    return lower_value + (upper_value - lower_value) * fraction
+
+
+def _determine_load_band(assignment_count: int, pending_count: int) -> str:
+    """Classify reviewer cadence load using assignment and pending volumes."""
+
+    if pending_count >= 8 or assignment_count >= 12:
+        return "saturated"
+    if pending_count >= 4 or assignment_count >= 6:
+        return "steady"
+    return "light"
 
 
 def _build_latency_band_payload(
@@ -149,6 +186,7 @@ def compute_governance_analytics(
     team_ids: Set[UUID] | None = None,
     execution_ids: Sequence[UUID] | None = None,
     limit: int | None = 50,
+    include_previews: bool = True,
 ) -> schemas.GovernanceAnalyticsReport:
     """Blend preview telemetry with execution history to produce analytics summaries."""
 
@@ -188,6 +226,7 @@ def compute_governance_analytics(
     events: Iterable[models.ExecutionEvent] = query.all()
 
     results: list[schemas.GovernanceAnalyticsPreviewSummary] = []
+    preview_count = 0
     total_new_blockers = 0
     total_resolved_blockers = 0
     total_baseline_versions = 0
@@ -417,32 +456,34 @@ def compute_governance_analytics(
             stats["blocked_samples"].append(blocked_ratio)
             stats["churn_samples"].append(len(baseline_versions) + baseline_rollback_count)
 
-        results.append(
-            schemas.GovernanceAnalyticsPreviewSummary(
-                execution_id=execution.id,
-                preview_event_id=event.id,
-                snapshot_id=snapshot_id or execution.template_id,
-                baseline_snapshot_id=baseline_snapshot_id,
-                generated_at=generated_at,
-                stage_count=stage_count,
-                blocked_stage_count=blocked_stage_count,
-                blocked_ratio=blocked_ratio,
-                overrides_applied=overrides_applied,
-                new_blocker_count=new_blocker_count,
-                resolved_blocker_count=resolved_blocker_count,
-                ladder_load=ladder_load,
-                sla_within_target_ratio=sla_within_ratio,
-                mean_sla_delta_minutes=mean_sla_delta,
-                sla_samples=sla_samples,
-                blocker_heatmap=blocker_heatmap,
-                risk_level=risk_level,
-                baseline_version_count=len(baseline_versions),
-                approval_latency_minutes=approval_latency_value,
-                publication_cadence_days=publication_cadence_value,
-                rollback_count=baseline_rollback_count,
-                blocker_churn_index=summary_churn_index,
+        preview_count += 1
+        if include_previews:
+            results.append(
+                schemas.GovernanceAnalyticsPreviewSummary(
+                    execution_id=execution.id,
+                    preview_event_id=event.id,
+                    snapshot_id=snapshot_id or execution.template_id,
+                    baseline_snapshot_id=baseline_snapshot_id,
+                    generated_at=generated_at,
+                    stage_count=stage_count,
+                    blocked_stage_count=blocked_stage_count,
+                    blocked_ratio=blocked_ratio,
+                    overrides_applied=overrides_applied,
+                    new_blocker_count=new_blocker_count,
+                    resolved_blocker_count=resolved_blocker_count,
+                    ladder_load=ladder_load,
+                    sla_within_target_ratio=sla_within_ratio,
+                    mean_sla_delta_minutes=mean_sla_delta,
+                    sla_samples=sla_samples,
+                    blocker_heatmap=blocker_heatmap,
+                    risk_level=risk_level,
+                    baseline_version_count=len(baseline_versions),
+                    approval_latency_minutes=approval_latency_value,
+                    publication_cadence_days=publication_cadence_value,
+                    rollback_count=baseline_rollback_count,
+                    blocker_churn_index=summary_churn_index,
+                )
             )
-        )
 
     average_blocked_ratio = mean(blocked_ratios) if blocked_ratios else 0.0
     average_sla_within = mean(sla_ratio_samples) if sla_ratio_samples else None
@@ -456,16 +497,32 @@ def compute_governance_analytics(
         else None
     )
 
-    reviewer_loads: list[schemas.GovernanceAnalyticsReviewerLoad] = []
+    reviewer_cadence: list[schemas.GovernanceReviewerCadenceSummary] = []
     streak_alert_count = 0
     if reviewer_stats:
+        reviewer_ids = list(reviewer_stats.keys())
         reviewer_users = {
             user.id: user
             for user in db.query(models.User)
-            .filter(models.User.id.in_(list(reviewer_stats.keys())))
+            .filter(models.User.id.in_(reviewer_ids))
             .all()
         }
+
+        allowed_reviewer_ids: set[UUID]
+        if user.is_admin or not membership_ids:
+            allowed_reviewer_ids = set(reviewer_ids)
+        else:
+            allowed_reviewer_ids = {
+                membership.user_id
+                for membership in db.query(models.TeamMember)
+                .filter(models.TeamMember.team_id.in_(list(membership_ids)))
+                .all()
+            }
+            allowed_reviewer_ids.add(user.id)
+
         for reviewer_id, stats in reviewer_stats.items():
+            if reviewer_id not in allowed_reviewer_ids:
+                continue
             user = reviewer_users.get(reviewer_id)
             latency_samples: list[float] = stats["latency_samples"]
             average_latency = (
@@ -488,29 +545,44 @@ def compute_governance_analytics(
             streak_alert = streak >= 3
             if streak_alert:
                 streak_alert_count += 1
-            reviewer_loads.append(
-                schemas.GovernanceAnalyticsReviewerLoad(
+            reviewer_cadence.append(
+                schemas.GovernanceReviewerCadenceSummary(
                     reviewer_id=reviewer_id,
                     reviewer_email=getattr(user, "email", None),
                     reviewer_name=getattr(user, "full_name", None),
-                    assigned_count=stats["assigned"],
-                    completed_count=stats["completed"],
+                    assignment_count=stats["assigned"],
+                    completion_count=stats["completed"],
                     pending_count=stats["pending"],
+                    load_band=_determine_load_band(
+                        stats["assigned"], stats["pending"]
+                    ),
                     average_latency_minutes=average_latency,
+                    latency_p50_minutes=_calculate_percentile(
+                        latency_samples, 50.0
+                    ),
+                    latency_p90_minutes=_calculate_percentile(
+                        latency_samples, 90.0
+                    ),
                     latency_bands=latency_payload,
-                    recent_blocked_ratio=blocked_ratio_sample,
-                    baseline_churn=churn_sample,
+                    blocked_ratio_trailing=blocked_ratio_sample,
+                    churn_signal=churn_sample,
                     rollback_precursor_count=stats["rollback_precursors"],
-                    current_publish_streak=streak,
+                    publish_streak=streak,
                     last_publish_at=last_publish,
                     streak_alert=streak_alert,
                 )
             )
 
-    reviewer_loads.sort(key=lambda item: item.completed_count, reverse=True)
+    reviewer_cadence.sort(
+        key=lambda item: (
+            REVIEWER_LOAD_RANK.get(item.load_band, 0),
+            item.completion_count,
+        ),
+        reverse=True,
+    )
 
     totals = schemas.GovernanceAnalyticsTotals(
-        preview_count=len(results),
+        preview_count=preview_count,
         average_blocked_ratio=average_blocked_ratio,
         total_new_blockers=total_new_blockers,
         total_resolved_blockers=total_resolved_blockers,
@@ -519,11 +591,11 @@ def compute_governance_analytics(
         total_rollbacks=total_rollbacks,
         average_approval_latency_minutes=average_approval_latency,
         average_publication_cadence_days=average_publication_cadence,
-        reviewer_count=len(reviewer_loads),
+        reviewer_count=len(reviewer_cadence),
         streak_alert_count=streak_alert_count,
     )
 
     return schemas.GovernanceAnalyticsReport(
-        results=results, reviewer_loads=reviewer_loads, totals=totals
+        results=results, reviewer_cadence=reviewer_cadence, totals=totals
     )
 

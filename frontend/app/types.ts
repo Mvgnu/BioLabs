@@ -470,19 +470,24 @@ export interface GovernanceAnalyticsLatencyBand {
   count: number
 }
 
-export interface GovernanceAnalyticsReviewerLoad {
+export type ReviewerLoadBand = 'light' | 'steady' | 'saturated'
+
+export interface GovernanceReviewerCadenceSummary {
   reviewer_id: string
   reviewer_email?: string | null
   reviewer_name?: string | null
-  assigned_count: number
-  completed_count: number
+  assignment_count: number
+  completion_count: number
   pending_count: number
+  load_band: ReviewerLoadBand
   average_latency_minutes?: number | null
+  latency_p50_minutes?: number | null
+  latency_p90_minutes?: number | null
   latency_bands: GovernanceAnalyticsLatencyBand[]
-  recent_blocked_ratio?: number | null
-  baseline_churn?: number | null
+  blocked_ratio_trailing?: number | null
+  churn_signal?: number | null
   rollback_precursor_count: number
-  current_publish_streak: number
+  publish_streak: number
   last_publish_at?: string | null
   streak_alert: boolean
 }
@@ -528,7 +533,7 @@ export interface GovernanceAnalyticsTotals {
 
 export interface GovernanceAnalyticsReport {
   results: GovernanceAnalyticsPreviewSummary[]
-  reviewer_loads: GovernanceAnalyticsReviewerLoad[]
+  reviewer_cadence: GovernanceReviewerCadenceSummary[]
   totals: GovernanceAnalyticsTotals
 }
 

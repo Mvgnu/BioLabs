@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List
+from typing import List, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api/governance/analytics", tags=["governance-analyti
 def read_governance_analytics(
     execution_id: UUID | None = Query(default=None),
     limit: int | None = Query(default=50, ge=1, le=200),
+    view: Literal["full", "reviewer"] = Query(default="full"),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ) -> schemas.GovernanceAnalyticsReport:
@@ -39,10 +40,13 @@ def read_governance_analytics(
         _ensure_execution_access(db, execution, user, team_ids)
         execution_ids = [execution_id]
 
+    include_previews = view != "reviewer"
+
     return compute_governance_analytics(
         db,
         user,
         team_ids=team_ids,
         execution_ids=execution_ids,
         limit=limit,
+        include_previews=include_previews,
     )
