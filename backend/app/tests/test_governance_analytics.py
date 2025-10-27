@@ -116,7 +116,7 @@ def seed_preview_event(user: models.User, team_id: uuid.UUID | None = None) -> u
             description="Initial published baseline",
             status="published",
             labels=[],
-            reviewer_ids=[],
+            reviewer_ids=[str(user.id)],
             version_number=1,
             is_current=False,
             submitted_by_id=user.id,
@@ -136,7 +136,7 @@ def seed_preview_event(user: models.User, team_id: uuid.UUID | None = None) -> u
             description="Current published baseline",
             status="published",
             labels=[],
-            reviewer_ids=[],
+            reviewer_ids=[str(user.id)],
             version_number=2,
             is_current=True,
             submitted_by_id=user.id,
@@ -154,7 +154,7 @@ def seed_preview_event(user: models.User, team_id: uuid.UUID | None = None) -> u
             description="Rolled back due to regression",
             status="rolled_back",
             labels=[],
-            reviewer_ids=[],
+            reviewer_ids=[str(user.id)],
             version_number=3,
             is_current=False,
             submitted_by_id=user.id,
@@ -189,6 +189,8 @@ def test_governance_analytics_sla_and_blockers(client):
     assert payload["totals"]["total_rollbacks"] == 1
     assert payload["totals"]["average_approval_latency_minutes"] == pytest.approx(180.0)
     assert payload["totals"]["average_publication_cadence_days"] == pytest.approx(3.0)
+    assert payload["totals"]["reviewer_count"] == 1
+    assert payload["totals"]["streak_alert_count"] == 0
 
     summary = payload["results"][0]
     assert summary["execution_id"] == str(execution_id)
@@ -204,6 +206,7 @@ def test_governance_analytics_sla_and_blockers(client):
     assert summary["rollback_count"] == 1
     assert summary["approval_latency_minutes"] == pytest.approx(180.0)
     assert summary["publication_cadence_days"] == pytest.approx(3.0)
+    assert summary["blocker_churn_index"] == pytest.approx(2.0)
 
     samples = summary["sla_samples"]
     assert len(samples) == 2
@@ -221,6 +224,24 @@ def test_governance_analytics_sla_and_blockers(client):
     assert filtered.status_code == 200
     filtered_payload = filtered.json()
     assert filtered_payload["results"]
+
+    reviewer_loads = payload["reviewer_loads"]
+    assert len(reviewer_loads) == 1
+    reviewer = reviewer_loads[0]
+    assert reviewer["reviewer_id"] == str(user.id)
+    assert reviewer["assigned_count"] == 3
+    assert reviewer["completed_count"] == 3
+    assert reviewer["pending_count"] == 0
+    assert reviewer["average_latency_minutes"] == pytest.approx(180.0)
+    assert reviewer["recent_blocked_ratio"] == pytest.approx(0.5)
+    assert reviewer["baseline_churn"] == pytest.approx(4.0)
+    assert reviewer["rollback_precursor_count"] == 1
+    assert reviewer["current_publish_streak"] == 2
+    assert reviewer["streak_alert"] is False
+    assert reviewer["last_publish_at"]
+    assert len(reviewer["latency_bands"]) == 4
+    assert reviewer["latency_bands"][1]["label"] == "two_to_eight_h"
+    assert reviewer["latency_bands"][1]["count"] == 3
 
 
 def test_governance_analytics_rbac_denies_unauthorised_access(client):

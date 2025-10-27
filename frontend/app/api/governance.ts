@@ -11,6 +11,8 @@ import type {
   GovernanceTemplateDraft,
   GovernanceAnalyticsReport,
   GovernanceAnalyticsPreviewSummary,
+  GovernanceAnalyticsReviewerLoad,
+  GovernanceAnalyticsLatencyBand,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -165,6 +167,26 @@ export const mapGovernanceAnalyticsSummary = (
   mean_sla_delta_minutes: coerceNumber(summary.mean_sla_delta_minutes),
   approval_latency_minutes: coerceNumber(summary.approval_latency_minutes),
   publication_cadence_days: coerceNumber(summary.publication_cadence_days),
+  blocker_churn_index: coerceNumber(summary.blocker_churn_index),
+})
+
+const mapLatencyBand = (
+  band: GovernanceAnalyticsLatencyBand,
+): GovernanceAnalyticsLatencyBand => ({
+  ...band,
+  start_minutes: coerceNumber(band.start_minutes),
+  end_minutes: coerceNumber(band.end_minutes),
+  count: Number(band.count ?? 0),
+})
+
+export const mapGovernanceReviewerLoad = (
+  load: GovernanceAnalyticsReviewerLoad,
+): GovernanceAnalyticsReviewerLoad => ({
+  ...load,
+  average_latency_minutes: coerceNumber(load.average_latency_minutes),
+  recent_blocked_ratio: coerceNumber(load.recent_blocked_ratio),
+  baseline_churn: coerceNumber(load.baseline_churn),
+  latency_bands: load.latency_bands.map((band) => mapLatencyBand(band)),
 })
 
 export const mapGovernanceAnalyticsReport = (
@@ -187,6 +209,9 @@ export const mapGovernanceAnalyticsReport = (
     average_publication_cadence_days: coerceNumber(
       report.totals.average_publication_cadence_days,
     ),
+    reviewer_count: Number(report.totals.reviewer_count ?? 0),
+    streak_alert_count: Number(report.totals.streak_alert_count ?? 0),
   },
   results: report.results.map((item) => mapGovernanceAnalyticsSummary(item)),
+  reviewer_loads: report.reviewer_loads.map((item) => mapGovernanceReviewerLoad(item)),
 })

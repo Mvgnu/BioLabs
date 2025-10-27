@@ -25,6 +25,8 @@ describe('GovernanceAnalyticsPanel', () => {
       total_rollbacks: 2,
       average_approval_latency_minutes: 180,
       average_publication_cadence_days: 4,
+      reviewer_count: 1,
+      streak_alert_count: 0,
     },
     results: [
       {
@@ -57,6 +59,7 @@ describe('GovernanceAnalyticsPanel', () => {
         approval_latency_minutes: 200,
         publication_cadence_days: 4,
         rollback_count: 1,
+        blocker_churn_index: 1.5,
       },
       {
         execution_id: 'exec-2',
@@ -80,6 +83,30 @@ describe('GovernanceAnalyticsPanel', () => {
         approval_latency_minutes: 160,
         publication_cadence_days: 3,
         rollback_count: 0,
+        blocker_churn_index: 0.25,
+      },
+    ],
+    reviewer_loads: [
+      {
+        reviewer_id: 'reviewer-1',
+        reviewer_email: 'reviewer@example.com',
+        reviewer_name: 'Reviewer Example',
+        assigned_count: 5,
+        completed_count: 5,
+        pending_count: 0,
+        average_latency_minutes: 140,
+        latency_bands: [
+          { label: 'under_2h', count: 1, start_minutes: null, end_minutes: 120 },
+          { label: 'two_to_eight_h', count: 3, start_minutes: 120, end_minutes: 480 },
+          { label: 'eight_to_day', count: 1, start_minutes: 480, end_minutes: 1440 },
+          { label: 'over_day', count: 0, start_minutes: 1440, end_minutes: null },
+        ],
+        recent_blocked_ratio: 0.3,
+        baseline_churn: 3.2,
+        rollback_precursor_count: 1,
+        current_publish_streak: 2,
+        last_publish_at: '2024-01-02T00:00:00Z',
+        streak_alert: false,
       },
     ],
   }
@@ -113,6 +140,8 @@ describe('GovernanceAnalyticsPanel', () => {
     expect(screen.getByTestId('blocker-heatmap')).toBeTruthy()
     expect(screen.getByTestId('ladder-load-chart')).toBeTruthy()
     expect(screen.getByTestId('baseline-lifecycle-card')).toBeTruthy()
+    expect(screen.getByTestId('reviewer-load-heatmap')).toBeTruthy()
+    expect(screen.getByTestId('reviewer-streak-alerts')).toBeTruthy()
     expect(screen.getByText(/Average SLA accuracy/i)).toBeTruthy()
     expect(screen.getByText(/Stage 2/)).toBeTruthy()
     expect(screen.getByText(/Average ladder load/i)).toBeTruthy()

@@ -548,6 +548,38 @@ class GovernanceAnalyticsSlaSample(BaseModel):
     within_target: bool | None = None
 
 
+class GovernanceAnalyticsLatencyBand(BaseModel):
+    # purpose: codify reviewer latency histogram buckets for governance analytics
+    # inputs: bucket label, inclusive start minute, exclusive end minute, sample count
+    # outputs: structured latency band metadata for reviewer dashboards
+    # status: pilot
+    label: str
+    start_minutes: int | None = None
+    end_minutes: int | None = None
+    count: int = 0
+
+
+class GovernanceAnalyticsReviewerLoad(BaseModel):
+    # purpose: represent reviewer-centric throughput metrics for governance dashboards
+    # inputs: aggregated lifecycle samples derived from compute_governance_analytics
+    # outputs: reviewer heatmap records and cadence streak alert payloads
+    # status: pilot
+    reviewer_id: UUID
+    reviewer_email: EmailStr | None = None
+    reviewer_name: str | None = None
+    assigned_count: int = 0
+    completed_count: int = 0
+    pending_count: int = 0
+    average_latency_minutes: float | None = None
+    latency_bands: list[GovernanceAnalyticsLatencyBand] = Field(default_factory=list)
+    recent_blocked_ratio: float | None = None
+    baseline_churn: float | None = None
+    rollback_precursor_count: int = 0
+    current_publish_streak: int = 0
+    last_publish_at: datetime | None = None
+    streak_alert: bool = False
+
+
 class GovernanceAnalyticsPreviewSummary(BaseModel):
     # purpose: summarise governance preview telemetry blended with execution history and baseline lifecycle metrics
     # inputs: aggregated metrics produced by compute_governance_analytics
@@ -574,6 +606,7 @@ class GovernanceAnalyticsPreviewSummary(BaseModel):
     approval_latency_minutes: float | None = None
     publication_cadence_days: float | None = None
     rollback_count: int = 0
+    blocker_churn_index: float | None = None
 
 
 class GovernanceAnalyticsTotals(BaseModel):
@@ -590,6 +623,8 @@ class GovernanceAnalyticsTotals(BaseModel):
     total_rollbacks: int
     average_approval_latency_minutes: float | None = None
     average_publication_cadence_days: float | None = None
+    reviewer_count: int = 0
+    streak_alert_count: int = 0
 
 
 class GovernanceAnalyticsReport(BaseModel):
@@ -598,6 +633,7 @@ class GovernanceAnalyticsReport(BaseModel):
     # outputs: API response consumed by governance analytics clients
     # status: pilot
     results: list[GovernanceAnalyticsPreviewSummary] = Field(default_factory=list)
+    reviewer_loads: list[GovernanceAnalyticsReviewerLoad] = Field(default_factory=list)
     totals: GovernanceAnalyticsTotals
 
 

@@ -9,6 +9,8 @@ import BlockerHeatmap from './BlockerHeatmap'
 import BaselineLifecycleStats from './BaselineLifecycleStats'
 import LadderLoadChart from './LadderLoadChart'
 import SlaAccuracyChart from './SlaAccuracyChart'
+import ReviewerLoadHeatmap from './ReviewerLoadHeatmap'
+import ReviewerStreakAlerts from './ReviewerStreakAlerts'
 
 interface GovernanceAnalyticsPanelProps {
   executionId?: string | null
@@ -95,6 +97,11 @@ export default function GovernanceAnalyticsPanel({ executionId }: GovernanceAnal
         </CardBody>
       </Card>
       <BaselineLifecycleStats report={analytics} />
+      <ReviewerLoadHeatmap reviewers={analytics.reviewer_loads} />
+      <ReviewerStreakAlerts
+        reviewers={analytics.reviewer_loads}
+        totalAlerts={analytics.totals.streak_alert_count}
+      />
     </section>
   )
 }

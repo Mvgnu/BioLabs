@@ -58,7 +58,13 @@ Baseline lifecycle telemetry now feeds the governance analytics service so opera
 - **Publication cadence (days)** – mean interval between published baseline versions for the same template, exposing stagnation or excessive churn.
 - **Baseline coverage** – total baseline versions observed for the aggregated previews, surfaced in analytics totals to highlight high-change areas.
 - **Rollback count** – number of rolled-back baselines tied to the preview set, signaling rollback risk when compared against blocker heatmaps.
+- **Blocker churn index** – multiplies the preview blocked ratio by combined baseline volume (versions plus rollbacks) to highlight hotspots where ladder churn and blockers are spiking together.
+- **Reviewer throughput** – aggregates assignments, completions, and pending counts per reviewer, alongside latency band histograms (\<2h, 2–8h, 8–24h, \>24h) to expose staffing load and decision velocity.
+- **Publish streak alerts** – flags reviewers with three or more publishes inside a 72-hour window so operators can consider override staffing or cool-down guidance before fatigue-driven regressions surface.
+- **Rollback precursors per reviewer** – counts how many of a reviewer’s approvals later rolled back, complementing the streak and churn signals to isolate coaching opportunities.
 
 These metrics surface within the experiment console analytics panel via the "Baseline Lifecycle Pulse" card. They reuse the `/api/governance/analytics` payloads, avoiding duplicate baseline queries and keeping the lifecycle panel as the single source of truth for version details. Guardrails follow the same RBAC policies defined earlier—only executions and baselines accessible to the viewer contribute to analytics. When extending analytics, document additional KPIs here with definitions, rationale, and any privacy limitations.
+
+Minimal instrumentation principle: reviewer metrics strictly reuse baseline lifecycle timestamps and assignment arrays already persisted in the governance data model. No additional per-action logging is introduced; streak detection is computed on the fly from published timestamps and kept in-memory within the analytics response.
 
 Refer to `backend/alembic/versions/a7d3e0c5f1ab_governance_baseline_lifecycle.py` for the schema definition and to `backend/app/routes/governance_baselines.py` for route logic.
