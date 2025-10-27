@@ -9,6 +9,8 @@ import type {
   GovernanceTemplate,
   GovernanceTemplateAssignment,
   GovernanceTemplateDraft,
+  GovernanceAnalyticsReport,
+  GovernanceAnalyticsPreviewSummary,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -90,6 +92,13 @@ export const governanceApi = {
     )
     return response.data
   },
+  async getAnalytics(params?: { execution_id?: string; limit?: number | null }) {
+    const response = await api.get<GovernanceAnalyticsReport>(
+      '/api/governance/analytics',
+      { params },
+    )
+    return mapGovernanceAnalyticsReport(response.data)
+  },
   async getBaseline(baselineId: string) {
     const response = await api.get<GovernanceBaselineVersion>(
       `/api/governance/baselines/${baselineId}`,
@@ -134,3 +143,50 @@ export const governanceApi = {
     return response.data
   },
 }
+
+const coerceNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined) {
+    return null
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value
+  }
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+export const mapGovernanceAnalyticsSummary = (
+  summary: GovernanceAnalyticsPreviewSummary,
+): GovernanceAnalyticsPreviewSummary => ({
+  ...summary,
+  blocked_ratio: Number(summary.blocked_ratio),
+  ladder_load: Number(summary.ladder_load),
+  sla_within_target_ratio: coerceNumber(summary.sla_within_target_ratio),
+  mean_sla_delta_minutes: coerceNumber(summary.mean_sla_delta_minutes),
+  approval_latency_minutes: coerceNumber(summary.approval_latency_minutes),
+  publication_cadence_days: coerceNumber(summary.publication_cadence_days),
+})
+
+export const mapGovernanceAnalyticsReport = (
+  report: GovernanceAnalyticsReport,
+): GovernanceAnalyticsReport => ({
+  ...report,
+  totals: {
+    ...report.totals,
+    average_blocked_ratio: Number(report.totals.average_blocked_ratio),
+    total_new_blockers: Number(report.totals.total_new_blockers),
+    total_resolved_blockers: Number(report.totals.total_resolved_blockers),
+    average_sla_within_target_ratio: coerceNumber(
+      report.totals.average_sla_within_target_ratio,
+    ),
+    total_baseline_versions: Number(report.totals.total_baseline_versions),
+    total_rollbacks: Number(report.totals.total_rollbacks),
+    average_approval_latency_minutes: coerceNumber(
+      report.totals.average_approval_latency_minutes,
+    ),
+    average_publication_cadence_days: coerceNumber(
+      report.totals.average_publication_cadence_days,
+    ),
+  },
+  results: report.results.map((item) => mapGovernanceAnalyticsSummary(item)),
+})

@@ -6,6 +6,7 @@ import { Card, CardBody, CardHeader } from '../../../components/ui/Card'
 import { useGovernanceAnalytics } from '../../../hooks/useExperimentConsole'
 import type { GovernanceAnalyticsReport } from '../../../types'
 import BlockerHeatmap from './BlockerHeatmap'
+import BaselineLifecycleStats from './BaselineLifecycleStats'
 import LadderLoadChart from './LadderLoadChart'
 import SlaAccuracyChart from './SlaAccuracyChart'
 
@@ -93,6 +94,7 @@ export default function GovernanceAnalyticsPanel({ executionId }: GovernanceAnal
           <LadderLoadChart items={analytics.results} />
         </CardBody>
       </Card>
+      <BaselineLifecycleStats report={analytics} />
     </section>
   )
 }

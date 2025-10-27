@@ -32,7 +32,6 @@ import type {
   ExecutionNarrativeApprovalRequest,
   ExecutionNarrativeDelegationRequest,
   ExecutionNarrativeStageResetRequest,
-  GovernanceAnalyticsReport,
   GovernanceBaselineCollection,
   GovernanceBaselineVersion,
   BaselineSubmissionDraft,
@@ -245,8 +244,7 @@ export const useGovernanceAnalytics = (
       if (executionId) {
         params.execution_id = executionId
       }
-      const resp = await api.get('/api/governance/analytics', { params })
-      return resp.data as GovernanceAnalyticsReport
+      return governanceApi.getAnalytics(params)
     },
   })
 }

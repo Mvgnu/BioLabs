@@ -50,4 +50,15 @@ React Query hooks in `useExperimentConsole` perform optimistic updates so queue 
 - `governance_baseline_events` logs structured transitions for each baseline.
 - Every baseline references the originating `protocol_executions` record to guarantee execution-level RBAC alignment.
 
+## Analytics Signals
+
+Baseline lifecycle telemetry now feeds the governance analytics service so operators can correlate preview health with publishing discipline:
+
+- **Approval latency (minutes)** – average time from submission to review for the baselines associated with a previewed execution. Long latencies indicate reviewer bottlenecks or staffing gaps.
+- **Publication cadence (days)** – mean interval between published baseline versions for the same template, exposing stagnation or excessive churn.
+- **Baseline coverage** – total baseline versions observed for the aggregated previews, surfaced in analytics totals to highlight high-change areas.
+- **Rollback count** – number of rolled-back baselines tied to the preview set, signaling rollback risk when compared against blocker heatmaps.
+
+These metrics surface within the experiment console analytics panel via the "Baseline Lifecycle Pulse" card. They reuse the `/api/governance/analytics` payloads, avoiding duplicate baseline queries and keeping the lifecycle panel as the single source of truth for version details. Guardrails follow the same RBAC policies defined earlier—only executions and baselines accessible to the viewer contribute to analytics. When extending analytics, document additional KPIs here with definitions, rationale, and any privacy limitations.
+
 Refer to `backend/alembic/versions/a7d3e0c5f1ab_governance_baseline_lifecycle.py` for the schema definition and to `backend/app/routes/governance_baselines.py` for route logic.

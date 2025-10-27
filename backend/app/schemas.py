@@ -549,7 +549,7 @@ class GovernanceAnalyticsSlaSample(BaseModel):
 
 
 class GovernanceAnalyticsPreviewSummary(BaseModel):
-    # purpose: summarise governance preview telemetry blended with execution history
+    # purpose: summarise governance preview telemetry blended with execution history and baseline lifecycle metrics
     # inputs: aggregated metrics produced by compute_governance_analytics
     # outputs: dashboard-ready analytics payload for experiment console panels
     # status: pilot
@@ -570,10 +570,14 @@ class GovernanceAnalyticsPreviewSummary(BaseModel):
     sla_samples: list[GovernanceAnalyticsSlaSample] = Field(default_factory=list)
     blocker_heatmap: list[int] = Field(default_factory=list)
     risk_level: Literal["low", "medium", "high"]
+    baseline_version_count: int = 0
+    approval_latency_minutes: float | None = None
+    publication_cadence_days: float | None = None
+    rollback_count: int = 0
 
 
 class GovernanceAnalyticsTotals(BaseModel):
-    # purpose: provide aggregate governance analytics context for dashboards
+    # purpose: provide aggregate governance analytics context for dashboards including lifecycle cadence
     # inputs: preview summary collection metrics
     # outputs: dataset totals to render trend summaries and KPIs
     # status: pilot
@@ -582,6 +586,10 @@ class GovernanceAnalyticsTotals(BaseModel):
     total_new_blockers: int
     total_resolved_blockers: int
     average_sla_within_target_ratio: float | None = None
+    total_baseline_versions: int
+    total_rollbacks: int
+    average_approval_latency_minutes: float | None = None
+    average_publication_cadence_days: float | None = None
 
 
 class GovernanceAnalyticsReport(BaseModel):
