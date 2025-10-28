@@ -407,17 +407,21 @@ def dispatch_export_for_packaging(
     export: models.ExecutionNarrativeExport,
     actor: models.User | None = None,
     enqueue: Callable[[UUID | str], None] | None = None,
+    dry_run: bool = False,
 ) -> bool:
     """Apply guardrail and ladder gating before enqueuing packaging."""
 
     # purpose: guarantee narrative packaging dispatch respects shared enforcement
-    # inputs: db session, export ORM instance, optional actor context, optional enqueue hook
-    # outputs: bool indicating whether packaging was queued
+    # inputs: db session, export ORM instance, optional actor context, optional enqueue hook, optional dry-run flag
+    # outputs: bool indicating whether packaging would be queued under current guardrail state
     # status: pilot
     should_queue = record_packaging_queue_state(db, export=export, actor=actor)
     db.flush()
     if not should_queue:
         return False
+
+    if dry_run:
+        return True
 
     if enqueue is None:
         from ..workers.packaging import enqueue_narrative_export_packaging as enqueue_fn
@@ -462,12 +466,13 @@ def dispatch_export_for_packaging_by_id(
     actor: models.User | None = None,
     enqueue: Callable[[UUID | str], None] | None = None,
     include_guardrails: bool = True,
+    dry_run: bool = False,
 ) -> bool:
     """Load an export and route it through shared packaging dispatch checks."""
 
     # purpose: reuse dispatch semantics for CLI, schedulers, and background tasks
-    # inputs: db session, export identifier, optional actor context and enqueue hook
-    # outputs: bool indicating whether packaging was queued after gating
+    # inputs: db session, export identifier, optional actor context, optional enqueue hook, optional dry-run flag
+    # outputs: bool indicating whether packaging would be queued after gating
     # status: pilot
     export = load_export_with_ladder(
         db,
@@ -479,6 +484,7 @@ def dispatch_export_for_packaging_by_id(
         export=export,
         actor=actor,
         enqueue=enqueue,
+        dry_run=dry_run,
     )
 
 

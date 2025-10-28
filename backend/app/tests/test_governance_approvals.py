@@ -141,6 +141,73 @@ def test_governance_ladder_endpoints_flow(client):
         db.close()
 
 
+def test_governance_approve_dry_run_skips_enqueue(client, monkeypatch):
+    headers, admin_id = create_admin_headers()
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Governance Dry Run", "content": "Step"},
+        headers=headers,
+    ).json()
+
+    session = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Governance Dry"},
+        headers=headers,
+    ).json()
+
+    execution_id = session["execution"]["id"]
+
+    export = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        json={
+            "approval_stages": [
+                {
+                    "required_role": "qa",
+                    "name": "QA",
+                    "sla_hours": 1,
+                    "assignee_id": admin_id,
+                }
+            ]
+        },
+        headers=headers,
+    ).json()
+
+    export_id = export["id"]
+    stage_id = export["approval_stages"][0]["id"]
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        "app.routes.governance_approvals.enqueue_narrative_export_packaging",
+        lambda export_id: enqueued.append(str(export_id)),
+    )
+
+    def _fake_queue_state(db, *, export, actor=None):  # type: ignore[override]
+        meta = dict(export.meta or {})
+        meta["packaging_queue_state"] = {
+            "event": "narrative_export.packaging.queued",
+            "state": "queued",
+        }
+        export.meta = meta
+        return True
+
+    monkeypatch.setattr(
+        "app.services.approval_ladders.record_packaging_queue_state",
+        _fake_queue_state,
+    )
+
+    response = client.post(
+        f"/api/governance/exports/{export_id}/approve",
+        params={"dry_run": "true"},
+        json={"status": "approved", "signature": "QA", "stage_id": stage_id},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["metadata"]["packaging_queue_state"]["state"] == "queued"
+    assert enqueued == []
+
+
 def test_governance_reset_stage(client):
     headers, _ = create_admin_headers()
 

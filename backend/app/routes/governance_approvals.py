@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from .. import models, schemas
@@ -53,6 +53,10 @@ def get_execution_export_ladder(
 def admin_approve_execution_export(
     export_id: str,
     approval: schemas.ExecutionNarrativeApprovalRequest,
+    dry_run: bool = Query(
+        default=False,
+        description="Run guardrail checks without queueing packaging",
+    ),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ) -> schemas.ExecutionNarrativeExport:
@@ -85,6 +89,7 @@ def admin_approve_execution_export(
             export=export_record,
             actor=user,
             enqueue=enqueue_narrative_export_packaging,
+            dry_run=dry_run,
         )
         db.commit()
         if queued_packaging:

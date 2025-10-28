@@ -653,7 +653,7 @@ def test_multistage_approval_delegation_and_reset(client):
 
 
 def test_export_history_includes_guardrail_simulation(client):
-    headers, user_id, _ = create_user_headers()
+    headers, _, _ = create_user_headers()
 
     template = client.post(
         "/api/protocols/templates",
@@ -848,6 +848,55 @@ def test_narrative_export_packaging_blocked_until_final_stage(client):
         event["event_type"] == "narrative_export.packaging.ready"
         for event in timeline_after["events"]
     )
+
+
+def test_create_narrative_export_dry_run_skips_enqueue(client, monkeypatch):
+    headers, user_id, _ = create_user_headers()
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Dry Run Template", "content": "Stage"},
+        headers=headers,
+    ).json()
+
+    session = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Dry Run Execution"},
+        headers=headers,
+    ).json()
+
+    execution_id = session["execution"]["id"]
+
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        "app.routes.experiment_console.enqueue_narrative_export_packaging",
+        lambda export_id: enqueued.append(str(export_id)),
+    )
+
+    def _fake_queue_state(db, *, export, actor=None):  # type: ignore[override]
+        meta = dict(export.meta or {})
+        meta["packaging_queue_state"] = {
+            "event": "narrative_export.packaging.queued",
+            "state": "queued",
+        }
+        export.meta = meta
+        return True
+
+    monkeypatch.setattr(
+        "app.services.approval_ladders.record_packaging_queue_state",
+        _fake_queue_state,
+    )
+
+    response = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        params={"dry_run": "true"},
+        json={"notes": "dry-run", "approval_stages": []},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    export_payload = response.json()
+    assert export_payload["metadata"]["packaging_queue_state"]["state"] == "queued"
+    assert enqueued == []
 
 
 def _create_preview_snapshot(template_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:

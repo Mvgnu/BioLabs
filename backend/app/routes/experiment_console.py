@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from typing import Any, AsyncIterator, Dict, Iterable, Sequence
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
@@ -3473,6 +3473,10 @@ async def stream_governance_timeline(
 async def create_execution_narrative_export(
     execution_id: str,
     request: schemas.ExecutionNarrativeExportRequest | None = None,
+    dry_run: bool = Query(
+        default=False,
+        description="Perform guardrail checks without enqueuing packaging",
+    ),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -3882,6 +3886,7 @@ async def create_execution_narrative_export(
         export=export_record,
         actor=user,
         enqueue=enqueue_narrative_export_packaging,
+        dry_run=dry_run,
     )
     db.commit()
 
@@ -4046,6 +4051,10 @@ async def approve_execution_narrative_export(
     execution_id: str,
     export_id: str,
     approval: schemas.ExecutionNarrativeApprovalRequest,
+    dry_run: bool = Query(
+        default=False,
+        description="Re-evaluate guardrails without dispatching packaging",
+    ),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -4108,6 +4117,7 @@ async def approve_execution_narrative_export(
             export=export_record,
             actor=user,
             enqueue=enqueue_narrative_export_packaging,
+            dry_run=dry_run,
         )
         db.commit()
         if queued_packaging:
