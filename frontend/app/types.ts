@@ -1068,6 +1068,39 @@ export interface GovernanceActorSummary {
   email?: string | null
 }
 
+export interface GovernanceOverrideLockDetail {
+  // purpose: represent the active reversal lock attribution for live governance UI
+  // status: pilot
+  token?: string | null
+  tier?: string | null
+  tier_key?: string | null
+  tier_level?: number | null
+  scope?: string | null
+  actor?: GovernanceActorSummary | null
+  reason?: string | null
+  created_at?: string | null
+  escalation_prompt?: string | null
+}
+
+export interface GovernanceOverrideCooldownDetail {
+  // purpose: surface cooldown expiry telemetry for streaming updates
+  // status: pilot
+  expires_at?: string | null
+  window_minutes?: number | null
+  remaining_seconds?: number | null
+}
+
+export interface GovernanceOverrideLiveState {
+  // purpose: encapsulate live lock + cooldown signals for override timeline rows
+  // status: pilot
+  override_id: string
+  recommendation_id?: string | null
+  execution_id?: string | null
+  execution_hash?: string | null
+  lock: GovernanceOverrideLockDetail | null
+  cooldown: GovernanceOverrideCooldownDetail | null
+}
+
 export interface GovernanceDecisionTimelineEntry {
   // purpose: represent a blended governance decision feed record for UI rendering
   // status: pilot
@@ -1083,6 +1116,7 @@ export interface GovernanceDecisionTimelineEntry {
   detail: Record<string, any>
   actor?: GovernanceActorSummary | null
   lineage?: GovernanceOverrideLineageContext | null
+  live_state?: GovernanceOverrideLiveState | null
 }
 
 export interface GovernanceDecisionTimelinePage {

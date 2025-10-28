@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import io
+import json
 import re
 from datetime import datetime, timezone, timedelta
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable, Sequence
+from typing import Any, AsyncIterator, Dict, Iterable, Sequence
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import and_, or_, func
 from sqlalchemy.orm import Session, joinedload
@@ -17,6 +19,7 @@ from sqlalchemy.orm import Session, joinedload
 from pydantic import ValidationError
 
 from .. import models, schemas, simulation
+from .. import pubsub
 from ..eventlog import record_execution_event
 from ..narratives import render_execution_narrative, render_preview_narrative
 from ..auth import get_current_user
@@ -61,6 +64,185 @@ def _coerce_uuid_or_none(value: Any) -> UUID | None:
         return UUID(str(value))
     except (TypeError, ValueError):  # pragma: no cover - defensive guard
         return None
+
+
+def _parse_iso_datetime(raw: str | None) -> datetime | None:
+    """Return timezone-aware datetime for ISO strings."""
+
+    # purpose: safely parse ISO timestamps received from async streams
+    # inputs: raw ISO 8601 string or None
+    # outputs: timezone-aware datetime instance or None when parsing fails
+    # status: pilot
+    if not raw:
+        return None
+    normalised = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalised)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _calculate_remaining_seconds(
+    expires_at: datetime | None, *, now: datetime | None = None
+) -> int | None:
+    """Compute integer second delta for cooldown expirations."""
+
+    # purpose: translate cooldown expiry datetimes into UI-friendly countdowns
+    # inputs: target expiration datetime and optional reference time
+    # outputs: non-negative integer seconds or None when cooldown absent
+    # status: pilot
+    if expires_at is None:
+        return None
+    reference = now or datetime.now(timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    remaining = int((expires_at - reference).total_seconds())
+    return max(remaining, 0)
+
+
+def _build_escalation_prompt(tier: str | None, level: int | None) -> str | None:
+    """Generate concise escalation copy for lock displays."""
+
+    # purpose: craft operator-facing escalation context summaries
+    # inputs: tier label and numeric escalation level
+    # outputs: formatted escalation phrase or None when not applicable
+    # status: pilot
+    if not tier and level is None:
+        return None
+    fragments: list[str] = []
+    if tier:
+        fragments.append(tier.replace("_", " ").title())
+    if level is not None:
+        fragments.append(f"Level {level}")
+    joined = " · ".join(fragments) if fragments else "Escalation"
+    return f"{joined} lock engaged"
+
+
+def _serialize_override_lock_snapshot(
+    record: models.GovernanceOverrideAction,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return structured lock + cooldown state for override actions."""
+
+    # purpose: expose current reversal lock holder and cooldown telemetry
+    # inputs: override action ORM record and optional reference time
+    # outputs: dictionary snapshot consumed by SSE stream subscribers
+    # status: pilot
+    reference_time = now or datetime.now(timezone.utc)
+    actor = record.reversal_lock_actor
+    lock_payload: dict[str, Any] | None = None
+    if record.reversal_lock_token:
+        lock_payload = {
+            "token": record.reversal_lock_token,
+            "tier": record.reversal_lock_tier,
+            "tier_key": record.reversal_lock_tier_key,
+            "tier_level": record.reversal_lock_tier_level,
+            "scope": record.reversal_lock_scope,
+            "acquired_at": record.reversal_lock_acquired_at.isoformat()
+            if record.reversal_lock_acquired_at
+            else None,
+            "actor": None,
+            "escalation_prompt": _build_escalation_prompt(
+                record.reversal_lock_tier, record.reversal_lock_tier_level
+            ),
+        }
+        if actor is not None:
+            lock_payload["actor"] = {
+                "id": str(actor.id),
+                "name": actor.full_name,
+                "email": actor.email,
+            }
+    cooldown_payload: dict[str, Any] | None = None
+    expires_at = record.cooldown_expires_at
+    if expires_at or record.cooldown_window_minutes is not None:
+        cooldown_payload = {
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "window_minutes": record.cooldown_window_minutes,
+            "remaining_seconds": _calculate_remaining_seconds(
+                expires_at, now=reference_time
+            ),
+        }
+    snapshot = {
+        "override_id": str(record.id),
+        "recommendation_id": record.recommendation_id,
+        "execution_id": str(record.execution_id)
+        if record.execution_id is not None
+        else None,
+        "execution_hash": record.execution_hash,
+        "lock": lock_payload,
+        "cooldown": cooldown_payload,
+    }
+    return snapshot
+
+
+def _apply_lock_event_state(
+    state: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Mutate stored lock snapshot using the latest event payload."""
+
+    # purpose: reconcile redis pub/sub payloads with cached lock states
+    # inputs: existing lock snapshot, raw event payload, optional reference time
+    # outputs: updated snapshot dictionary (mutated in place for efficiency)
+    # status: pilot
+    if "lock" not in state:
+        state["lock"] = None
+    if "cooldown" not in state or state["cooldown"] is None:
+        state["cooldown"] = {
+            "expires_at": None,
+            "window_minutes": None,
+            "remaining_seconds": None,
+        }
+    lock_event = payload.get("lock_event") or payload
+    event_type = lock_event.get("event_type")
+    if event_type == "released":
+        state["lock"] = None
+    else:
+        state["lock"] = {
+            "token": lock_event.get("lock_token"),
+            "tier": lock_event.get("tier"),
+            "tier_key": lock_event.get("tier_key"),
+            "tier_level": lock_event.get("tier_level"),
+            "scope": lock_event.get("scope"),
+            "actor": lock_event.get("actor"),
+            "reason": lock_event.get("reason"),
+            "created_at": lock_event.get("created_at"),
+            "escalation_prompt": _build_escalation_prompt(
+                lock_event.get("tier"), lock_event.get("tier_level")
+            ),
+        }
+    cooldown_section = state.get("cooldown") or {}
+    expires_raw = lock_event.get("cooldown_expires_at")
+    if expires_raw is not None:
+        cooldown_section = dict(cooldown_section)
+        cooldown_section["expires_at"] = expires_raw
+        parsed = _parse_iso_datetime(expires_raw)
+        cooldown_section["remaining_seconds"] = _calculate_remaining_seconds(
+            parsed, now=now
+        )
+        state["cooldown"] = cooldown_section
+    window_raw = lock_event.get("cooldown_window_minutes")
+    if window_raw is not None:
+        cooldown_section = dict(state.get("cooldown") or {})
+        cooldown_section["window_minutes"] = window_raw
+        state["cooldown"] = cooldown_section
+    return state
+
+
+def _render_sse_payload(payload: dict[str, Any]) -> str:
+    """Format dictionaries into SSE compliant frames."""
+
+    # purpose: centralize SSE framing with JSON serialization
+    # inputs: payload dictionary destined for event-stream clients
+    # outputs: SSE data line string with terminating newline block
+    # status: pilot
+    return f"data: {json.dumps(payload, default=str)}\n\n"
 
 
 def _normalize_resource_overrides(
@@ -3109,6 +3291,164 @@ async def get_governance_decision_timeline(
         limit=limit,
     )
     return page
+
+
+@router.get("/governance/timeline/stream")
+async def stream_governance_timeline(
+    request: Request,
+    execution_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> StreamingResponse:
+    """Stream real-time lock lifecycle and cooldown telemetry via SSE."""
+
+    # purpose: hydrate experiment console with live reversal locks and cooldown ticks
+    # inputs: execution identifier, authenticated request context
+    # outputs: streaming response yielding SSE formatted events
+    # status: pilot
+    try:
+        execution_uuid = UUID(execution_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+
+    execution = db.get(models.ProtocolExecution, execution_uuid)
+    membership_ids = _get_user_team_ids(db, user)
+    template = _ensure_execution_access(db, execution, user, membership_ids)
+    if template.team_id and not user.is_admin:
+        membership_ids = {template.team_id}
+
+    overrides = (
+        db.query(models.GovernanceOverrideAction)
+        .options(
+            joinedload(models.GovernanceOverrideAction.reversal_lock_actor),
+            joinedload(models.GovernanceOverrideAction.reversal_event),
+        )
+        .filter(models.GovernanceOverrideAction.execution_id == execution_uuid)
+        .order_by(models.GovernanceOverrideAction.created_at.asc())
+        .all()
+    )
+
+    now = datetime.now(timezone.utc)
+    lock_state: dict[str, dict[str, Any]] = {}
+    channels: list[str] = []
+    for record in overrides:
+        snapshot = _serialize_override_lock_snapshot(record, now=now)
+        lock_state[snapshot["override_id"]] = snapshot
+        channels.append(f"governance:override:{snapshot['override_id']}:locks")
+
+    async def event_iterator() -> AsyncIterator[str]:
+        redis_conn = await pubsub.get_redis()
+        pubsub_conn = redis_conn.pubsub()
+        if channels:
+            await pubsub_conn.subscribe(*channels)
+        initial_payload = {
+            "type": "snapshot",
+            "execution_id": str(execution_uuid),
+            "locks": list(lock_state.values()),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        yield _render_sse_payload(initial_payload)
+        last_tick = datetime.now(timezone.utc)
+        keepalive_at = datetime.now(timezone.utc)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                message = None
+                if channels:
+                    message = await pubsub_conn.get_message(
+                        ignore_subscribe_messages=True, timeout=1.0
+                    )
+                if message and message.get("type") == "message":
+                    try:
+                        payload = json.loads(message.get("data"))
+                    except (TypeError, json.JSONDecodeError):  # pragma: no cover - defensive
+                        payload = None
+                    if isinstance(payload, dict):
+                        override_id = payload.get("override_id")
+                        if override_id:
+                            snapshot = lock_state.setdefault(
+                                override_id,
+                                {
+                                    "override_id": override_id,
+                                    "recommendation_id": payload.get("recommendation_id"),
+                                    "execution_id": str(execution_uuid),
+                                    "execution_hash": payload.get("execution_hash"),
+                                    "lock": None,
+                                    "cooldown": {
+                                        "expires_at": None,
+                                        "window_minutes": None,
+                                        "remaining_seconds": None,
+                                    },
+                                },
+                            )
+                            now_tick = datetime.now(timezone.utc)
+                            _apply_lock_event_state(snapshot, {"lock_event": payload}, now=now_tick)
+                            cooldown_section = snapshot.get("cooldown") or {}
+                            expires_at = _parse_iso_datetime(
+                                cooldown_section.get("expires_at")
+                            )
+                            cooldown_section["remaining_seconds"] = _calculate_remaining_seconds(
+                                expires_at, now=now_tick
+                            )
+                            snapshot["cooldown"] = cooldown_section
+                            event_payload = {
+                                "type": "lock_event",
+                                "execution_id": str(execution_uuid),
+                                "override_id": override_id,
+                                "lock_state": snapshot,
+                                "event": payload,
+                                "generated_at": now_tick.isoformat(),
+                            }
+                            yield _render_sse_payload(event_payload)
+                now_tick = datetime.now(timezone.utc)
+                if (now_tick - last_tick).total_seconds() >= 1:
+                    cooldown_updates: list[dict[str, Any]] = []
+                    for snapshot in lock_state.values():
+                        cooldown_section = snapshot.get("cooldown")
+                        if not cooldown_section:
+                            continue
+                        expires_at = _parse_iso_datetime(
+                            cooldown_section.get("expires_at")
+                        )
+                        remaining = _calculate_remaining_seconds(expires_at, now=now_tick)
+                        if remaining is None:
+                            continue
+                        cooldown_section["remaining_seconds"] = remaining
+                        if remaining >= 0:
+                            cooldown_updates.append(
+                                {
+                                    "override_id": snapshot["override_id"],
+                                    "remaining_seconds": remaining,
+                                    "expires_at": cooldown_section.get("expires_at"),
+                                }
+                            )
+                    if cooldown_updates:
+                        tick_payload = {
+                            "type": "cooldown_tick",
+                            "execution_id": str(execution_uuid),
+                            "cooldowns": cooldown_updates,
+                            "generated_at": now_tick.isoformat(),
+                        }
+                        yield _render_sse_payload(tick_payload)
+                    last_tick = now_tick
+                if (now_tick - keepalive_at).total_seconds() >= 15:
+                    yield ": keep-alive\n\n"
+                    keepalive_at = now_tick
+                await asyncio.sleep(0.25)
+        finally:
+            if channels:
+                await pubsub_conn.unsubscribe(*channels)
+            await pubsub_conn.close()
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "Connection": "keep-alive",
+    }
+    return StreamingResponse(
+        event_iterator(), media_type="text/event-stream", headers=headers
+    )
 
 
 @router.post(

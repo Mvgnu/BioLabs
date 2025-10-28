@@ -63,6 +63,20 @@ const formatTimestamp = (value: string) => {
   }
 }
 
+const formatCooldownRemaining = (seconds: number) => {
+  if (!Number.isFinite(seconds)) return null
+  if (seconds <= 0) return 'Cooldown cleared'
+  const clamped = Math.max(0, Math.round(seconds))
+  const hours = Math.floor(clamped / 3600)
+  const minutes = Math.floor((clamped % 3600) / 60)
+  const secs = clamped % 60
+  const parts: string[] = []
+  if (hours > 0) parts.push(`${hours}h`)
+  if (minutes > 0) parts.push(`${minutes}m`)
+  parts.push(`${secs}s`)
+  return `${parts.join(' ')} remaining`
+}
+
 const renderDetail = (detail: Record<string, any>) => {
   const payload =
     detail && typeof detail.detail === 'object' ? detail.detail : detail ?? {}
@@ -108,12 +122,32 @@ const OverrideActionDetail = ({
     detail.reversible ?? entry.detail?.reversible ?? entry.detail?.detail?.reversible,
   )
   const cooldownUntil = detail.cooldown_expires_at || entry.detail?.cooldown_expires_at
+  const liveState = entry.live_state ?? null
+  const liveLock = liveState?.lock ?? null
+  const liveCooldown = liveState?.cooldown ?? null
+  const liveCountdown =
+    typeof liveCooldown?.remaining_seconds === 'number' ? liveCooldown.remaining_seconds : null
+  const effectiveCooldownUntil = liveCooldown?.expires_at || cooldownUntil
   const cooldownDate = useMemo(() => {
-    if (!cooldownUntil) return null
-    const parsed = new Date(cooldownUntil)
+    if (!effectiveCooldownUntil) return null
+    const parsed = new Date(effectiveCooldownUntil)
     return Number.isNaN(parsed.getTime()) ? null : parsed
-  }, [cooldownUntil])
-  const isCoolingDown = Boolean(cooldownDate && cooldownDate.getTime() > Date.now())
+  }, [effectiveCooldownUntil])
+  const isCoolingDown = useMemo(() => {
+    if (typeof liveCountdown === 'number') {
+      return liveCountdown > 0
+    }
+    return Boolean(cooldownDate && cooldownDate.getTime() > Date.now())
+  }, [cooldownDate, liveCountdown])
+  const cooldownMessage = useMemo(() => {
+    if (typeof liveCountdown === 'number') {
+      return formatCooldownRemaining(liveCountdown)
+    }
+    if (cooldownDate) {
+      return `Override reversal cooling down until ${cooldownDate.toLocaleString()}`
+    }
+    return null
+  }, [cooldownDate, liveCountdown])
   const canReverse =
     entry.entry_type === 'override_action' &&
     entry.status === 'executed' &&
@@ -163,10 +197,35 @@ const OverrideActionDetail = ({
   return (
     <div className="space-y-3">
       {reversalDetail && <ReversalDiffViewer reversal={reversalDetail} />}
-      {isCoolingDown && (
-        <p className="text-xs text-amber-600">
-          Override reversal cooling down until {cooldownDate?.toLocaleString()}
-        </p>
+      {(liveLock || cooldownMessage) && (
+        <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50/60 p-3">
+          {liveLock && (
+            <div className="space-y-1">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-semibold uppercase text-amber-700">Live reversal lock</span>
+                {liveLock.escalation_prompt && (
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-amber-600">
+                    {liveLock.escalation_prompt}
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-amber-800">
+                {liveLock.actor?.name ?? 'Lock held by automated governance'}
+              </p>
+              {liveLock.scope && (
+                <p className="text-[11px] text-amber-700">Scope {liveLock.scope}</p>
+              )}
+            </div>
+          )}
+          {cooldownMessage && (
+            <p className="text-xs text-amber-700">
+              {cooldownMessage}
+              {typeof liveCountdown !== 'number' && cooldownDate
+                ? ` (${cooldownDate.toLocaleString()})`
+                : ''}
+            </p>
+          )}
+        </div>
       )}
       {canReverse && (
         <div className="space-y-2">

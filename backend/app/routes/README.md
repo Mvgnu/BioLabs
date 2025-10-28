@@ -10,6 +10,7 @@
   - `_apply_remediation_actions` provides transactional execution of resource locks, approvals, and follow-up scheduling, updating `execution.result` with `locks`, `followups`, and `remediation_log` metadata.
   - `POST /api/experiment-console/sessions/{execution_id}/steps/{step_index}/remediate` applies orchestrator-selected actions (auto-triggers or explicit requests) and responds with both the refreshed session payload and per-action outcomes.
   - `POST /api/experiment-console/sessions/{execution_id}/exports/narrative` hydrates attachments across notebook, analytics, QC, and remediation domains while persisting hydration context for the packaging worker.
+  - `GET /api/experiment-console/governance/timeline/stream` delivers SSE frames with reversal lock lifecycle updates and cooldown ticks so the experiment console can render real-time governance context without refetching paginated timelines.
   - `GET /api/experiments/{execution_id}/scenarios` returns the scientist scenario workspace bundle (execution summary, available snapshots, and saved scenarios) with RBAC enforcement.
   - `POST /api/experiments/{execution_id}/scenarios` persists a new preview scenario, while `PUT`, `POST .../clone`, and `DELETE` endpoints enable scenario lifecycle management with execution timeline events.
 - **Resource recovery actions**: action strings follow the `domain:verb:identifier` convention and map to remediation helpers on the console UI (e.g., `inventory:restore:<id>`).

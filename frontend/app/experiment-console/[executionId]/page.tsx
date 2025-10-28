@@ -11,6 +11,7 @@ import {
   useUpdateExperimentStep,
 } from '../../hooks/useExperimentConsole'
 import { useCurrentUser } from '../../hooks/useCurrentUser'
+import { useGovernanceStream } from '../../hooks/useGovernanceStream'
 import type { ExperimentRemediationResult } from '../../types'
 import Timeline from '../components/Timeline'
 import GovernanceDecisionTimeline from '../components/Timeline/Governance/DecisionTimeline'
@@ -129,6 +130,7 @@ export default function ExperimentConsolePage() {
     pageSize: 40,
   })
   const governanceTimelineQuery = useGovernanceDecisionTimeline(executionId ?? null)
+  useGovernanceStream(executionId ?? null)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [actionStepIndex, setActionStepIndex] = useState<number | null>(null)
   const [actionContext, setActionContext] = useState<Record<string, any>>({})
