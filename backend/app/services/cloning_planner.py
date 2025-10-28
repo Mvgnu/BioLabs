@@ -15,8 +15,12 @@ from sqlalchemy.orm import Session
 
 from .. import models
 from ..database import SessionLocal
+from ..schemas.sequence_toolkit import SequenceToolkitProfile
 from . import sequence_toolkit
 from ..tasks import celery_app
+
+
+DEFAULT_TOOLKIT_PROFILE = SequenceToolkitProfile()
 
 
 def _merge_guardrail_state(
@@ -147,8 +151,10 @@ def run_primer_design(
     # inputs: planner record and optional primer sizing overrides
     # outputs: updated planner with primer_set payload and guardrail summary
     # status: experimental
+    profile = DEFAULT_TOOLKIT_PROFILE
     primer_payload = sequence_toolkit.design_primers(
         planner.input_sequences,
+        config=profile,
         product_size_range=product_size_range or (80, 280),
         target_tm=target_tm or 60.0,
     )
@@ -179,8 +185,10 @@ def run_restriction_analysis(
     # inputs: planner record and optional enzyme overrides
     # outputs: updated planner with restriction digest payload
     # status: experimental
+    profile = DEFAULT_TOOLKIT_PROFILE
     digest_payload = sequence_toolkit.analyze_restriction_digest(
         planner.input_sequences,
+        config=profile,
         enzymes=enzymes,
     )
     guardrail_state = _merge_guardrail_state(
@@ -210,9 +218,11 @@ def run_assembly_planning(
     # inputs: planner record and optional strategy override
     # outputs: updated planner with assembly plan payload
     # status: experimental
+    profile = DEFAULT_TOOLKIT_PROFILE
     plan_payload = sequence_toolkit.simulate_assembly(
         planner.primer_set,
         planner.restriction_digest,
+        config=profile,
         strategy=strategy or planner.assembly_strategy,
     )
     guardrail_state = _merge_guardrail_state(
@@ -242,8 +252,10 @@ def run_qc_checks(
     # inputs: planner record with optional chromatogram descriptors
     # outputs: updated planner with qc payload and guardrail snapshot
     # status: experimental
+    profile = DEFAULT_TOOLKIT_PROFILE
     qc_payload = sequence_toolkit.evaluate_qc_reports(
         planner.assembly_plan,
+        config=profile,
         chromatograms=chromatograms,
     )
     guardrail_state = _merge_guardrail_state(

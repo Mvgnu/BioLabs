@@ -27,6 +27,7 @@ from .routes import (
     notifications,
     schedule,
     sequence,
+    dna_assets,
     cloning_planner,
     projects,
     assistant,
@@ -112,6 +113,7 @@ app.include_router(comments.router)
 app.include_router(notifications.router)
 app.include_router(schedule.router)
 app.include_router(sequence.router)
+app.include_router(dna_assets.router)
 app.include_router(cloning_planner.router)
 app.include_router(projects.router)
 app.include_router(assistant.router)

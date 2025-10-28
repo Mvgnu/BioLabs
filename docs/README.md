@@ -9,6 +9,7 @@ This directory houses living documentation for the narrative export platform. Ea
 - `governance/analytics_extension_plan.md`: Defines the serializer changes and analytics deliverables for overdue-stage insights.
 - `governance/operator_sop.md`: Operational playbook covering cross-surface guardrails and escalation procedures.
 - `planning/README.md`: Index for forward-looking implementation plans (cloning orchestrator, DNA assets, documentation readiness).
+- `dna_assets.md`: Captures the initial DNA asset lifecycle foundation including data model, services, routes, and validation coverage.
 
 ## Maintenance
 - Update this index whenever new documentation is added or existing guides significantly change.

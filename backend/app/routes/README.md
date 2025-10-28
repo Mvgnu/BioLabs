@@ -34,3 +34,12 @@
   - `PATCH /api/governance/coaching-notes/{note_id}` updates bodies, moderation states, and metadata with edit timestamping.
 - **RBAC**: Access gated via override actor roles, execution ownership, or team membership derived from baseline/template lineage.
 - **Metadata**: Responses expose `metadata`, `moderation_state`, and `reply_count` fields for optimistic UI updates.
+
+## DNA Assets Lifecycle
+- **Module**: `dna_assets.py`
+- **Capabilities**:
+  - `POST /api/dna-assets` seeds DNA assets with initial sequence payloads, tags, and annotations.
+  - `POST /api/dna-assets/{asset_id}/versions` appends versions while updating guardrail-ready summaries.
+  - `GET /api/dna-assets/{asset_id}/diff` emits structured diff metrics (substitutions, insertions, deletions, GC delta) for viewer overlays.
+  - `POST /api/dna-assets/{asset_id}/guardrails` records governance events tied to asset versions for dashboard telemetry.
+- **RBAC**: Restricted to asset creators and administrators during the initial implementation phase; team-scoped filters will expand in follow-up work.
