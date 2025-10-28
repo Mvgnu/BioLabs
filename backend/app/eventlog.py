@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from . import models
+from .analytics.governance import invalidate_governance_analytics_cache
 
 # purpose: shareable helpers for persisting execution timeline events across services
 # inputs: SQLAlchemy session, protocol execution instance, event metadata
@@ -144,11 +145,14 @@ def record_governance_override_action_event(
         "reversal_event",
     }})
     payload["detail"] = detail_payload
-    return record_execution_event(
+    event = record_execution_event(
         db,
         execution,
         event_type="governance.override.action",
         payload=payload,
         actor=actor,
     )
+    if execution.id is not None:
+        invalidate_governance_analytics_cache({execution.id})
+    return event
 

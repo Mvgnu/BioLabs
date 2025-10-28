@@ -10,6 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from ... import models, schemas
+from ...analytics.governance import invalidate_governance_analytics_cache
 from ...auth import get_current_user
 from ...database import get_db
 
@@ -226,6 +227,13 @@ def create_coaching_note(
     db.commit()
     db.refresh(note)
 
+    execution_scope: set[UUID] = set()
+    for candidate in (note.execution_id, override.execution_id):
+        if candidate:
+            execution_scope.add(candidate)
+    if execution_scope:
+        invalidate_governance_analytics_cache(execution_scope)
+
     reply_counts = _thread_reply_counts(db, note.override_id, {note.thread_root_id})
     return _serialize_note(note, reply_counts.get(note.thread_root_id or note.id, 0))
 
@@ -285,6 +293,13 @@ def update_coaching_note(
     db.add(note)
     db.commit()
     db.refresh(note)
+
+    execution_scope: set[UUID] = set()
+    for candidate in (note.execution_id, override.execution_id):
+        if candidate:
+            execution_scope.add(candidate)
+    if execution_scope:
+        invalidate_governance_analytics_cache(execution_scope)
 
     reply_counts = _thread_reply_counts(db, note.override_id, {note.thread_root_id})
     return _serialize_note(note, reply_counts.get(note.thread_root_id or note.id, 0))
