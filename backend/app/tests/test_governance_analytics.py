@@ -4,6 +4,10 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app import models
+from app.analytics.governance import (
+    compute_governance_analytics,
+    invalidate_governance_analytics_cache,
+)
 from app.auth import create_access_token
 from .conftest import TestingSessionLocal
 
@@ -170,6 +174,63 @@ def seed_preview_event(user: models.User, team_id: uuid.UUID | None = None) -> u
         return execution.id
     finally:
         db.close()
+
+
+def test_governance_analytics_cache_invalidation_cycle():
+    invalidate_governance_analytics_cache()
+    user, _ = create_user_and_headers()
+    team_id = attach_team_membership(user)
+    execution_id = seed_preview_event(user, team_id)
+
+    db = TestingSessionLocal()
+    try:
+        db_user = db.get(models.User, user.id)
+        assert db_user is not None
+
+        initial_report = compute_governance_analytics(
+            db,
+            db_user,
+            team_ids={team_id},
+            execution_ids=None,
+            include_previews=True,
+        )
+        assert initial_report.totals.total_new_blockers == 2
+
+        event = (
+            db.query(models.ExecutionEvent)
+            .filter(models.ExecutionEvent.execution_id == execution_id)
+            .filter(models.ExecutionEvent.event_type == "governance.preview.summary")
+            .first()
+        )
+        assert event is not None
+        payload = dict(event.payload or {})
+        payload["new_blocker_count"] = 4
+        event.payload = payload
+        db.add(event)
+        db.commit()
+
+        cached_report = compute_governance_analytics(
+            db,
+            db_user,
+            team_ids={team_id},
+            execution_ids=None,
+            include_previews=True,
+        )
+        assert cached_report.totals.total_new_blockers == 2
+
+        invalidate_governance_analytics_cache({execution_id})
+
+        refreshed_report = compute_governance_analytics(
+            db,
+            db_user,
+            team_ids={team_id},
+            execution_ids=None,
+            include_previews=True,
+        )
+        assert refreshed_report.totals.total_new_blockers == 4
+    finally:
+        db.close()
+        invalidate_governance_analytics_cache()
 
 
 def test_governance_analytics_sla_and_blockers(client):

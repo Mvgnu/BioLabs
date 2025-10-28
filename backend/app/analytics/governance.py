@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from statistics import mean
+from threading import Lock
 from typing import Any, Iterable, Sequence, Set
 from uuid import UUID
 
@@ -23,6 +25,154 @@ from .reviewer import (
 # inputs: SQLAlchemy session, authenticated user context, execution identifiers (optional)
 # outputs: GovernanceAnalyticsReport instances powering dashboards and recommendations
 # status: pilot
+
+_CACHE_TTL_SECONDS = 30
+
+
+@dataclass(frozen=True)
+class _GovernanceAnalyticsCacheKey:
+    """Immutable cache key representing analytics query scope."""
+
+    # purpose: uniquely identify governance analytics cache entries by RBAC context
+    # inputs: requesting user id/admin flag, membership scope, execution scope, pagination, preview flag
+    # outputs: deterministic key for in-process cache dictionary lookups
+    # status: pilot
+
+    user_id: UUID
+    is_admin: bool
+    membership_scope: tuple[str, ...]
+    execution_scope: tuple[str, ...]
+    limit: int | None
+    include_previews: bool
+
+
+@dataclass
+class _GovernanceAnalyticsCacheEntry:
+    """Stored governance analytics payload with expiry metadata."""
+
+    # purpose: retain analytics response snapshots until invalidation or TTL expiry
+    # inputs: deep-copied analytics payload, expiry timestamp, execution scope for invalidation matching
+    # outputs: reusable payload when cache hit conditions are satisfied
+    # status: pilot
+
+    payload: schemas.GovernanceAnalyticsReport
+    expires_at: datetime
+    execution_scope: frozenset[UUID]
+
+
+_GOVERNANCE_ANALYTICS_CACHE: dict[
+    _GovernanceAnalyticsCacheKey, _GovernanceAnalyticsCacheEntry
+] = {}
+_CACHE_LOCK = Lock()
+
+
+def _normalise_uuid_tuple(values: Iterable[UUID | str | None]) -> tuple[str, ...]:
+    """Return a sorted tuple of UUID strings ignoring null entries."""
+
+    return tuple(
+        sorted(
+            str(UUID(str(value)))
+            for value in values
+            if value is not None
+        )
+    )
+
+
+def _build_cache_key(
+    *,
+    user: models.User,
+    membership_ids: Set[UUID],
+    execution_ids: Sequence[UUID] | None,
+    limit: int | None,
+    include_previews: bool,
+) -> _GovernanceAnalyticsCacheKey:
+    """Construct a cache key for the supplied analytics parameters."""
+
+    membership_scope = _normalise_uuid_tuple(membership_ids)
+    execution_scope = _normalise_uuid_tuple(execution_ids or [])
+    return _GovernanceAnalyticsCacheKey(
+        user_id=user.id,
+        is_admin=bool(user.is_admin),
+        membership_scope=membership_scope,
+        execution_scope=execution_scope,
+        limit=limit,
+        include_previews=include_previews,
+    )
+
+
+def _prune_expired_cache_entries(now: datetime | None = None) -> None:
+    """Drop expired cache entries using supplied or current timestamp."""
+
+    reference = now or datetime.now(timezone.utc)
+    expired_keys = [
+        cache_key
+        for cache_key, entry in _GOVERNANCE_ANALYTICS_CACHE.items()
+        if entry.expires_at <= reference
+    ]
+    for cache_key in expired_keys:
+        _GOVERNANCE_ANALYTICS_CACHE.pop(cache_key, None)
+
+
+def _get_cached_governance_report(
+    cache_key: _GovernanceAnalyticsCacheKey,
+) -> schemas.GovernanceAnalyticsReport | None:
+    """Return cached analytics payload when available and fresh."""
+
+    now = datetime.now(timezone.utc)
+    with _CACHE_LOCK:
+        _prune_expired_cache_entries(now)
+        entry = _GOVERNANCE_ANALYTICS_CACHE.get(cache_key)
+        if entry is None:
+            return None
+        return entry.payload.model_copy(deep=True)
+
+
+def _store_governance_report_cache_entry(
+    cache_key: _GovernanceAnalyticsCacheKey,
+    payload: schemas.GovernanceAnalyticsReport,
+    execution_scope: Iterable[UUID],
+) -> None:
+    """Persist analytics payload in cache with derived execution scope."""
+
+    expires_at = datetime.now(timezone.utc) + timedelta(seconds=_CACHE_TTL_SECONDS)
+    entry = _GovernanceAnalyticsCacheEntry(
+        payload=payload.model_copy(deep=True),
+        expires_at=expires_at,
+        execution_scope=frozenset(execution_scope),
+    )
+    with _CACHE_LOCK:
+        _prune_expired_cache_entries(expires_at)
+        _GOVERNANCE_ANALYTICS_CACHE[cache_key] = entry
+
+
+def invalidate_governance_analytics_cache(
+    execution_ids: Iterable[UUID | str] | None = None,
+) -> None:
+    """Invalidate cached governance analytics payloads for supplied executions."""
+
+    targets: set[UUID] = set()
+    if execution_ids is not None:
+        for value in execution_ids:
+            try:
+                targets.add(UUID(str(value)))
+            except (TypeError, ValueError):  # pragma: no cover - defensive guard
+                continue
+
+    now = datetime.now(timezone.utc)
+    with _CACHE_LOCK:
+        _prune_expired_cache_entries(now)
+        if execution_ids is None:
+            _GOVERNANCE_ANALYTICS_CACHE.clear()
+            return
+        if not targets:
+            return
+        keys_to_remove = [
+            cache_key
+            for cache_key, entry in _GOVERNANCE_ANALYTICS_CACHE.items()
+            if entry.execution_scope.intersection(targets)
+        ]
+        for cache_key in keys_to_remove:
+            _GOVERNANCE_ANALYTICS_CACHE.pop(cache_key, None)
 
 
 def _parse_iso_timestamp(value: object) -> datetime | None:
@@ -392,6 +542,17 @@ def compute_governance_analytics(
     """Blend preview telemetry with execution history to produce analytics summaries."""
 
     membership_ids = set(team_ids or set())
+    cache_key = _build_cache_key(
+        user=user,
+        membership_ids=membership_ids,
+        execution_ids=execution_ids,
+        limit=limit,
+        include_previews=include_previews,
+    )
+    cached_report = _get_cached_governance_report(cache_key)
+    if cached_report is not None:
+        return cached_report
+
     query = (
         db.query(models.ExecutionEvent)
         .join(
@@ -832,10 +993,20 @@ def compute_governance_analytics(
         ],
     )
 
-    return schemas.GovernanceAnalyticsReport(
+    report = schemas.GovernanceAnalyticsReport(
         results=results,
         reviewer_cadence=reviewer_cadence,
         totals=totals,
         lineage_summary=lineage_summary,
     )
+
+    cache_scope_ids = set(execution_scope_ids)
+    if execution_ids:
+        cache_scope_ids.update(execution_ids)
+    _store_governance_report_cache_entry(
+        cache_key,
+        report,
+        execution_scope=cache_scope_ids,
+    )
+    return report
 

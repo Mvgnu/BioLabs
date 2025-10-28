@@ -31,4 +31,5 @@ The governance decision timeline now surfaces override lineage data alongside an
 - Override requests missing lineage now fail with a 422 error. Clients must upgrade before deploying the migration.
 - Reversal submissions are rejected while `governance_override_reversal_events.cooldown_expires_at` lies in the future, preventing double reversal during the cooldown window.
 - Concurrent reversal attempts on the same override are rejected immediately while a short-lived lock is held (`governance_override_actions.reversal_lock_*` columns). Operators encountering this error should wait for the in-flight reversal to finish or reach out to the actor listed on the lock metadata.
+- Governance analytics responses are cached per user/team scope for 30 seconds and automatically invalidated when override actions or governance coaching notes change so operators see fresh SLA deltas without hammering the endpoint.
 - The migrations are idempotent; rerunning them will not duplicate lineage rows or reversal events thanks to unique `override_id` constraints.
