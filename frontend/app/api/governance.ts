@@ -293,7 +293,7 @@ const mapGovernanceOverrideLineageAggregates = (
   notebooks: summary.notebooks.map((item) => mapNotebookOverrideAggregate(item)),
 })
 
-const mapGuardrailSimulationRecord = (
+export const mapGuardrailSimulationRecord = (
   record: GovernanceGuardrailSimulationRecord,
 ): GovernanceGuardrailSimulationRecord => ({
   ...record,

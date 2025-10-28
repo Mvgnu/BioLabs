@@ -125,11 +125,13 @@ describe('ExportsPanel guardrail integration', () => {
   it('renders guardrail warnings and disables approvals when forecast is blocked', () => {
     renderWithQueryClient(<ExportsPanel executionId="exec-1" timelineEvents={timelineEvents} />)
 
-    expect(screen.getByText('Guardrail blocked')).toBeDefined()
+    const guardrailBadges = screen.getAllByText('Guardrail blocked')
+    expect(guardrailBadges.length).toBeGreaterThan(0)
     expect(screen.getByText(/Forecast blocked/)).toBeDefined()
-    expect(screen.getByText(/qa awaiting-evidence/)).toBeDefined()
+    expect(screen.getAllByText(/qa awaiting-evidence/).length).toBeGreaterThan(0)
 
     const approveButton = screen.getByRole('button', { name: /Approve stage/i })
     expect((approveButton as HTMLButtonElement).disabled).toBe(true)
+    expect((approveButton as HTMLButtonElement).title).toContain('Guardrail forecast')
   })
 })

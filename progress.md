@@ -744,3 +744,10 @@ This implementation establishes BioLab as a data-driven laboratory management pl
 - Added export history, creation, and approval endpoints plus timeline events for creation and decisions.
 - Extended React hooks with export creation, listing, and approval mutations wired into React Query caches.
 - Introduced `ExportsPanel` UI for scientists to bundle evidence, submit exports, and record signatures directly from the experiment console.
+
+## 2025-07-06 - Guardrail Forecast Surfacing
+
+- Updated approval ladder services to return latest guardrail simulations and block packaging dispatch when forecasts are `blocked`, recording audit events for operators.
+- Injected guardrail projections into experiment console export payloads, adding tooltips, badges, and disabled states for risky stages alongside projected delay messaging.
+- Normalised guardrail payloads in governance API clients and experiment console hooks so React components consume typed summaries consistently.
+- Expanded backend pytest coverage to ensure guardrail summaries surface through export history responses and added Vitest assertions for the disabled-stage experience.
