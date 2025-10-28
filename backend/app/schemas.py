@@ -930,6 +930,7 @@ class GovernanceOverrideReversalDetail(BaseModel):
     actor: GovernanceActorSummary | None = None
     created_at: datetime
     cooldown_expires_at: datetime | None = None
+    cooldown_window_minutes: int | None = None
     diffs: list[GovernanceOverrideReversalDiff] = Field(default_factory=list)
     previous_detail: Dict[str, Any] = Field(default_factory=dict)
     current_detail: Dict[str, Any] = Field(default_factory=dict)
@@ -1018,6 +1019,7 @@ class GovernanceOverrideActionOutcome(BaseModel):
         serialization_alias="reversal_event",
     )
     cooldown_expires_at: datetime | None = None
+    cooldown_window_minutes: int | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

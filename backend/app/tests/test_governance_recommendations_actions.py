@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from app import models
 from app.tests.conftest import TestingSessionLocal
@@ -49,6 +50,10 @@ def test_override_reassign_execution_flow(client):
     reviewer = _create_reviewer()
 
     recommendation_id = f"cadence_overload:{baseline.id}"
+    lineage_payload = {
+        "scenario_id": str(uuid.uuid4()),
+        "metadata": {"source": "test"},
+    }
     accept_payload = {
         "execution_id": str(execution_id),
         "action": "reassign",
@@ -56,6 +61,7 @@ def test_override_reassign_execution_flow(client):
         "target_reviewer_id": str(reviewer.id),
         "notes": "Rebalancing workload",
         "metadata": {"reversible": True},
+        "lineage": lineage_payload,
     }
 
     accept_response = client.post(
@@ -68,10 +74,7 @@ def test_override_reassign_execution_flow(client):
     assert accept_body["status"] == "accepted"
     assert accept_body["target_reviewer_id"] == str(reviewer.id)
 
-    execute_payload = {
-        **accept_payload,
-        "metadata": {"reversible": False},
-    }
+    execute_payload = {**accept_payload, "metadata": {"reversible": False}}
     execute_response = client.post(
         f"/api/governance/recommendations/override/{recommendation_id}/execute",
         headers=headers,
@@ -115,6 +118,10 @@ def test_override_execute_is_idempotent(client):
     reviewer = _create_reviewer()
 
     recommendation_id = f"cadence_overload:{baseline.id}"
+    lineage_payload = {
+        "scenario_id": str(uuid.uuid4()),
+        "metadata": {"source": "test"},
+    }
     payload = {
         "execution_id": str(execution_id),
         "action": "reassign",
@@ -122,6 +129,7 @@ def test_override_execute_is_idempotent(client):
         "target_reviewer_id": str(reviewer.id),
         "notes": "Primary execution",
         "metadata": {"reversible": True},
+        "lineage": lineage_payload,
     }
 
     first_response = client.post(
@@ -177,6 +185,10 @@ def test_override_execution_requires_access(client):
         "target_reviewer_id": str(reviewer.id),
         "notes": "Attempted override",
         "metadata": {},
+        "lineage": {
+            "scenario_id": str(uuid.uuid4()),
+            "metadata": {"source": "test"},
+        },
     }
     response = client.post(
         f"/api/governance/recommendations/override/cadence_overload:{baseline.id}/execute",
@@ -194,6 +206,10 @@ def test_override_reversal_flow(client):
     reviewer = _create_reviewer()
 
     recommendation_id = f"cadence_overload:{baseline.id}"
+    lineage_payload = {
+        "scenario_id": str(uuid.uuid4()),
+        "metadata": {"source": "test"},
+    }
     execute_payload = {
         "execution_id": str(execution_id),
         "action": "reassign",
@@ -201,6 +217,7 @@ def test_override_reversal_flow(client):
         "target_reviewer_id": str(reviewer.id),
         "notes": "Applying override",
         "metadata": {"reversible": True},
+        "lineage": lineage_payload,
     }
 
     execute_response = client.post(
@@ -229,6 +246,7 @@ def test_override_reversal_flow(client):
     assert reverse_body["baseline_id"] == str(baseline.id)
     assert reverse_body["target_reviewer_id"] == str(reviewer.id)
     assert reverse_body.get("cooldown_expires_at") is not None
+    assert reverse_body.get("cooldown_window_minutes") == 30
     assert reverse_body.get("reversal_event", {}).get("diffs"), "Reversal diff should be populated"
 
     repeat_reverse = client.post(
@@ -259,4 +277,63 @@ def test_override_reversal_flow(client):
         assert payloads[-1].get("detail", {}).get("reversal") is True
     finally:
         db.close()
+
+
+def test_override_reversal_respects_active_lock(client):
+    operator, headers = create_user_and_headers()
+    team_id = attach_team_membership(operator)
+    execution_id = seed_preview_event(operator, team_id)
+    baseline = _get_current_baseline(execution_id)
+    reviewer = _create_reviewer()
+
+    recommendation_id = f"cadence_overload:{baseline.id}"
+    lineage_payload = {
+        "scenario_id": str(uuid.uuid4()),
+        "metadata": {"source": "test"},
+    }
+    execute_payload = {
+        "execution_id": str(execution_id),
+        "action": "reassign",
+        "baseline_id": str(baseline.id),
+        "target_reviewer_id": str(reviewer.id),
+        "notes": "Applying override",
+        "metadata": {"reversible": True},
+        "lineage": lineage_payload,
+    }
+
+    execute_response = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/execute",
+        headers=headers,
+        json=execute_payload,
+    )
+    assert execute_response.status_code == 200
+
+    db = TestingSessionLocal()
+    try:
+        record = (
+            db.query(models.GovernanceOverrideAction)
+            .filter(models.GovernanceOverrideAction.recommendation_id == recommendation_id)
+            .one()
+        )
+        record.reversal_lock_token = "locked"
+        record.reversal_lock_acquired_at = datetime.now(timezone.utc)
+        record.reversal_lock_actor_id = operator.id
+        db.add(record)
+        db.commit()
+    finally:
+        db.close()
+
+    reversal_payload = {
+        "execution_id": str(execution_id),
+        "baseline_id": str(baseline.id),
+        "notes": "Undo override",
+        "metadata": {"reason": "operator_request", "cooldown_minutes": 15},
+    }
+    response = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/reverse",
+        headers=headers,
+        json=reversal_payload,
+    )
+    assert response.status_code == 400
+    assert "already being processed" in response.json()["detail"]
 
