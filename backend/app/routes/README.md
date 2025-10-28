@@ -24,3 +24,12 @@
 > - `GET /api/data/evidence` provides analytics snapshot, QC metric, and remediation report descriptors with cursor pagination and execution filters.
 
 > These notes must be kept current when additional gating signals or orchestration endpoints are introduced.
+
+## Governance Coaching Notes
+- **Module**: `governance_notes/__init__.py`
+- **Capabilities**:
+  - `GET /api/governance/overrides/{override_id}/coaching-notes` streams threaded coaching history with reply counts and actor summaries.
+  - `POST /api/governance/overrides/{override_id}/coaching-notes` persists inline notes or threaded replies with automatic root tracking.
+  - `PATCH /api/governance/coaching-notes/{note_id}` updates bodies, moderation states, and metadata with edit timestamping.
+- **RBAC**: Access gated via override actor roles, execution ownership, or team membership derived from baseline/template lineage.
+- **Metadata**: Responses expose `metadata`, `moderation_state`, and `reply_count` fields for optimistic UI updates.

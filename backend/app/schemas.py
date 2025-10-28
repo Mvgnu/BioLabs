@@ -1323,6 +1323,71 @@ class ExperimentTimelinePage(BaseModel):
     next_cursor: str | None = None
 
 
+class GovernanceCoachingNoteBase(BaseModel):
+    """Base payload for governance coaching note mutations."""
+
+    # purpose: capture shared fields for coaching note create/update operations
+    # inputs: API payloads for governance coaching note CRUD endpoints
+    # outputs: validated request payloads with metadata defaults
+    # status: experimental
+
+    body: str = Field(..., min_length=1)
+    parent_id: UUID | None = None
+    baseline_id: UUID | None = None
+    execution_id: UUID | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GovernanceCoachingNoteCreate(GovernanceCoachingNoteBase):
+    """Request payload for creating a governance coaching note."""
+
+    # purpose: differentiate creation-time payload semantics from updates
+    # status: experimental
+
+
+class GovernanceCoachingNoteUpdate(BaseModel):
+    """Request payload for updating a governance coaching note."""
+
+    # purpose: allow partial updates to coaching note content and moderation state
+    # inputs: API patch payloads from governance console
+    # outputs: sanitized update directives for persistence layer
+    # status: experimental
+
+    body: str | None = Field(default=None)
+    moderation_state: Literal["draft", "published", "flagged", "resolved", "removed"] | None = None
+    metadata: Dict[str, Any] | None = None
+
+
+class GovernanceCoachingNoteOut(BaseModel):
+    """Serialized governance coaching note for API responses."""
+
+    # purpose: expose threaded coaching context in governance APIs
+    # inputs: ORM GovernanceCoachingNote rows
+    # outputs: response payload consumed by governance console UI
+    # status: experimental
+
+    id: UUID
+    override_id: UUID
+    baseline_id: UUID | None = None
+    execution_id: UUID | None = None
+    parent_id: UUID | None = None
+    thread_root_id: UUID | None = None
+    moderation_state: Literal["draft", "published", "flagged", "resolved", "removed"]
+    body: str
+    reply_count: int = 0
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias="meta",
+        serialization_alias="metadata",
+    )
+    actor: GovernanceActorSummary | None = None
+    created_at: datetime
+    updated_at: datetime
+    last_edited_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 class GovernanceDecisionTimelineEntry(BaseModel):
     # purpose: unify governance decisions, analytics, and overrides into one feed item schema
     # status: pilot

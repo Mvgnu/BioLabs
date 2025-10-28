@@ -11,6 +11,9 @@ The governance decision timeline now surfaces override lineage data alongside an
 - **Reversal Storage**: `governance_override_reversal_events` retains reversal actor attribution, baseline linkage, cooldown expiry, the configured cooldown window minutes, and a JSON diff between the original override detail snapshot and the reversal output. The ORM exposes this payload via `GovernanceOverrideAction.reversal_event_payload` for API serialization.
 - **Response Fields**: Timeline API consumers receive `detail.cooldown_window_minutes` whenever a reversal sets a cooldown duration. This mirrors `reversal_event.cooldown_window_minutes` and should be surfaced in UI copy where operators expect to see the enforced window length.
 - **Analytics**: `compute_governance_analytics` aggregates lineage activity into scenario and notebook buckets. These aggregates are embedded in timeline analytics entries under `detail.lineage_summary`.
+- **Coaching Notes**: `governance_coaching_notes` persists threaded reviewer context with `thread_root_id`, `parent_id`, and `moderation_state` columns. API responses expose `metadata`, `reply_count`, and actor summaries to support optimistic UI updates and inline moderation cues.
+- **Coaching Endpoints**: `/api/governance/overrides/{override_id}/coaching-notes` (GET/POST) and `/api/governance/coaching-notes/{note_id}` (PATCH) provide CRUD access with RBAC enforcement derived from override actors, execution owners, or baseline/template team membership.
+- **Timeline Serialization**: Coaching notes appear in the decision timeline with `entry_type="coaching_note"`, carrying `detail` payloads that include the note body, moderation state, thread identifiers, and reply counts for progress indicators.
 
 ## Backfill Limitations
 

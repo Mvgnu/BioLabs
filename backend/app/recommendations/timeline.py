@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Sequence
 from uuid import UUID, NAMESPACE_URL, uuid5
 
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
@@ -357,6 +357,140 @@ def _load_baseline_events(
     return entries
 
 
+def _load_coaching_notes(
+    db: Session,
+    user: models.User,
+    membership_ids: set[UUID],
+    execution_ids: set[UUID] | None,
+    cursor: _Cursor | None,
+    limit: int,
+) -> list[schemas.GovernanceDecisionTimelineEntry]:
+    """Return governance coaching notes respecting RBAC scope."""
+
+    # purpose: surface latest coaching notes and thread counts in decision timeline
+    # inputs: db session, rbac context, optional execution scope, pagination cursor, limit
+    # outputs: list of GovernanceDecisionTimelineEntry derived from coaching notes
+    # status: experimental
+
+    query = (
+        db.query(models.GovernanceCoachingNote)
+        .join(models.GovernanceOverrideAction)
+        .outerjoin(
+            models.ProtocolExecution,
+            models.GovernanceOverrideAction.execution_id == models.ProtocolExecution.id,
+        )
+        .outerjoin(
+            models.ProtocolTemplate,
+            models.ProtocolExecution.template_id == models.ProtocolTemplate.id,
+        )
+        .outerjoin(
+            models.GovernanceBaselineVersion,
+            models.GovernanceCoachingNote.baseline_id == models.GovernanceBaselineVersion.id,
+        )
+        .options(
+            joinedload(models.GovernanceCoachingNote.author),
+            joinedload(models.GovernanceCoachingNote.override),
+        )
+    )
+    if execution_ids:
+        exec_ids = list(execution_ids)
+        query = query.filter(
+            or_(
+                models.GovernanceCoachingNote.execution_id.in_(exec_ids),
+                models.GovernanceOverrideAction.execution_id.in_(exec_ids),
+                models.GovernanceBaselineVersion.execution_id.in_(exec_ids),
+            )
+        )
+    if not user.is_admin:
+        membership_list = list(membership_ids)
+        access_filters = [
+            models.GovernanceOverrideAction.actor_id == user.id,
+            models.GovernanceOverrideAction.target_reviewer_id == user.id,
+            models.ProtocolExecution.run_by == user.id,
+            models.ProtocolTemplate.team_id.is_(None),
+        ]
+        if membership_list:
+            access_filters.append(models.ProtocolTemplate.team_id.in_(membership_list))
+            access_filters.append(models.GovernanceBaselineVersion.team_id.in_(membership_list))
+        query = query.filter(or_(*access_filters))
+    query = query.order_by(
+        models.GovernanceCoachingNote.created_at.desc(),
+        models.GovernanceCoachingNote.id.desc(),
+    )
+    notes: list[models.GovernanceCoachingNote] = query.limit(limit * 2).all()
+
+    override_ids = {note.override_id for note in notes}
+    thread_roots = {note.thread_root_id or note.id for note in notes if note}
+    reply_index: dict[UUID, int] = {}
+    if override_ids and thread_roots:
+        rows = (
+            db.query(
+                models.GovernanceCoachingNote.thread_root_id,
+                func.count(models.GovernanceCoachingNote.id),
+            )
+            .filter(
+                models.GovernanceCoachingNote.override_id.in_(list(override_ids)),
+                models.GovernanceCoachingNote.thread_root_id.in_(list(thread_roots)),
+            )
+            .group_by(models.GovernanceCoachingNote.thread_root_id)
+            .all()
+        )
+        for root_id, count in rows:
+            if root_id is None:
+                continue
+            reply_index[root_id] = int(count) - 1
+
+    entries: list[schemas.GovernanceDecisionTimelineEntry] = []
+    for note in notes:
+        occurred_at = _normalise_timestamp(note.created_at)
+        if cursor and (
+            occurred_at > cursor.occurred_at
+            or (occurred_at == cursor.occurred_at and note.id >= cursor.entry_id)
+        ):
+            continue
+        author = note.author
+        actor_payload = (
+            schemas.GovernanceActorSummary(
+                id=author.id,
+                name=author.full_name,
+                email=author.email,
+            )
+            if author is not None
+            else None
+        )
+        reply_count = reply_index.get(note.thread_root_id or note.id, 0)
+        detail_payload: Dict[str, Any] = {
+            "note_id": str(note.id),
+            "override_id": str(note.override_id),
+            "body": note.body,
+            "moderation_state": note.moderation_state,
+            "thread_root_id": str(note.thread_root_id) if note.thread_root_id else None,
+            "parent_id": str(note.parent_id) if note.parent_id else None,
+            "reply_count": reply_count,
+            "metadata": dict(note.meta or {}),
+        }
+        entries.append(
+            schemas.GovernanceDecisionTimelineEntry(
+                entry_id=str(note.id),
+                entry_type="coaching_note",
+                occurred_at=occurred_at,
+                execution_id=note.execution_id
+                or (note.override.execution_id if note.override else None),
+                baseline_id=note.baseline_id
+                or (note.override.baseline_id if note.override else None),
+                rule_key=None,
+                action=None,
+                status=note.moderation_state,
+                actor=actor_payload,
+                summary="Coaching note added" if note.parent_id is None else "Coaching reply posted",
+                detail=detail_payload,
+            )
+        )
+        if len(entries) >= limit:
+            break
+    return entries
+
+
 def _load_analytics_snapshots(
     db: Session,
     user: models.User,
@@ -456,6 +590,14 @@ def load_governance_decision_timeline(
         decoded_cursor,
         safe_limit,
     )
+    coaching_entries = _load_coaching_notes(
+        db,
+        user,
+        membership_ids,
+        execution_scope,
+        decoded_cursor,
+        safe_limit,
+    )
     analytics_entries = _load_analytics_snapshots(
         db,
         user,
@@ -464,7 +606,7 @@ def load_governance_decision_timeline(
         safe_limit,
     )
 
-    combined = event_entries + baseline_entries + analytics_entries
+    combined = event_entries + baseline_entries + coaching_entries + analytics_entries
     combined.sort(key=lambda item: (item.occurred_at, item.entry_id), reverse=True)
     combined = combined[:safe_limit]
 

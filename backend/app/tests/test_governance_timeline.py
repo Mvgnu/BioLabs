@@ -209,6 +209,18 @@ def seed_governance_artifacts(
         db.close()
 
 
+def get_override_for_execution(execution_id: uuid.UUID) -> models.GovernanceOverrideAction | None:
+    db = TestingSessionLocal()
+    try:
+        return (
+            db.query(models.GovernanceOverrideAction)
+            .filter(models.GovernanceOverrideAction.execution_id == execution_id)
+            .first()
+        )
+    finally:
+        db.close()
+
+
 @pytest.mark.usefixtures("client")
 def test_load_governance_decision_timeline_blends_sources():
     user = create_user()
@@ -278,4 +290,88 @@ def test_governance_timeline_endpoint_returns_feed(client):
         entry.get("lineage")
         for entry in payload["entries"]
         if entry.get("entry_type") == "override_action"
+    )
+
+
+@pytest.mark.usefixtures("client")
+def test_coaching_notes_api_crud(client):
+    user = create_user()
+    team_id = ensure_team_membership(user)
+    execution_id, _ = seed_governance_artifacts(user, team_id=team_id)
+    override = get_override_for_execution(execution_id)
+    assert override is not None
+    headers = create_auth_headers(user)
+
+    create_response = client.post(
+        f"/api/governance/overrides/{override.id}/coaching-notes",
+        json={"body": "Initial coaching note"},
+        headers=headers,
+    )
+    assert create_response.status_code == 201
+    created = create_response.json()
+    assert created["reply_count"] == 0
+    note_id = created["id"]
+
+    list_response = client.get(
+        f"/api/governance/overrides/{override.id}/coaching-notes",
+        headers=headers,
+    )
+    assert list_response.status_code == 200
+    listed = list_response.json()
+    assert len(listed) == 1
+    assert listed[0]["body"] == "Initial coaching note"
+
+    reply_response = client.post(
+        f"/api/governance/overrides/{override.id}/coaching-notes",
+        json={"body": "Follow-up", "parent_id": note_id},
+        headers=headers,
+    )
+    assert reply_response.status_code == 201
+
+    patch_response = client.patch(
+        f"/api/governance/coaching-notes/{note_id}",
+        json={"body": "Updated note", "metadata": {"focus": "cadence"}},
+        headers=headers,
+    )
+    assert patch_response.status_code == 200
+    updated = patch_response.json()
+    assert updated["body"] == "Updated note"
+    assert updated["metadata"]["focus"] == "cadence"
+    assert updated["reply_count"] == 1
+    assert updated["moderation_state"] == "published"
+
+
+@pytest.mark.usefixtures("client")
+def test_timeline_includes_coaching_notes(client):
+    user = create_user()
+    team_id = ensure_team_membership(user)
+    execution_id, _ = seed_governance_artifacts(user, team_id=team_id)
+    override = get_override_for_execution(execution_id)
+    assert override is not None
+    headers = create_auth_headers(user)
+
+    response = client.post(
+        f"/api/governance/overrides/{override.id}/coaching-notes",
+        json={"body": "Timeline visibility"},
+        headers=headers,
+    )
+    assert response.status_code == 201
+
+    db = TestingSessionLocal()
+    try:
+        page = load_governance_decision_timeline(
+            db,
+            user,
+            membership_ids={team_id},
+            execution_ids=[execution_id],
+            limit=20,
+        )
+    finally:
+        db.close()
+
+    assert any(entry.entry_type == "coaching_note" for entry in page.entries)
+    assert any(
+        entry.detail.get("body") == "Timeline visibility"
+        for entry in page.entries
+        if entry.entry_type == "coaching_note"
     )
