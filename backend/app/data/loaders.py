@@ -44,3 +44,19 @@ def get_assembly_strategy_catalog() -> tuple[dict[str, Any], ...]:
 
     payload = _load_json(_BASE_DIR / "assembly_strategies.json")
     return tuple(payload)
+
+
+@lru_cache(maxsize=None)
+def get_enzyme_kinetics_catalog() -> tuple[dict[str, Any], ...]:
+    """Return cached enzyme kinetics descriptors."""
+
+    payload = _load_json(_BASE_DIR / "enzyme_kinetics.json")
+    return tuple(payload)
+
+
+@lru_cache(maxsize=None)
+def get_ligation_profile_catalog() -> tuple[dict[str, Any], ...]:
+    """Return cached ligation efficiency profiles."""
+
+    payload = _load_json(_BASE_DIR / "ligation_profiles.json")
+    return tuple(payload)

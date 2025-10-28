@@ -21,13 +21,17 @@ from ..data.loaders import (
     get_assembly_strategy_catalog,
     get_buffer_catalog,
     get_enzyme_catalog as load_enzyme_catalog,
+    get_enzyme_kinetics_catalog,
+    get_ligation_profile_catalog,
 )
 from ..schemas.sequence_toolkit import (
     AssemblySimulationConfig,
     AssemblySimulationResult,
     AssemblyStepMetrics,
     AssemblyStrategyProfile,
+    EnzymeKineticsProfile,
     EnzymeMetadata,
+    LigationEfficiencyProfile,
     PrimerCandidate,
     PrimerDesignConfig,
     PrimerDesignRecord,
@@ -231,6 +235,27 @@ def get_assembly_strategies() -> list[AssemblyStrategyProfile]:
     ]
 
 
+@lru_cache(maxsize=1)
+def get_enzyme_kinetics() -> list[EnzymeKineticsProfile]:
+    """Return curated enzyme kinetics descriptors."""
+
+    # purpose: expose kinetics parameters for assembly scoring reuse
+    return [
+        EnzymeKineticsProfile(**entry) for entry in get_enzyme_kinetics_catalog()
+    ]
+
+
+@lru_cache(maxsize=1)
+def get_ligation_profiles() -> list[LigationEfficiencyProfile]:
+    """Return ligation efficiency presets."""
+
+    # purpose: align ligation heuristics for planners and DNA assets
+    return [
+        LigationEfficiencyProfile(**entry)
+        for entry in get_ligation_profile_catalog()
+    ]
+
+
 def _enzyme_index() -> dict[str, EnzymeMetadata]:
     """Return catalog records keyed by normalized enzyme name."""
 
@@ -252,8 +277,54 @@ def _assembly_strategy_index() -> dict[str, AssemblyStrategyProfile]:
     return {record.name.lower(): record for record in get_assembly_strategies()}
 
 
+def _enzyme_kinetics_index() -> dict[str, EnzymeKineticsProfile]:
+    """Return kinetics descriptors keyed by normalized enzyme name."""
+
+    # purpose: accelerate kinetics lookups for digest and assembly heuristics
+    return {record.name.lower(): record for record in get_enzyme_kinetics()}
+
+
+def _ligation_profile_index() -> dict[tuple[str, str | None], LigationEfficiencyProfile]:
+    """Return ligation efficiency presets keyed by strategy and enzyme."""
+
+    # purpose: enable quick ligation preset matching during assembly scoring
+    index: dict[tuple[str, str | None], LigationEfficiencyProfile] = {}
+    for profile in get_ligation_profiles():
+        key = (profile.strategy.lower(), (profile.enzyme or "").lower() or None)
+        index[key] = profile
+    return index
+
+
+def _resolve_ligation_profile(
+    strategy: str | None, enzyme_names: Sequence[str], buffer_name: str | None
+) -> LigationEfficiencyProfile | None:
+    """Return matching ligation profile for the provided context."""
+
+    # purpose: centralize ligation profile lookups for deterministic scoring
+    strategy_key = (strategy or "unspecified").lower()
+    profile_index = _ligation_profile_index()
+    matched_profile: LigationEfficiencyProfile | None = None
+    normalized_buffer = (buffer_name or "").lower() or None
+    for enzyme in enzyme_names:
+        key = (strategy_key, enzyme.lower())
+        profile = profile_index.get(key)
+        if not profile:
+            continue
+        matched_profile = profile
+        profile_buffer = (profile.buffer or "").lower() or None
+        if not profile_buffer or normalized_buffer == profile_buffer:
+            return profile
+    if not matched_profile:
+        matched_profile = profile_index.get((strategy_key, None))
+    return matched_profile
+
+
 def _kinetics_modifier(
-    kinetics_model: str, tm_delta: float, site_count: int, heuristics: dict[str, Any]
+    kinetics_model: str,
+    tm_delta: float,
+    site_count: int,
+    heuristics: dict[str, Any],
+    kinetics_profile: EnzymeKineticsProfile | None = None,
 ) -> float:
     """Return modifier scaling based on strategy kinetics assumptions."""
 
@@ -276,6 +347,13 @@ def _kinetics_modifier(
         base -= min(0.2, overlap_delta * 0.008)
     else:
         base -= min(0.2, max(0.0, tm_delta - 2.0) * 0.02)
+    if kinetics_profile and kinetics_profile.model:
+        heuristics["kinetics_profile_model"] = kinetics_profile.model
+    if kinetics_profile and kinetics_profile.rate_constant:
+        heuristics["kinetics_rate_constant"] = kinetics_profile.rate_constant
+        base *= min(1.05, max(0.6, kinetics_profile.rate_constant))
+    if kinetics_profile and kinetics_profile.optimal_temperature_c:
+        heuristics["kinetics_opt_temp_c"] = kinetics_profile.optimal_temperature_c
     return max(0.1, min(1.0, base))
 
 
@@ -588,6 +666,7 @@ def analyze_restriction_digest(
     digest_config = _resolve_restriction_config(config, enzymes=enzymes)
     enzyme_list = list(digest_config.enzymes)
     catalog_index = _enzyme_index()
+    kinetics_index = _enzyme_kinetics_index()
     buffer_catalog = _buffer_index()
     enzyme_catalog: list[EnzymeMetadata] = []
     digest_results: list[RestrictionDigestResult] = []
@@ -625,8 +704,10 @@ def analyze_restriction_digest(
             compatible = any(len(positions) > 0 for positions in site_map.values())
         buffer_alerts: list[str] = []
         site_payload: dict[str, RestrictionDigestSite] = {}
+        template_tags: list[str] = []
         for enzyme_name, positions in site_map.items():
             meta = catalog_index.get(enzyme_name.lower())
+            kinetics = kinetics_index.get(enzyme_name.lower())
             if digest_config.reaction_buffer and meta:
                 if digest_config.reaction_buffer not in meta.compatible_buffers:
                     buffer_alerts.append(
@@ -637,7 +718,14 @@ def analyze_restriction_digest(
                 positions=positions,
                 recognition_site=(meta.recognition_site if meta else None),
                 metadata=meta,
+                kinetics=kinetics,
             )
+            if meta and meta.metadata_tags:
+                template_tags.extend(tag for tag in meta.metadata_tags if tag not in template_tags)
+            if kinetics and kinetics.metadata_tags:
+                template_tags.extend(
+                    tag for tag in kinetics.metadata_tags if tag not in template_tags
+                )
         digest_notes: list[str] = []
         for enzyme_name, meta in ((entry.name, entry) for entry in enzyme_catalog):
             if meta.star_activity_notes:
@@ -645,6 +733,11 @@ def analyze_restriction_digest(
         if selected_buffer:
             digest_notes.append(
                 f"Buffer {selected_buffer.name}: {selected_buffer.notes or 'no notes recorded.'}"
+            )
+            template_tags.extend(
+                tag
+                for tag in (selected_buffer.metadata_tags or [])
+                if tag not in template_tags
             )
         digest_results.append(
             RestrictionDigestResult(
@@ -654,6 +747,7 @@ def analyze_restriction_digest(
                 buffer_alerts=buffer_alerts,
                 notes=digest_notes,
                 buffer=selected_buffer,
+                metadata_tags=sorted(template_tags),
             )
         )
         absent_enzymes = [enz for enz, positions in site_map.items() if not positions]
@@ -688,6 +782,8 @@ def simulate_assembly(
     digests = {
         item["name"]: item for item in digest_results.get("digests", [])
     }
+    contract_tags: set[str] = set()
+    kinetics_index = _enzyme_kinetics_index()
     for entry in primers:
         name = entry.get("name")
         digest = digests.get(name, {})
@@ -698,23 +794,33 @@ def simulate_assembly(
             tm_delta = abs(forward_tm - reverse_tm)
         site_count = 0
         overhang_signatures: set[str] = set()
-        for site in digest.get("sites", {}).values():
+        enzyme_names: list[str] = []
+        step_tags: set[str] = set(digest.get("metadata_tags", []))
+        for enzyme_key, site in (digest.get("sites", {}) or {}).items():
             if isinstance(site, dict):
                 site_positions = site.get("positions", [])
             else:
                 site_positions = site
             site_count += len(site_positions)
             if isinstance(site, dict):
+                enzyme_name = site.get("enzyme") or enzyme_key
+                if enzyme_name:
+                    enzyme_names.append(enzyme_name)
                 site_meta = site.get("metadata") or {}
                 overhang = site_meta.get("overhang") or site_meta.get("recognition_site")
                 if overhang:
                     overhang_signatures.add(str(overhang))
+                kinetics_payload = site.get("kinetics")
+                if kinetics_payload and kinetics_payload.get("metadata_tags"):
+                    step_tags.update(kinetics_payload.get("metadata_tags", []))
         overhang_diversity = len(overhang_signatures) or site_count
+        enzyme_names = list(dict.fromkeys(enzyme_names))
         buffer_penalty = 0.0
         if digest.get("buffer_alerts"):
             buffer_penalty += min(0.3, 0.05 * len(digest["buffer_alerts"]))
         buffer_meta = digest.get("buffer") or {}
         compatible_strategies = buffer_meta.get("compatible_strategies", [])
+        buffer_name = buffer_meta.get("name")
         if (
             compatible_strategies
             and assembly_config.strategy not in compatible_strategies
@@ -747,13 +853,42 @@ def simulate_assembly(
         )
         if site_count < assembly_config.minimal_site_count:
             score *= assembly_config.low_site_penalty
+        ligation_profile = _resolve_ligation_profile(
+            assembly_config.strategy,
+            enzyme_names,
+            buffer_name,
+        )
         ligation_efficiency = assembly_config.ligation_efficiency
+        if ligation_profile:
+            heuristics["ligation_profile"] = {
+                "strategy": ligation_profile.strategy,
+                "enzyme": ligation_profile.enzyme,
+                "efficiency_ceiling": ligation_profile.efficiency_ceiling,
+                "buffer": ligation_profile.buffer,
+            }
+            ligation_efficiency = max(
+                ligation_efficiency,
+                ligation_profile.base_efficiency,
+            )
+            ligation_efficiency = min(
+                ligation_efficiency,
+                ligation_profile.efficiency_ceiling,
+            )
+            step_tags.update(ligation_profile.metadata_tags)
+        kinetics_profile = None
+        for enzyme_name in enzyme_names:
+            kinetics_profile = kinetics_index.get(enzyme_name.lower())
+            if kinetics_profile:
+                break
+        if kinetics_profile and kinetics_profile.metadata_tags:
+            step_tags.update(kinetics_profile.metadata_tags)
         score *= ligation_efficiency
         kinetics_score = _kinetics_modifier(
             assembly_config.kinetics_model,
             tm_delta,
             site_count,
             heuristics,
+            kinetics_profile,
         )
         heuristics["kinetics_modifier"] = kinetics_score
         score *= kinetics_score
@@ -764,6 +899,11 @@ def simulate_assembly(
             warnings.append(
                 "Kinetics model predicts suboptimal junction progression"
             )
+        if ligation_profile and ligation_profile.base_efficiency < 0.8:
+            warnings.append("Ligation preset below optimal efficiency")
+        step_tags.update(entry.get("metadata_tags", []))
+        metadata_tags = sorted(step_tags)
+        contract_tags.update(metadata_tags)
         steps.append(
             AssemblyStepMetrics(
                 template=name,
@@ -774,14 +914,29 @@ def simulate_assembly(
                 kinetics_score=kinetics_score,
                 heuristics=heuristics,
                 warnings=warnings,
+                metadata_tags=metadata_tags,
             )
         )
+    payload_contract = {
+        "schema_version": "1.1",
+        "strategy": assembly_config.strategy,
+        "metadata_tags": sorted(contract_tags),
+        "fields": [
+            "strategy",
+            "steps",
+            "average_success",
+            "min_success",
+            "max_success",
+            "payload_contract",
+        ],
+    }
     return AssemblySimulationResult(
         strategy=assembly_config.strategy,
         steps=steps,
         average_success=mean(success_scores) if success_scores else 0.0,
         min_success=min(success_scores) if success_scores else 0.0,
         max_success=max(success_scores) if success_scores else 0.0,
+        payload_contract=payload_contract,
     ).model_dump()
 
 

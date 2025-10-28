@@ -1,0 +1,35 @@
+[
+  {
+    "strategy": "golden_gate",
+    "enzyme": "BsaI",
+    "base_efficiency": 0.9,
+    "efficiency_ceiling": 0.96,
+    "buffer": "CutSmart",
+    "metadata_tags": [
+      "strategy:golden_gate",
+      "enzyme:BsaI"
+    ]
+  },
+  {
+    "strategy": "gibson",
+    "enzyme": "GibsonMix",
+    "base_efficiency": 0.88,
+    "efficiency_ceiling": 0.94,
+    "buffer": null,
+    "metadata_tags": [
+      "strategy:gibson",
+      "enzyme:GibsonMix"
+    ]
+  },
+  {
+    "strategy": "hifi",
+    "enzyme": "BsmBI",
+    "base_efficiency": 0.86,
+    "efficiency_ceiling": 0.92,
+    "buffer": "CutSmart",
+    "metadata_tags": [
+      "strategy:hifi",
+      "enzyme:BsmBI"
+    ]
+  }
+]

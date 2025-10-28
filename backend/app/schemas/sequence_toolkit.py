@@ -50,6 +50,32 @@ class ReactionBuffer(BaseModel):
     stabilizers: List[str] = Field(default_factory=list)
     compatible_strategies: List[str] = Field(default_factory=list)
     notes: Optional[str] = None
+    metadata_tags: List[str] = Field(default_factory=list)
+
+
+class EnzymeKineticsProfile(BaseModel):
+    """Structured kinetics descriptor for enzymes."""
+
+    # purpose: expose kinetic parameters for digestion and assembly scoring
+    name: str
+    model: str
+    optimal_temperature_c: Optional[float] = Field(default=None, ge=0.0)
+    km_uM: Optional[float] = Field(default=None, ge=0.0)
+    kcat_s: Optional[float] = Field(default=None, ge=0.0)
+    rate_constant: Optional[float] = Field(default=None, ge=0.0)
+    metadata_tags: List[str] = Field(default_factory=list)
+
+
+class LigationEfficiencyProfile(BaseModel):
+    """Reusable ligation efficiency descriptor."""
+
+    # purpose: align ligation efficiency presets across services
+    strategy: str
+    enzyme: Optional[str] = None
+    base_efficiency: float = Field(ge=0.0, le=1.0)
+    efficiency_ceiling: float = Field(default=1.0, ge=0.0, le=1.0)
+    buffer: Optional[str] = None
+    metadata_tags: List[str] = Field(default_factory=list)
 
 
 class AssemblyStrategyProfile(BaseModel):
@@ -126,6 +152,7 @@ class EnzymeMetadata(BaseModel):
     methylation_sensitivity: Optional[str] = None
     star_activity_notes: Optional[str] = None
     supplier: Optional[str] = None
+    metadata_tags: List[str] = Field(default_factory=list)
 
 
 class RestrictionDigestSite(BaseModel):
@@ -136,6 +163,7 @@ class RestrictionDigestSite(BaseModel):
     positions: List[int] = Field(default_factory=list)
     recognition_site: Optional[str] = None
     metadata: Optional[EnzymeMetadata] = None
+    kinetics: Optional[EnzymeKineticsProfile] = None
 
 
 class RestrictionDigestResult(BaseModel):
@@ -148,6 +176,7 @@ class RestrictionDigestResult(BaseModel):
     buffer_alerts: List[str] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
     buffer: Optional[ReactionBuffer] = None
+    metadata_tags: List[str] = Field(default_factory=list)
 
 
 class RestrictionDigestResponse(BaseModel):
@@ -223,6 +252,7 @@ class AssemblyStepMetrics(BaseModel):
     kinetics_score: float = Field(default=0.0, ge=0.0, le=1.0)
     heuristics: Dict[str, Any] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
+    metadata_tags: List[str] = Field(default_factory=list)
 
 
 class AssemblySimulationResult(BaseModel):
@@ -234,6 +264,7 @@ class AssemblySimulationResult(BaseModel):
     average_success: float = Field(ge=0.0, le=1.0)
     min_success: float = Field(ge=0.0, le=1.0)
     max_success: float = Field(ge=0.0, le=1.0)
+    payload_contract: Dict[str, Any] = Field(default_factory=dict)
 
 
 class QCReport(BaseModel):
