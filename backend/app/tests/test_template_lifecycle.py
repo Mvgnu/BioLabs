@@ -276,6 +276,105 @@ def test_preview_endpoint_generates_stage_insights(client):
         db.close()
 
 
+def test_migrate_exports_dry_run_preserves_snapshot_binding():
+    session = TestingSessionLocal()
+    try:
+        now = datetime.now(timezone.utc)
+        user = models.User(
+            email=f"cli-dry-run-{uuid.uuid4()}@example.com",
+            hashed_password="placeholder",
+        )
+        session.add(user)
+        session.flush()
+
+        template = models.ExecutionNarrativeWorkflowTemplate(
+            template_key="dry-run-migration",
+            name="Dry Run Migration",
+            description="Validate dry-run semantics",
+            version=1,
+            stage_blueprint=[{"name": "QA", "required_role": "qa"}],
+            default_stage_sla_hours=24,
+            permitted_roles=["qa"],
+            status="published",
+            created_by_id=user.id,
+            published_at=now,
+        )
+        session.add(template)
+        session.flush()
+
+        protocol_template = models.ProtocolTemplate(
+            name="Execution Template",
+            content="Step 1",
+            version="1",
+            created_by=user.id,
+        )
+        session.add(protocol_template)
+        session.flush()
+
+        execution = models.ProtocolExecution(
+            template_id=protocol_template.id,
+            run_by=user.id,
+            status="completed",
+        )
+        session.add(execution)
+        session.flush()
+
+        snapshot = models.ExecutionNarrativeWorkflowTemplateSnapshot(
+            template_id=template.id,
+            template_key=template.template_key,
+            version=template.version,
+            status="published",
+            captured_by_id=user.id,
+        )
+        snapshot.snapshot_payload = {"template_id": str(template.id), "version": template.version}
+        session.add(snapshot)
+        session.flush()
+
+        export = models.ExecutionNarrativeExport(
+            execution_id=execution.id,
+            requested_by_id=user.id,
+            content="# Narrative\n",
+            event_count=0,
+            generated_at=now,
+            approval_stage_count=1,
+            workflow_template_id=template.id,
+        )
+        export.meta = {}
+        session.add(export)
+        session.commit()
+        export_id = export.id
+        snapshot_id = snapshot.id
+        template_id = template.id
+    finally:
+        session.close()
+
+    dry_summary = migrate_exports(dry_run=True)
+    assert dry_summary["dry_run"] is True
+    assert dry_summary["updated"] >= 1
+
+    session = TestingSessionLocal()
+    try:
+        untouched = session.get(models.ExecutionNarrativeExport, export_id)
+        assert untouched is not None
+        assert untouched.workflow_template_snapshot_id is None
+        assert untouched.workflow_template_snapshot == {}
+    finally:
+        session.close()
+
+    commit_summary = migrate_exports(dry_run=False)
+    assert commit_summary["dry_run"] is False
+
+    session = TestingSessionLocal()
+    try:
+        refreshed = session.get(models.ExecutionNarrativeExport, export_id)
+        assert refreshed is not None
+        assert refreshed.workflow_template_snapshot_id == snapshot_id
+        assert refreshed.workflow_template_key == "dry-run-migration"
+        assert refreshed.workflow_template_version == 1
+        assert refreshed.workflow_template_snapshot["template_id"] == str(template_id)
+    finally:
+        session.close()
+
 def test_preview_requires_published_snapshot(client):
     headers, user_id = admin_headers()
 

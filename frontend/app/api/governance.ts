@@ -30,6 +30,9 @@ import type {
   GovernanceOverdueStageTrendBucket,
   GovernanceStageMetrics,
   GovernanceStageDetailMetrics,
+  GovernanceGuardrailHealthReport,
+  GovernanceGuardrailHealthTotals,
+  GovernanceGuardrailQueueEntry,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -124,6 +127,18 @@ export const governanceApi = {
       { params: { ...params, view: 'reviewer' } },
     )
     return mapGovernanceReviewerCadenceReport(response.data)
+  },
+  async getGuardrailHealth(params?: { execution_id?: string; limit?: number | null }) {
+    const response = await api.get<GovernanceGuardrailHealthReport>(
+      '/api/governance/guardrails/health',
+      {
+        params: {
+          execution_id: params?.execution_id ?? undefined,
+          limit: params?.limit ?? undefined,
+        },
+      },
+    )
+    return mapGovernanceGuardrailHealthReport(response.data)
   },
   async getOverrideRecommendations(params?: { execution_id?: string; limit?: number | null }) {
     const response = await api.get<GovernanceOverrideRecommendationReport>(
@@ -504,4 +519,81 @@ export const mapGovernanceReviewerCadenceReport = (
 ): GovernanceReviewerCadenceReport => ({
   reviewers: report.reviewers.map((item) => mapGovernanceReviewerCadence(item)),
   totals: mapGovernanceReviewerCadenceTotals(report.totals),
+})
+
+const mapGovernanceGuardrailStateBreakdown = (
+  breakdown: any,
+): Record<string, number> => {
+  const result: Record<string, number> = {}
+  if (breakdown && typeof breakdown === 'object') {
+    Object.entries(breakdown).forEach(([key, value]) => {
+      const numeric = Number(value ?? 0)
+      result[String(key)] = Number.isFinite(numeric) ? numeric : 0
+    })
+  }
+  return result
+}
+
+const mapGovernanceGuardrailHealthTotals = (
+  totals: any,
+): GovernanceGuardrailHealthTotals => ({
+  total_exports: Number(totals?.total_exports ?? 0),
+  blocked: Number(totals?.blocked ?? 0),
+  awaiting_approval: Number(totals?.awaiting_approval ?? 0),
+  queued: Number(totals?.queued ?? 0),
+  ready: Number(totals?.ready ?? 0),
+  failed: Number(totals?.failed ?? 0),
+})
+
+const mapGovernanceGuardrailQueueEntry = (
+  entry: any,
+): GovernanceGuardrailQueueEntry => ({
+  export_id: String(entry?.export_id ?? ''),
+  execution_id: String(entry?.execution_id ?? ''),
+  version:
+    entry?.version === undefined || entry?.version === null
+      ? null
+      : Number(entry.version),
+  state: String(entry?.state ?? 'unknown'),
+  event: entry?.event != null ? String(entry.event) : null,
+  approval_status: String(entry?.approval_status ?? ''),
+  artifact_status: String(entry?.artifact_status ?? ''),
+  packaging_attempts: Number(entry?.packaging_attempts ?? 0),
+  guardrail_state:
+    entry?.guardrail_state === 'clear' || entry?.guardrail_state === 'blocked'
+      ? entry.guardrail_state
+      : null,
+  projected_delay_minutes:
+    entry?.projected_delay_minutes === undefined ||
+    entry?.projected_delay_minutes === null
+      ? null
+      : Number(entry.projected_delay_minutes),
+  pending_stage_id:
+    entry?.pending_stage_id != null ? String(entry.pending_stage_id) : null,
+  pending_stage_index:
+    entry?.pending_stage_index === undefined || entry?.pending_stage_index === null
+      ? null
+      : Number(entry.pending_stage_index),
+  pending_stage_status:
+    entry?.pending_stage_status != null
+      ? String(entry.pending_stage_status)
+      : null,
+  pending_stage_due_at:
+    entry?.pending_stage_due_at != null
+      ? String(entry.pending_stage_due_at)
+      : null,
+  updated_at: entry?.updated_at != null ? String(entry.updated_at) : null,
+  context: entry?.context && typeof entry.context === 'object' ? entry.context : {},
+})
+
+export const mapGovernanceGuardrailHealthReport = (
+  report: any,
+): GovernanceGuardrailHealthReport => ({
+  totals: mapGovernanceGuardrailHealthTotals(report?.totals ?? {}),
+  state_breakdown: mapGovernanceGuardrailStateBreakdown(
+    report?.state_breakdown ?? {},
+  ),
+  queue: Array.isArray(report?.queue)
+    ? report.queue.map((item) => mapGovernanceGuardrailQueueEntry(item))
+    : [],
 })

@@ -508,6 +508,25 @@ export const useGovernanceBaselines = (
   })
 }
 
+export const useGuardrailHealth = (
+  options?: { executionId?: string | null; limit?: number },
+) => {
+  return useQuery({
+    queryKey: [
+      'governance',
+      'guardrail-health',
+      options?.executionId ?? null,
+      options?.limit ?? 50,
+    ],
+    queryFn: async () => {
+      return governanceApi.getGuardrailHealth({
+        execution_id: options?.executionId ?? undefined,
+        limit: options?.limit ?? undefined,
+      })
+    },
+  })
+}
+
 type SubmitBaselinePayload = Omit<BaselineSubmissionDraft, 'execution_id'> & {
   execution_id?: string
 }

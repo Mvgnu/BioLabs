@@ -2,11 +2,11 @@
 
 - purpose: catalogue every currently implemented narrative export initiation surface and record governance enforcement coverage
 - status: draft
-- updated: 2025-07-09
+- updated: 2025-07-10
 - related_docs: docs/approval_workflow_design.md, docs/narrative_lifecycle_overview.md
 
 ## Overview
-The compliance stack now persists approval ladders, guardrail simulations, and packaging history, yet several export entry points still bypass the shared enforcement contract. This audit enumerates every discovered initiation surface and highlights whether `approval_ladders.record_packaging_queue_state` or equivalent blockers execute before an export artifact leaves the system.
+The compliance stack now persists approval ladders, guardrail simulations, packaging history, and lightweight guardrail health telemetry. This audit enumerates every discovered initiation surface and highlights whether `approval_ladders.record_packaging_queue_state` or equivalent blockers execute before an export artifact leaves the system.
 
 ## Request & API Surfaces
 | Surface | File / Function | Guardrail State | Notes |
@@ -33,8 +33,8 @@ The compliance stack now persists approval ladders, guardrail simulations, and p
 
 ## Outstanding Actions
 1. Continue auditing future export additions to ensure they reuse `dispatch_export_for_packaging[_by_id]` or land with a deprecation path plus guardrail telemetry.
-2. Extend CLI regression coverage to include dry-run vs. commit migration scenarios once follow-on enforcement hooks are prioritised.
-3. Maintain the operator SOP (`docs/governance/operator_sop.md`) alongside future enforcement changes so dashboard guidance stays accurate.
+2. Maintain the operator SOP (`docs/governance/operator_sop.md`) alongside future enforcement changes so dashboard guidance stays accurate.
+3. Continue enriching guardrail dashboards with cloning planner and asset lifecycle telemetry once those modules reuse the shared packaging helpers.
 
 ## Test Coverage Snapshot
 - `backend/app/tests/test_experiment_console.py::test_narrative_export_packaging_blocked_until_final_stage` asserts API-to-worker blocking semantics and event emission.【F:backend/app/tests/test_experiment_console.py†L736-L848】

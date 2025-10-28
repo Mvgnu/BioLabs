@@ -2,7 +2,7 @@
 
 - purpose: Provide a step-by-step playbook for operators enforcing narrative export guardrails across API, worker, scheduler, CLI, and UI surfaces.
 - status: pilot
-- updated: 2025-07-09
+- updated: 2025-07-10
 - related_docs: docs/governance/export_enforcement_audit.md, docs/governance/analytics_extension_plan.md, docs/governance/preview.md
 
 ## 1. Enforcement Surfaces
@@ -23,13 +23,14 @@
 - Celery beat schedules call `monitor_narrative_approval_slas` every 15 minutes. When stage SLAs breach, the task logs `stage_overdue` and `stage_escalated` events, revalidates guardrails, and invalidates analytics caches.
 
 ### 1.5 UI Dashboards
-- The governance overdue dashboard (`/governance/dashboard`) visualises overdue volumes, role pressure, and export-level guardrails. It consumes the analytics meta payload populated by the tasks above and exposes mailto escalation affordances tied to the SOP.
+- The guardrail health dashboard (`/governance/dashboard`) now leads with a queue summary that reuses the sanitised packaging payloads emitted by API, CLI, workers, and SLA monitors. Operators should resolve any `Guardrail blocked` entries before attempting retries.
+- The overdue dashboard (`/governance/dashboard`) visualises overdue volumes, role pressure, and export-level guardrails. It consumes the analytics meta payload populated by the tasks above and exposes mailto escalation affordances tied to the SOP.
 - Inventory CSV downloads are no longer surfaced in UI due to guardrail deprecation; dashboards should link to approved asset dossiers instead.
 
 ## 2. Escalation Procedure
 
-1. Open `/governance/dashboard` to review the "Overdue stage queue" table and role pressure map.
-2. Prioritise stages with `Active breaches` or mean open minutes exceeding 60 minutes.
+1. Open `/governance/dashboard` and clear any `Guardrail blocked` queue entries surfaced by the guardrail health cards before progressing to overdue escalations.
+2. Review the "Overdue stage queue" table and role pressure map for stages breaching SLA tolerance (mean open minutes > 60).
 3. Click the **Escalate** action beside a stage to email `governance-ops@biolabs.local` with a pre-filled subject referencing the export identifier. Attach context from the dashboard (role, detected timestamp) and the guardrail forecast surfaced in CLI or API payloads.
 4. Document the escalation outcome in the execution timeline via the experiment console or governance workspace.
 5. After remediation, re-run `python -m backend.app.cli queue-narrative-export <export-id>` to confirm `queued` is `True`. The CLI mirrors the guardrail checks used by workers.
@@ -39,7 +40,7 @@
 - [ ] Confirm `verify_export_packaging_guardrails` blocks packaging when any stage returns to `in_progress`.
 - [ ] Ensure `monitor_narrative_approval_slas` records `narrative_export.packaging.awaiting_approval` alongside escalation events and that `packaging_queue_state.context` mirrors pending stage metadata after sanitisation.
 - [ ] Confirm notebook and inventory export attempts log guardrail block events and produce `409 Conflict` responses.
-- [ ] Validate `/governance/dashboard` reflects the latest overdue counts after cache invalidation (max 30s delay).
+- [ ] Validate `/governance/dashboard` reflects the latest guardrail queue states and overdue counts after cache invalidation (max 30s delay).
 - [ ] Update Problem Trackers under `/problems/` if enforcement inconsistencies persist across two monitoring cycles.
 
 ## 4. References
@@ -47,4 +48,5 @@
 - `backend/app/services/approval_ladders.py` – shared guardrail helpers (`record_packaging_queue_state`, `verify_export_packaging_guardrails`).
 - `backend/app/workers/packaging.py` – Celery worker guarding packaging side effects.
 - `backend/app/tasks.py` – SLA monitor integrating guardrail revalidation.
+- `frontend/app/components/governance/GuardrailHealthDashboard.tsx` – guardrail queue dashboard consuming sanitised packaging payloads.
 - `frontend/app/components/governance/OverdueDashboard.tsx` – dashboard implementation consuming analytics meta.

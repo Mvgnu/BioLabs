@@ -801,6 +801,46 @@ export interface GovernanceGuardrailSimulationRecord {
   projected_delay_minutes: number
 }
 
+export interface GovernanceGuardrailQueueEntry {
+  // purpose: queue entry summarising sanitized guardrail dispatch state
+  // status: pilot
+  export_id: string
+  execution_id: string
+  version?: number | null
+  state: string
+  event?: string | null
+  approval_status: string
+  artifact_status: string
+  packaging_attempts: number
+  guardrail_state?: 'clear' | 'blocked' | null
+  projected_delay_minutes?: number | null
+  pending_stage_id?: string | null
+  pending_stage_index?: number | null
+  pending_stage_status?: string | null
+  pending_stage_due_at?: string | null
+  updated_at?: string | null
+  context: Record<string, any>
+}
+
+export interface GovernanceGuardrailHealthTotals {
+  // purpose: aggregated guardrail queue metrics for dashboard cards
+  // status: pilot
+  total_exports: number
+  blocked: number
+  awaiting_approval: number
+  queued: number
+  ready: number
+  failed: number
+}
+
+export interface GovernanceGuardrailHealthReport {
+  // purpose: guardrail queue health response for governance operators
+  // status: pilot
+  totals: GovernanceGuardrailHealthTotals
+  state_breakdown: Record<string, number>
+  queue: GovernanceGuardrailQueueEntry[]
+}
+
 export interface BaselineLifecycleLabel {
   key: string
   value: string

@@ -12,5 +12,6 @@
 - `LadderBuilder`: React Flow powered stage designer with palette + inspector.
 - `LadderSimulationWidget`: Scientist-facing sandbox that calls the preview API using draft ladder data for scenario comparisons and surfaces persisted guardrail simulations beside ad-hoc previews.
 - `OverdueDashboard`: Operator dashboard summarising overdue ladder analytics with escalation affordances powered by governance meta payloads.
+- `GuardrailHealthDashboard`: Surfaces sanitized packaging queue telemetry, blocked export counts, and pending stage context so governance operators can monitor guardrail enforcement health without querying raw events.
 
 Each component embeds machine-readable metadata comments to satisfy Biolab documentation standards.
