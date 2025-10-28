@@ -615,12 +615,26 @@ class GovernanceOverrideAction(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    reversal_lock_token = Column(String(64), index=True, nullable=True)
+    reversal_lock_acquired_at = Column(DateTime, nullable=True)
+    reversal_lock_actor_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    reversal_lock_actor = relationship(
+        "User", foreign_keys=[reversal_lock_actor_id], lazy="joined"
+    )
 
     @property
     def cooldown_expires_at(self) -> datetime | None:
         if self.reversal_event is None:
             return None
         return self.reversal_event.cooldown_expires_at
+
+    @property
+    def cooldown_window_minutes(self) -> int | None:
+        if self.reversal_event is None:
+            return None
+        return self.reversal_event.cooldown_window_minutes
 
     @property
     def reversal_event_payload(self) -> dict[str, Any] | None:
@@ -648,6 +662,7 @@ class GovernanceOverrideAction(Base):
             "cooldown_expires_at": event.cooldown_expires_at.isoformat()
             if event.cooldown_expires_at
             else None,
+            "cooldown_window_minutes": event.cooldown_window_minutes,
             "diffs": diffs,
             "previous_detail": detail.get("previous_detail", {}),
             "current_detail": detail.get("current_detail", {}),
@@ -740,11 +755,19 @@ class GovernanceOverrideReversalEvent(Base):
     detail = Column(JSON, default=dict, nullable=False)
     meta = Column("metadata", JSON, default=dict, nullable=False)
     cooldown_expires_at = Column(DateTime, nullable=True)
+    cooldown_window_minutes = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
 
     override = relationship("GovernanceOverrideAction", back_populates="reversal_event")
     baseline = relationship("GovernanceBaselineVersion")
     actor = relationship("User")
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "cooldown_window_minutes IS NULL OR cooldown_window_minutes >= 0",
+            name="ck_governance_override_reversal_events_window_non_negative",
+        ),
+    )
 
 class ExecutionNarrativeWorkflowTemplateAssignment(Base):
     __tablename__ = "execution_narrative_workflow_template_assignments"

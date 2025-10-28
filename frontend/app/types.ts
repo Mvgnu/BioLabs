@@ -663,6 +663,7 @@ export interface GovernanceOverrideReversalDetail {
   actor?: GovernanceActorSummary | null
   created_at?: string | null
   cooldown_expires_at?: string | null
+  cooldown_window_minutes?: number | null
   diffs: GovernanceOverrideReversalDiff[]
   previous_detail: Record<string, any>
   current_detail: Record<string, any>
@@ -686,6 +687,7 @@ export interface GovernanceOverrideActionRecord {
   lineage?: GovernanceOverrideLineageContext | null
   reversal_event?: GovernanceOverrideReversalDetail | null
   cooldown_expires_at?: string | null
+  cooldown_window_minutes?: number | null
 }
 
 export interface GovernanceOverrideActionRequest {

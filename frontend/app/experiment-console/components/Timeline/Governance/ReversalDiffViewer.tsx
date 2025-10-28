@@ -39,6 +39,9 @@ const formatTimestamp = (value: string | null | undefined) => {
 const ReversalDiffViewer = ({ reversal }: ReversalDiffViewerProps) => {
   const executedAt = formatTimestamp(reversal.created_at)
   const cooldownUntil = formatTimestamp(reversal.cooldown_expires_at)
+  const cooldownWindow = Number.isFinite(reversal.cooldown_window_minutes ?? NaN)
+    ? reversal.cooldown_window_minutes
+    : null
 
   return (
     <section className="space-y-3">
@@ -48,6 +51,9 @@ const ReversalDiffViewer = ({ reversal }: ReversalDiffViewerProps) => {
           {executedAt && <span>Executed {executedAt}</span>}
           {reversal.actor?.name && <span>by {reversal.actor.name}</span>}
           {cooldownUntil && <span>Cooldown until {cooldownUntil}</span>}
+          {cooldownWindow !== null && (
+            <span>Window {cooldownWindow} min</span>
+          )}
         </div>
       </header>
       <dl className="grid grid-cols-1 gap-2 text-sm">

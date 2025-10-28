@@ -184,6 +184,13 @@ const normaliseReversalDetail = (
     return null
   }
   const diffs = normaliseReversalDiffs(detail.diffs)
+  const rawWindow = detail.cooldown_window_minutes
+  const windowMinutes =
+    rawWindow === null || rawWindow === undefined
+      ? null
+      : Number.isFinite(Number(rawWindow))
+      ? Number(rawWindow)
+      : null
   return {
     id: String(detail.id ?? ''),
     override_id: String(detail.override_id ?? ''),
@@ -191,6 +198,7 @@ const normaliseReversalDetail = (
     actor: detail.actor ?? null,
     created_at: detail.created_at ?? null,
     cooldown_expires_at: detail.cooldown_expires_at ?? null,
+    cooldown_window_minutes: windowMinutes,
     diffs,
     previous_detail: detail.previous_detail ?? {},
     current_detail: detail.current_detail ?? {},
@@ -249,6 +257,18 @@ const mapGovernanceTimelineEntry = (entry: GovernanceDecisionTimelineEntry) => {
   }
   if (detail.cooldown_expires_at) {
     detail.cooldown_expires_at = String(detail.cooldown_expires_at)
+  }
+  if (nestedDetail.cooldown_window_minutes !== undefined) {
+    const parsedWindow = Number(nestedDetail.cooldown_window_minutes)
+    nestedDetail.cooldown_window_minutes = Number.isFinite(parsedWindow)
+      ? parsedWindow
+      : null
+  }
+  if (detail.cooldown_window_minutes !== undefined) {
+    const parsedWindow = Number(detail.cooldown_window_minutes)
+    detail.cooldown_window_minutes = Number.isFinite(parsedWindow)
+      ? parsedWindow
+      : null
   }
   if (detail.lineage_summary) {
     const summary = normaliseLineageSummary(detail.lineage_summary)
