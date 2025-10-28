@@ -10,7 +10,7 @@
 ### 1.1 API Dispatch
 - All narrative export creations (`POST /api/experiment-console/sessions/{execution_id}/exports/narrative`) initialise approval ladders and defer packaging until `services.approval_ladders.record_packaging_queue_state` allows dispatch.
 - Subsequent approval, delegation, and reset APIs reuse `services.approval_ladders.dispatch_export_for_packaging`, which now calls `verify_export_packaging_guardrails` to block side effects when stages reopen.
-- Operators reviewing exports through `/api/governance/exports/*` inherit the same enforcement contract.
+- Legacy notebook (`GET /api/notebook/entries/{entry_id}/export`) and inventory (`GET /api/inventory/export`) endpoints are formally deprecated. They emit guardrail block events and respond with `409 Conflict`, redirecting operators to narrative or DNA asset packaging workflows.
 
 ### 1.2 Celery Workers
 - `workers/packaging.py:package_execution_narrative_export` re-loads the export on every execution and invokes `verify_export_packaging_guardrails`. Pending ladders trigger a single `narrative_export.packaging.awaiting_approval` event with a compact `state` payload; repeated attempts reuse the persisted `packaging_queue_state` metadata instead of duplicating telemetry.
@@ -24,6 +24,7 @@
 
 ### 1.5 UI Dashboards
 - The governance overdue dashboard (`/governance/dashboard`) visualises overdue volumes, role pressure, and export-level guardrails. It consumes the analytics meta payload populated by the tasks above and exposes mailto escalation affordances tied to the SOP.
+- Inventory CSV downloads are no longer surfaced in UI due to guardrail deprecation; dashboards should link to approved asset dossiers instead.
 
 ## 2. Escalation Procedure
 
@@ -36,7 +37,8 @@
 ## 3. Verification Checklist
 
 - [ ] Confirm `verify_export_packaging_guardrails` blocks packaging when any stage returns to `in_progress`.
-- [ ] Ensure `monitor_narrative_approval_slas` records `narrative_export.packaging.awaiting_approval` alongside escalation events.
+- [ ] Ensure `monitor_narrative_approval_slas` records `narrative_export.packaging.awaiting_approval` alongside escalation events and that `packaging_queue_state.context` mirrors pending stage metadata.
+- [ ] Confirm notebook and inventory export attempts log guardrail block events and produce `409 Conflict` responses.
 - [ ] Validate `/governance/dashboard` reflects the latest overdue counts after cache invalidation (max 30s delay).
 - [ ] Update Problem Trackers under `/problems/` if enforcement inconsistencies persist across two monitoring cycles.
 

@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2025-07-08
+- Closed governance enforcement gaps by deprecating notebook and inventory export endpoints, logging guardrail block events, and redirecting operators to narrative/DNA packaging workflows.
+- Normalised packaging queue telemetry to emit `state/context` payloads and documented the contract for downstream dashboards and workers.
+- Added governance pytest coverage for deprecated export surfaces to prevent regressions and ensure guardrail events persist.
+
 ## 2025-07-07
 - Consolidated narrative packaging telemetry by deduplicating queue events, persisting `packaging_queue_state` metadata, and updating SOP/audit docs to document the minimal `state` payload contract.
 - Added governance pytest coverage ensuring guardrail events deduplicate when approval status remains unchanged.
