@@ -1,0 +1,156 @@
+import uuid
+
+from app import models
+from app.auth import create_access_token
+from .conftest import TestingSessionLocal
+
+
+def create_admin_headers():
+    email = f"admin+{uuid.uuid4()}@example.com"
+    token = create_access_token({"sub": email})
+    db = TestingSessionLocal()
+    try:
+        user = models.User(email=email, hashed_password="placeholder", is_admin=True)
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        user_id = str(user.id)
+    finally:
+        db.close()
+    return {"Authorization": f"Bearer {token}"}, user_id
+
+
+def test_governance_ladder_endpoints_flow(client):
+    headers, admin_id = create_admin_headers()
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Governance Ladder", "content": "Step"},
+        headers=headers,
+    ).json()
+
+    execution = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Governance Run"},
+        headers=headers,
+    ).json()
+
+    execution_id = execution["execution"]["id"]
+
+    export = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        json={
+            "approval_stages": [
+                {"required_role": "scientist", "name": "Scientist Review", "sla_hours": 1},
+                {"required_role": "qa", "name": "QA Review", "sla_hours": 2},
+            ]
+        },
+        headers=headers,
+    ).json()
+
+    export_id = export["id"]
+    first_stage_id = export["approval_stages"][0]["id"]
+    second_stage_id = export["approval_stages"][1]["id"]
+
+    ladder_response = client.get(
+        f"/api/governance/exports/{export_id}", headers=headers
+    )
+    assert ladder_response.status_code == 200, ladder_response.text
+    ladder_payload = ladder_response.json()
+    assert ladder_payload["approval_stage_count"] == 2
+    assert ladder_payload["approval_stages"][0]["status"] == "in_progress"
+
+    delegate_response = client.post(
+        f"/api/governance/exports/{export_id}/stages/{second_stage_id}/delegate",
+        json={"delegate_id": admin_id, "notes": "QA cover"},
+        headers=headers,
+    )
+    assert delegate_response.status_code == 200, delegate_response.text
+
+    approved_first = client.post(
+        f"/api/governance/exports/{export_id}/approve",
+        json={"status": "approved", "signature": "Scientist", "stage_id": first_stage_id},
+        headers=headers,
+    )
+    assert approved_first.status_code == 200, approved_first.text
+    approved_first_payload = approved_first.json()
+    assert approved_first_payload["current_stage"]["id"] == second_stage_id
+
+    approved_final = client.post(
+        f"/api/governance/exports/{export_id}/approve",
+        json={"status": "approved", "signature": "QA", "stage_id": second_stage_id},
+        headers=headers,
+    )
+    assert approved_final.status_code == 200, approved_final.text
+    approved_final_payload = approved_final.json()
+    assert approved_final_payload["approval_status"] == "approved"
+    assert approved_final_payload["approval_stage_count"] == 2
+
+    db = TestingSessionLocal()
+    try:
+        export_row = db.query(models.ExecutionNarrativeExport).filter(models.ExecutionNarrativeExport.id == uuid.UUID(export_id)).first()
+        assert export_row is not None
+        assert export_row.approval_status == "approved"
+        assert export_row.approved_at is not None
+    finally:
+        db.close()
+
+
+def test_governance_reset_stage(client):
+    headers, _ = create_admin_headers()
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Reset Ladder", "content": "Step"},
+        headers=headers,
+    ).json()
+
+    execution = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Reset Run"},
+        headers=headers,
+    ).json()
+
+    execution_id = execution["execution"]["id"]
+
+    export = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        json={
+            "approval_stages": [
+                {"required_role": "scientist", "name": "Scientist Review", "sla_hours": 1},
+                {"required_role": "qa", "name": "QA Review", "sla_hours": 2},
+            ]
+        },
+        headers=headers,
+    ).json()
+
+    export_id = export["id"]
+    first_stage_id = export["approval_stages"][0]["id"]
+    second_stage_id = export["approval_stages"][1]["id"]
+
+    first_stage_response = client.post(
+        f"/api/governance/exports/{export_id}/approve",
+        json={"status": "approved", "signature": "Scientist", "stage_id": first_stage_id},
+        headers=headers,
+    )
+    assert first_stage_response.status_code == 200, first_stage_response.text
+
+    reset_response = client.post(
+        f"/api/governance/exports/{export_id}/stages/{second_stage_id}/reset",
+        json={"notes": "Retry QA"},
+        headers=headers,
+    )
+    assert reset_response.status_code == 200, reset_response.text
+    reset_payload = reset_response.json()
+    stage_two = next(stage for stage in reset_payload["approval_stages"] if stage["id"] == second_stage_id)
+    assert stage_two["status"] == "in_progress"
+    assert reset_payload["approval_status"] == "pending"
+
+    db = TestingSessionLocal()
+    try:
+        export_row = db.query(models.ExecutionNarrativeExport).filter(models.ExecutionNarrativeExport.id == uuid.UUID(export_id)).first()
+        assert export_row.current_stage_id == uuid.UUID(second_stage_id)
+        assert export_row.approval_status == "pending"
+        assert export_row.current_stage_started_at is not None
+    finally:
+        db.close()

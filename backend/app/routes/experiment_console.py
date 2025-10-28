@@ -22,6 +22,7 @@ from .. import models, schemas, simulation
 from .. import pubsub
 from ..eventlog import record_execution_event
 from ..narratives import render_execution_narrative, render_preview_narrative
+from ..services import approval_ladders
 from ..auth import get_current_user
 from ..database import get_db
 from ..recommendations.timeline import load_governance_decision_timeline
@@ -3658,35 +3659,12 @@ async def create_execution_narrative_export(
                 detail="Approval stage references unknown users",
             )
 
-    export_record.approval_stage_count = len(stage_blueprints)
-
-    for index, stage_def in enumerate(stage_blueprints, start=1):
-        status = "in_progress" if index == 1 else "pending"
-        started_at = generated_at if status == "in_progress" else None
-        due_at = None
-        if stage_def.sla_hours and status == "in_progress":
-            due_at = generated_at + timedelta(hours=stage_def.sla_hours)
-        stage = models.ExecutionNarrativeApprovalStage(
-            sequence_index=index,
-            name=stage_def.name,
-            required_role=stage_def.required_role,
-            status=status,
-            sla_hours=stage_def.sla_hours,
-            started_at=started_at,
-            due_at=due_at,
-            assignee_id=stage_def.assignee_id,
-            delegated_to_id=stage_def.delegate_id,
-        )
-        stage.meta = stage_def.metadata or {}
-        if stage.assignee_id:
-            stage.assignee = resolved_users[stage.assignee_id]
-        if stage.delegated_to_id:
-            stage.delegated_to = resolved_users[stage.delegated_to_id]
-        export_record.approval_stages.append(stage)
-
-    if export_record.approval_stages:
-        export_record.current_stage = export_record.approval_stages[0]
-        export_record.current_stage_started_at = generated_at
+    approval_ladders.initialise_export_ladder(
+        export_record,
+        stage_blueprints,
+        resolved_users,
+        now=generated_at,
+    )
 
     def _resolve_event(event_id: UUID) -> models.ExecutionEvent:
         event = event_map.get(event_id)
@@ -4103,166 +4081,13 @@ async def approve_execution_narrative_export(
     if not export_record:
         raise HTTPException(status_code=404, detail="Narrative export not found")
 
-    should_queue_packaging = False
-
-    stage_lookup = {
-        stage.id: stage for stage in sorted(
-            export_record.approval_stages,
-            key=lambda item: item.sequence_index,
-        )
-    }
-
-    active_stage_id = approval.stage_id or export_record.current_stage_id
-    if not active_stage_id:
-        raise HTTPException(status_code=409, detail="No active approval stage available")
-
-    stage = stage_lookup.get(UUID(str(active_stage_id)))
-    if not stage:
-        raise HTTPException(status_code=404, detail="Approval stage not found")
-    if stage.status != "in_progress":
-        raise HTTPException(status_code=409, detail="Approval stage is not active")
-
-    approver = user
-    if approval.approver_id and approval.approver_id != user.id:
-        approver = (
-            db.query(models.User)
-            .filter(models.User.id == approval.approver_id)
-            .first()
-        )
-        if not approver:
-            raise HTTPException(status_code=404, detail="Approver not found")
-        if approver.id != user.id and not user.is_admin:
-            raise HTTPException(
-                status_code=403,
-                detail="Only administrators may sign on behalf of another user",
-            )
-
-    allowed_actor_ids = {
-        value
-        for value in (stage.assignee_id, stage.delegated_to_id)
-        if value is not None
-    }
-    if allowed_actor_ids and approver.id not in allowed_actor_ids and not user.is_admin:
-        raise HTTPException(status_code=403, detail="User not authorized for this stage")
-
-    now = datetime.now(timezone.utc)
-
-    stage.status = "approved" if approval.status == "approved" else "rejected"
-    stage.completed_at = now
-    if approval.notes:
-        stage.notes = approval.notes
-
-    action = models.ExecutionNarrativeApprovalAction(
-        actor_id=approver.id,
-        action_type=approval.status,
-        signature=approval.signature,
-        notes=approval.notes,
-    )
-    action.meta = approval.metadata or {}
-    stage.actions.append(action)
-
-    export_record.approval_signature = approval.signature
-
-    next_stage = None
-    for candidate in export_record.approval_stages:
-        if candidate.sequence_index > stage.sequence_index:
-            next_stage = candidate
-            break
-
-    if approval.status == "approved" and next_stage:
-        next_stage.status = "in_progress"
-        next_stage.started_at = now
-        if next_stage.sla_hours:
-            next_stage.due_at = now + timedelta(hours=next_stage.sla_hours)
-        export_record.current_stage = next_stage
-        export_record.current_stage_started_at = now
-        export_record.approval_status = "pending"
-    elif approval.status == "approved":
-        export_record.current_stage = None
-        export_record.current_stage_started_at = None
-        export_record.approval_status = "approved"
-        export_record.approved_by_id = approver.id
-        export_record.approved_by = approver
-        export_record.approved_at = now
-        export_record.approval_completed_at = now
-        should_queue_packaging = True
-    else:
-        export_record.current_stage = None
-        export_record.current_stage_started_at = None
-        export_record.approval_status = "rejected"
-        export_record.approved_by_id = approver.id
-        export_record.approved_by = approver
-        export_record.approved_at = now
-        export_record.approval_completed_at = now
-        for candidate in export_record.approval_stages:
-            if candidate.sequence_index > stage.sequence_index:
-                candidate.status = "reset"
-                candidate.started_at = None
-                candidate.due_at = None
-
-    record_execution_event(
+    result = approval_ladders.record_stage_decision(
         db,
-        export_record.execution,
-        "narrative_export.approval.stage_completed",
-        {
-            "export_id": str(export_record.id),
-            "stage_id": str(stage.id),
-            "sequence_index": stage.sequence_index,
-            "status": stage.status,
-            "signature": approval.signature,
-            "actor_id": str(approver.id),
-        },
-        actor=user,
+        export=export_record,
+        approval=approval,
+        acting_user=user,
     )
-    db.flush()
-
-    if next_stage and approval.status == "approved":
-        record_execution_event(
-            db,
-            export_record.execution,
-            "narrative_export.approval.stage_started",
-            {
-                "export_id": str(export_record.id),
-                "stage_id": str(next_stage.id),
-                "sequence_index": next_stage.sequence_index,
-                "required_role": next_stage.required_role,
-                "assignee_id": str(next_stage.assignee_id)
-                if next_stage.assignee_id
-                else None,
-                "due_at": next_stage.due_at.isoformat() if next_stage.due_at else None,
-            },
-            actor=user,
-        )
-        db.flush()
-
-    if not next_stage and approval.status == "approved":
-        record_execution_event(
-            db,
-            export_record.execution,
-            "narrative_export.approval.finalized",
-            {
-                "export_id": str(export_record.id),
-                "status": "approved",
-                "completed_at": now.isoformat(),
-            },
-            actor=approver,
-        )
-        db.flush()
-
-    if approval.status == "rejected":
-        record_execution_event(
-            db,
-            export_record.execution,
-            "narrative_export.approval.rejected",
-            {
-                "export_id": str(export_record.id),
-                "stage_id": str(stage.id),
-                "sequence_index": stage.sequence_index,
-                "completed_at": now.isoformat(),
-            },
-            actor=approver,
-        )
-        db.flush()
+    should_queue_packaging = result.should_queue_packaging
 
     db.commit()
     db.refresh(export_record)
@@ -4344,55 +4169,12 @@ async def delegate_execution_narrative_approval_stage(
     if not export_record:
         raise HTTPException(status_code=404, detail="Narrative export not found")
 
-    stage = next((s for s in export_record.approval_stages if s.id == stage_uuid), None)
-    if not stage:
-        raise HTTPException(status_code=404, detail="Approval stage not found")
-
-    delegate = (
-        db.query(models.User)
-        .filter(models.User.id == request.delegate_id)
-        .first()
-    )
-    if not delegate:
-        raise HTTPException(status_code=404, detail="Delegate user not found")
-
-    if request.due_at:
-        due_at = request.due_at
-        if due_at.tzinfo is None:
-            due_at = due_at.replace(tzinfo=timezone.utc)
-        stage.due_at = due_at
-    elif stage.sla_hours and stage.started_at:
-        stage.due_at = stage.started_at + timedelta(hours=stage.sla_hours)
-
-    stage.delegated_to_id = delegate.id
-    stage.delegated_to = delegate
-    if request.notes:
-        stage.notes = request.notes
-    if request.metadata:
-        current_meta = dict(stage.meta or {})
-        current_meta.update(request.metadata)
-        stage.meta = current_meta
-
-    action = models.ExecutionNarrativeApprovalAction(
-        actor_id=user.id,
-        action_type="delegated",
-        notes=request.notes,
-        delegation_target_id=delegate.id,
-    )
-    action.meta = request.metadata or {}
-    stage.actions.append(action)
-
-    record_execution_event(
+    export_record = approval_ladders.delegate_stage(
         db,
-        export_record.execution,
-        "narrative_export.approval.delegated",
-        {
-            "export_id": str(export_record.id),
-            "stage_id": str(stage.id),
-            "delegate_id": str(delegate.id),
-            "due_at": stage.due_at.isoformat() if stage.due_at else None,
-        },
-        actor=user,
+        export=export_record,
+        stage_id=stage_uuid,
+        payload=request,
+        acting_user=user,
     )
 
     db.commit()
@@ -4456,72 +4238,13 @@ async def reset_execution_narrative_approval_stage(
     if not export_record:
         raise HTTPException(status_code=404, detail="Narrative export not found")
 
-    stage = next((s for s in export_record.approval_stages if s.id == stage_uuid), None)
-    if not stage:
-        raise HTTPException(status_code=404, detail="Approval stage not found")
-
-    now = datetime.now(timezone.utc)
-    stage.status = "in_progress"
-    stage.started_at = now
-    stage.completed_at = None
-    stage.due_at = (
-        now + timedelta(hours=stage.sla_hours)
-        if stage.sla_hours
-        else None
-    )
-    stage.overdue_notified_at = None
-    if request.notes:
-        stage.notes = request.notes
-    if request.metadata:
-        current_meta = dict(stage.meta or {})
-        current_meta.update(request.metadata)
-        stage.meta = current_meta
-
-    export_record.current_stage = stage
-    export_record.current_stage_started_at = now
-    export_record.approval_status = "pending"
-    export_record.approved_by_id = None
-    export_record.approved_by = None
-    export_record.approved_at = None
-    export_record.approval_completed_at = None
-    export_record.approval_signature = None
-
-    action = models.ExecutionNarrativeApprovalAction(
-        actor_id=user.id,
-        action_type="reset",
-        notes=request.notes,
-    )
-    action.meta = request.metadata or {}
-    stage.actions.append(action)
-
-    record_execution_event(
+    export_record = approval_ladders.reset_stage(
         db,
-        export_record.execution,
-        "narrative_export.approval.stage_reset",
-        {
-            "export_id": str(export_record.id),
-            "stage_id": str(stage.id),
-            "sequence_index": stage.sequence_index,
-        },
-        actor=user,
+        export=export_record,
+        stage_id=stage_uuid,
+        payload=request,
+        acting_user=user,
     )
-    db.flush()
-
-    record_execution_event(
-        db,
-        export_record.execution,
-        "narrative_export.approval.stage_started",
-        {
-            "export_id": str(export_record.id),
-            "stage_id": str(stage.id),
-            "sequence_index": stage.sequence_index,
-            "required_role": stage.required_role,
-            "assignee_id": str(stage.assignee_id) if stage.assignee_id else None,
-            "due_at": stage.due_at.isoformat() if stage.due_at else None,
-        },
-        actor=user,
-    )
-    db.flush()
 
     db.commit()
     db.refresh(export_record)
@@ -4725,4 +4448,3 @@ async def update_step_status(
     db.refresh(execution)
 
     return _assemble_session(db, execution)
-

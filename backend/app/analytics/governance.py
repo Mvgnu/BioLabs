@@ -145,6 +145,27 @@ def _store_governance_report_cache_entry(
         _GOVERNANCE_ANALYTICS_CACHE[cache_key] = entry
 
 
+def _collect_stage_metrics(export: models.ExecutionNarrativeExport) -> dict[str, int]:
+    """Return counts of approval stages grouped by status."""
+
+    metrics: dict[str, int] = {"total": export.approval_stage_count or 0}
+    for stage in export.approval_stages:
+        metrics[stage.status] = metrics.get(stage.status, 0) + 1
+    return metrics
+
+
+def _include_stage_metrics(
+    report: schemas.GovernanceAnalyticsReport,
+    exports: Iterable[models.ExecutionNarrativeExport],
+) -> None:
+    """Attach stage metrics to analytics meta payload."""
+
+    stage_metrics = dict(report.meta.get("approval_stage_metrics", {}))
+    for export in exports:
+        stage_metrics[str(export.id)] = _collect_stage_metrics(export)
+    report.meta["approval_stage_metrics"] = stage_metrics
+
+
 def invalidate_governance_analytics_cache(
     execution_ids: Iterable[UUID | str] | None = None,
 ) -> None:
@@ -1003,6 +1024,18 @@ def compute_governance_analytics(
     cache_scope_ids = set(execution_scope_ids)
     if execution_ids:
         cache_scope_ids.update(execution_ids)
+    ladder_exports: list[models.ExecutionNarrativeExport] = []
+    if cache_scope_ids:
+        ladder_exports = (
+            db.query(models.ExecutionNarrativeExport)
+            .options(
+                joinedload(models.ExecutionNarrativeExport.approval_stages)
+            )
+            .filter(models.ExecutionNarrativeExport.execution_id.in_(list(cache_scope_ids)))
+            .all()
+        )
+        _include_stage_metrics(report, ladder_exports)
+
     _store_governance_report_cache_entry(
         cache_key,
         report,
