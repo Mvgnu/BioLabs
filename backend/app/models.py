@@ -615,6 +615,12 @@ class GovernanceOverrideAction(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    coaching_notes = relationship(
+        "GovernanceCoachingNote",
+        back_populates="override",
+        cascade="all, delete-orphan",
+        order_by="GovernanceCoachingNote.created_at",
+    )
     reversal_lock_token = Column(String(64), index=True, nullable=True)
     reversal_lock_acquired_at = Column(DateTime, nullable=True)
     reversal_lock_actor_id = Column(
@@ -766,6 +772,91 @@ class GovernanceOverrideReversalEvent(Base):
         sa.CheckConstraint(
             "cooldown_window_minutes IS NULL OR cooldown_window_minutes >= 0",
             name="ck_governance_override_reversal_events_window_non_negative",
+        ),
+    )
+
+
+class GovernanceCoachingNote(Base):
+    __tablename__ = "governance_coaching_notes"
+
+    # purpose: persist reviewer coaching rationale threads tied to governance overrides
+    # status: experimental
+    # depends_on: governance_override_actions, governance_baseline_versions, protocol_executions, users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    override_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_override_actions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    baseline_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_baseline_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    parent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_coaching_notes.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    thread_root_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_coaching_notes.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    author_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    body = Column(Text, nullable=False)
+    moderation_state = Column(String, nullable=False, default="published")
+    meta = Column("metadata", JSON, default=dict, nullable=False)
+    last_edited_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    override = relationship("GovernanceOverrideAction", back_populates="coaching_notes")
+    baseline = relationship("GovernanceBaselineVersion")
+    execution = relationship("ProtocolExecution")
+    author = relationship("User")
+    parent = relationship(
+        "GovernanceCoachingNote",
+        remote_side=[id],
+        foreign_keys=[parent_id],
+        back_populates="replies",
+    )
+    thread_root = relationship(
+        "GovernanceCoachingNote",
+        remote_side=[id],
+        foreign_keys=[thread_root_id],
+    )
+    replies = relationship(
+        "GovernanceCoachingNote",
+        foreign_keys=[parent_id],
+        back_populates="parent",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        sa.CheckConstraint(
+            "moderation_state IN ('draft', 'published', 'flagged', 'resolved', 'removed')",
+            name="ck_governance_coaching_notes_state",
         ),
     )
 

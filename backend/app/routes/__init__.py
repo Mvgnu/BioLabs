@@ -38,6 +38,7 @@ modules = [
     'forum',
     'community',
     'governance',
+    'governance_notes',
     'workflows',
 ]
 
