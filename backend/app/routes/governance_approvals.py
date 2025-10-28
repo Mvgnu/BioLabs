@@ -80,15 +80,15 @@ def admin_approve_execution_export(
     db.refresh(export_record)
 
     if result.should_queue_packaging:
-        dispatch_ready = approval_ladders.record_packaging_queue_state(
+        queued_packaging = approval_ladders.dispatch_export_for_packaging(
             db,
             export=export_record,
             actor=user,
+            enqueue=enqueue_narrative_export_packaging,
         )
         db.commit()
-        if dispatch_ready:
-            enqueue_narrative_export_packaging(export_record.id)
-        db.refresh(export_record)
+        if queued_packaging:
+            db.refresh(export_record)
 
     approval_ladders.attach_guardrail_forecast(db, export_record)
     approval_ladders.attach_guardrail_history(db, export_record)
