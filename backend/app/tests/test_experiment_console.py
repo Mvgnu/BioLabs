@@ -604,6 +604,25 @@ def test_multistage_approval_delegation_and_reset(client):
     ).json()["events"]
     assert any(event["event_type"] == "narrative_export.approval.stage_overdue" for event in timeline)
 
+    db = TestingSessionLocal()
+    try:
+        stage_obj = (
+            db.query(models.ExecutionNarrativeApprovalStage)
+            .filter(models.ExecutionNarrativeApprovalStage.id == uuid.UUID(second_stage_id))
+            .first()
+        )
+        assert stage_obj is not None
+        assert stage_obj.meta.get("overdue") is True
+        assert any(action.action_type == "escalated" for action in stage_obj.actions)
+        notifications = (
+            db.query(models.Notification)
+            .filter(models.Notification.user_id == uuid.UUID(me["id"]))
+            .all()
+        )
+        assert any("overdue" in note.message.lower() for note in notifications)
+    finally:
+        db.close()
+
     reset_resp = client.post(
         f"/api/experiment-console/sessions/{exec_id}/exports/narrative/{export_payload['id']}/stages/{second_stage_id}/reset",
         json={"notes": "Remediate QA"},
@@ -631,6 +650,115 @@ def test_multistage_approval_delegation_and_reset(client):
         headers=headers,
     ).json()["events"]
     assert any(event["event_type"] == "narrative_export.approval.rejected" for event in final_timeline)
+
+
+def test_narrative_export_packaging_blocked_until_final_stage(client):
+    headers, user_id, _ = create_user_headers()
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Two-Stage", "content": "Step"},
+        headers=headers,
+    ).json()
+
+    session = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Two Stage Execution"},
+        headers=headers,
+    ).json()
+
+    execution_id = session["execution"]["id"]
+
+    export = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        json={
+            "notes": "Two stage export",
+            "approval_stages": [
+                {"required_role": "scientist", "name": "Stage 1", "sla_hours": 1, "assignee_id": str(user_id)},
+                {"required_role": "qa", "name": "Stage 2", "sla_hours": 2},
+            ],
+        },
+        headers=headers,
+    ).json()
+
+    export_id = export["id"]
+    stage_ids = [stage["id"] for stage in export["approval_stages"]]
+
+    assert export["approval_status"] == "pending"
+    assert export["artifact_status"] == "queued"
+
+    timeline = client.get(
+        f"/api/experiment-console/sessions/{execution_id}/timeline",
+        headers=headers,
+    ).json()
+
+    assert any(
+        event["event_type"] == "narrative_export.packaging.awaiting_approval"
+        for event in timeline["events"]
+    )
+
+    db = TestingSessionLocal()
+    try:
+        export_row = (
+            db.query(models.ExecutionNarrativeExport)
+            .filter(models.ExecutionNarrativeExport.id == uuid.UUID(export_id))
+            .first()
+        )
+        assert export_row is not None
+        assert export_row.packaging_attempts == 0
+        assert export_row.artifact_file_id is None
+    finally:
+        db.close()
+
+    first_stage_response = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative/{export_id}/approve",
+        json={"status": "approved", "signature": "Stage 1", "stage_id": stage_ids[0]},
+        headers=headers,
+    )
+    assert first_stage_response.status_code == 200, first_stage_response.text
+
+    db = TestingSessionLocal()
+    try:
+        export_row = (
+            db.query(models.ExecutionNarrativeExport)
+            .filter(models.ExecutionNarrativeExport.id == uuid.UUID(export_id))
+            .first()
+        )
+        assert export_row is not None
+        assert export_row.packaging_attempts == 0
+        assert export_row.artifact_file_id is None
+    finally:
+        db.close()
+
+    final_stage_response = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative/{export_id}/approve",
+        json={"status": "approved", "signature": "Stage 2", "stage_id": stage_ids[1]},
+        headers=headers,
+    )
+    assert final_stage_response.status_code == 200, final_stage_response.text
+
+    db = TestingSessionLocal()
+    try:
+        export_row = (
+            db.query(models.ExecutionNarrativeExport)
+            .filter(models.ExecutionNarrativeExport.id == uuid.UUID(export_id))
+            .first()
+        )
+        assert export_row is not None
+        assert export_row.packaging_attempts >= 1
+        assert export_row.artifact_file_id is not None
+        assert export_row.artifact_status == "ready"
+    finally:
+        db.close()
+
+    timeline_after = client.get(
+        f"/api/experiment-console/sessions/{execution_id}/timeline",
+        headers=headers,
+    ).json()
+    assert any(
+        event["event_type"] == "narrative_export.packaging.ready"
+        for event in timeline_after["events"]
+    )
 
 
 def _create_preview_snapshot(template_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:

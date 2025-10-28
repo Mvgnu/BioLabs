@@ -35,6 +35,7 @@ from .routes import (
     governance_analytics,
     governance_baselines,
     governance_approvals,
+    governance_guardrails,
     governance_recommendations,
     governance_notes,
     search,
@@ -118,6 +119,7 @@ app.include_router(analytics.router)
 app.include_router(governance_analytics.router)
 app.include_router(governance_baselines.router)
 app.include_router(governance_approvals.router)
+app.include_router(governance_guardrails.router)
 app.include_router(governance_recommendations.router)
 app.include_router(governance_notes.router)
 app.include_router(search.router)

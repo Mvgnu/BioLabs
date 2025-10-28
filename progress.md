@@ -1,5 +1,11 @@
 # Progress Log
 
+## 2025-07-05
+- Hardened narrative packaging gating by reusing ladder loaders in the worker, logging `narrative_export.packaging.awaiting_approval`, and asserting the behavior with a new end-to-end test.
+- Enhanced SLA monitoring to mark overdue stages, record escalation actions/events, send reviewer notifications, and surface mean resolution timing + breach counts in governance analytics meta.
+- Introduced persisted guardrail simulation APIs at `/api/governance/guardrails/simulations`, backed by a new model, schemas, and pytest coverage for RBAC and persistence flows.
+- Extended guardrail simulation coverage with multi-stage `clear` scenarios to ensure persisted records and listings stay in sync without false delay projections.
+
 ## 2025-07-03
 - Authored `docs/approval_workflow_design.md` capturing staged approval models, APIs, worker hooks, frontend ladder UX, and test matrix.
 - Updated documentation index to reference the new design and logged follow-on compliance considerations.

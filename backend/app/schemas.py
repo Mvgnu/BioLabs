@@ -708,6 +708,58 @@ class GovernanceAnalyticsReport(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
+class GovernanceGuardrailStageSnapshot(BaseModel):
+    # purpose: represent baseline or simulated stage state for guardrail simulations
+    status: str
+    sla_hours: int | None = None
+    projected_due_at: datetime | None = None
+    blockers: list[str] = Field(default_factory=list)
+    required_actions: list[str] = Field(default_factory=list)
+    auto_triggers: list[str] = Field(default_factory=list)
+    assignee_id: UUID | None = None
+    delegate_id: UUID | None = None
+
+
+class GovernanceGuardrailStageComparison(BaseModel):
+    # purpose: capture baseline vs simulated stage states for guardrail evaluation
+    index: int
+    name: str | None = None
+    required_role: str
+    mapped_step_indexes: list[int] = Field(default_factory=list)
+    gate_keys: list[str] = Field(default_factory=list)
+    baseline: GovernanceGuardrailStageSnapshot
+    simulated: GovernanceGuardrailStageSnapshot
+
+
+class GovernanceGuardrailSimulationRequest(BaseModel):
+    # purpose: request payload for guardrail simulation evaluation
+    execution_id: UUID
+    comparisons: list[GovernanceGuardrailStageComparison] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GovernanceGuardrailSummary(BaseModel):
+    # purpose: expose aggregate guardrail status and contributing signals
+    state: Literal["clear", "blocked"]
+    reasons: list[str] = Field(default_factory=list)
+    regressed_stage_indexes: list[int] = Field(default_factory=list)
+    projected_delay_minutes: int = 0
+
+
+class GovernanceGuardrailSimulationRecord(BaseModel):
+    # purpose: return persisted guardrail simulation summaries
+    id: UUID
+    execution_id: UUID
+    actor: UserOut | None = None
+    summary: GovernanceGuardrailSummary
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    state: Literal["clear", "blocked"]
+    projected_delay_minutes: int
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class GovernanceReviewerCadenceReport(BaseModel):
     # purpose: expose lean reviewer cadence analytics payloads for staffing dashboards
     # inputs: reviewer cadence summaries and aggregate guardrails filtered via RBAC
@@ -1565,6 +1617,7 @@ class ExecutionNarrativeApprovalAction(BaseModel):
         "reassigned",
         "reset",
         "comment",
+        "escalated",
     ]
     signature: str | None = None
     notes: str | None = None
