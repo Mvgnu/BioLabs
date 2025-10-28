@@ -459,6 +459,9 @@ def _load_coaching_notes(
             else None
         )
         reply_count = reply_index.get(note.thread_root_id or note.id, 0)
+        raw_meta = dict(note.meta or {})
+        history = raw_meta.pop("moderation_history", [])
+        normalized_history = history if isinstance(history, list) else []
         detail_payload: Dict[str, Any] = {
             "note_id": str(note.id),
             "override_id": str(note.override_id),
@@ -467,7 +470,8 @@ def _load_coaching_notes(
             "thread_root_id": str(note.thread_root_id) if note.thread_root_id else None,
             "parent_id": str(note.parent_id) if note.parent_id else None,
             "reply_count": reply_count,
-            "metadata": dict(note.meta or {}),
+            "metadata": raw_meta,
+            "moderation_history": normalized_history,
         }
         entries.append(
             schemas.GovernanceDecisionTimelineEntry(

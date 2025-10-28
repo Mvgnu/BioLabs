@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any, Dict
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
@@ -86,6 +87,104 @@ def _ensure_override_access(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Override not accessible")
 
 
+def _copy_metadata(meta: Dict[str, Any] | None) -> Dict[str, Any]:
+    """Return a shallow copy of metadata for mutation safety."""
+
+    # purpose: avoid mutating SQLAlchemy-backed JSON structures in-place
+    # inputs: persisted metadata dictionary or None
+    # outputs: detached dictionary ready for update operations
+    # status: experimental
+
+    if not isinstance(meta, dict):
+        return {}
+    return dict(meta)
+
+
+def _record_moderation_transition(
+    meta: Dict[str, Any],
+    *,
+    new_state: str,
+    actor_id: UUID | None,
+    reason: str | None = None,
+) -> Dict[str, Any]:
+    """Append a moderation history entry and return updated metadata."""
+
+    # purpose: maintain chronological moderation audit trail for collaboration tooling
+    # inputs: metadata dictionary, moderation state change attributes
+    # outputs: metadata dictionary including appended moderation history entry
+    # status: experimental
+
+    history: list[Dict[str, Any]] = []
+    existing_history = meta.get("moderation_history")
+    if isinstance(existing_history, list):
+        history = list(existing_history)
+    entry: Dict[str, Any] = {
+        "state": new_state,
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "actor_id": str(actor_id) if actor_id else None,
+    }
+    if reason:
+        entry["reason"] = reason
+    history.append(entry)
+    meta["moderation_history"] = history
+    return meta
+
+
+def _apply_metadata_updates(
+    current: Dict[str, Any],
+    updates: Dict[str, Any] | None,
+) -> Dict[str, Any]:
+    """Merge metadata updates while preserving moderation history."""
+
+    # purpose: allow incremental metadata enrichment without losing audit timeline
+    # inputs: current metadata dict, user-supplied updates
+    # outputs: merged metadata dictionary
+    # status: experimental
+
+    if not updates:
+        return current
+    merged = _copy_metadata(current)
+    merged.update({key: value for key, value in updates.items() if key != "moderation_history"})
+    if "moderation_history" in current and "moderation_history" not in merged:
+        merged["moderation_history"] = current["moderation_history"]
+    return merged
+
+
+def _apply_moderation_transition(
+    note: models.GovernanceCoachingNote,
+    *,
+    new_state: str,
+    actor: models.User,
+    metadata: Dict[str, Any] | None = None,
+    reason: str | None = None,
+) -> bool:
+    """Apply moderation state change and optional metadata updates."""
+
+    # purpose: centralize moderation workflow mutations with audit history
+    # inputs: coaching note ORM entity, desired state, acting user, metadata updates
+    # outputs: bool indicating whether persistence is required
+    # status: experimental
+
+    current_meta = _copy_metadata(note.meta)
+    changed = False
+    if note.moderation_state != new_state:
+        current_meta = _record_moderation_transition(
+            current_meta,
+            new_state=new_state,
+            actor_id=actor.id,
+            reason=reason,
+        )
+        note.moderation_state = new_state
+        changed = True
+    merged_meta = _apply_metadata_updates(current_meta, metadata)
+    if merged_meta != note.meta:
+        note.meta = merged_meta
+        changed = True
+    if changed:
+        note.updated_at = datetime.now(timezone.utc)
+    return changed
+
+
 def _thread_reply_counts(
     db: Session,
     override_id: UUID,
@@ -137,11 +236,18 @@ def _serialize_note(
         if actor is not None
         else None
     )
+    sanitized_meta = _copy_metadata(note.meta)
+    history = sanitized_meta.pop("moderation_history", [])
     payload = schemas.GovernanceCoachingNoteOut.model_validate(note)
+    normalized_history = (
+        history if isinstance(history, list) else []
+    )
     return payload.model_copy(
         update={
             "reply_count": reply_count,
             "actor": actor_summary,
+            "metadata": sanitized_meta,
+            "moderation_history": normalized_history,
         }
     )
 
@@ -207,6 +313,14 @@ def create_coaching_note(
     if parent is not None:
         thread_root_id = parent.thread_root_id or parent.id
 
+    metadata = _copy_metadata(payload.metadata)
+    metadata = _record_moderation_transition(
+        metadata,
+        new_state="published",
+        actor_id=user.id,
+        reason=None,
+    )
+
     note = models.GovernanceCoachingNote(
         override_id=override.id,
         baseline_id=payload.baseline_id or override.baseline_id,
@@ -216,7 +330,7 @@ def create_coaching_note(
         author_id=user.id,
         body=body,
         moderation_state="published",
-        meta=payload.metadata or {},
+        meta=metadata,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
     )
@@ -238,17 +352,13 @@ def create_coaching_note(
     return _serialize_note(note, reply_counts.get(note.thread_root_id or note.id, 0))
 
 
-@router.patch(
-    "/coaching-notes/{note_id}",
-    response_model=schemas.GovernanceCoachingNoteOut,
-)
-def update_coaching_note(
-    note_id: UUID,
-    payload: schemas.GovernanceCoachingNoteUpdate,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    """Update coaching note body, metadata, or moderation state."""
+def _load_note_with_context(db: Session, note_id: UUID) -> models.GovernanceCoachingNote:
+    """Load coaching note with override relationships or raise 404."""
+
+    # purpose: share note loading logic across moderation endpoints
+    # inputs: database session and note identifier
+    # outputs: GovernanceCoachingNote with author, override, baseline, execution eager loaded
+    # status: experimental
 
     note = (
         db.query(models.GovernanceCoachingNote)
@@ -266,6 +376,86 @@ def update_coaching_note(
     )
     if not note:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Note not found")
+    return note
+
+
+def _note_response_after_mutation(
+    db: Session,
+    note: models.GovernanceCoachingNote,
+    override: models.GovernanceOverrideAction,
+) -> schemas.GovernanceCoachingNoteOut:
+    """Invalidate caches, compute reply counts, and serialize note."""
+
+    # purpose: centralize post-mutation cache invalidation and serialization
+    # inputs: db session, mutated note, associated override
+    # outputs: GovernanceCoachingNoteOut payload with refreshed counts
+    # status: experimental
+
+    execution_scope: set[UUID] = set()
+    for candidate in (note.execution_id, override.execution_id):
+        if candidate:
+            execution_scope.add(candidate)
+    if execution_scope:
+        invalidate_governance_analytics_cache(execution_scope)
+
+    reply_counts = _thread_reply_counts(db, note.override_id, {note.thread_root_id})
+    return _serialize_note(note, reply_counts.get(note.thread_root_id or note.id, 0))
+
+
+def _apply_moderation_action(
+    db: Session,
+    note: models.GovernanceCoachingNote,
+    override: models.GovernanceOverrideAction,
+    *,
+    actor: models.User,
+    new_state: str,
+    payload: schemas.GovernanceCoachingNoteModerationAction | None,
+) -> schemas.GovernanceCoachingNoteOut:
+    """Execute a moderation transition and return serialized response."""
+
+    # purpose: consolidate moderation endpoint behavior with consistent side effects
+    # inputs: db session, coaching note entity, override context, acting user, desired state, payload
+    # outputs: serialized coaching note reflecting moderation outcome
+    # status: experimental
+
+    metadata_updates = None
+    reason = None
+    if payload is not None:
+        metadata_updates = payload.metadata
+        reason = payload.reason
+
+    changed = _apply_moderation_transition(
+        note,
+        new_state=new_state,
+        actor=actor,
+        metadata=metadata_updates,
+        reason=reason,
+    )
+
+    if not changed:
+        reply_counts = _thread_reply_counts(db, note.override_id, {note.thread_root_id})
+        return _serialize_note(note, reply_counts.get(note.thread_root_id or note.id, 0))
+
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+
+    return _note_response_after_mutation(db, note, override)
+
+
+@router.patch(
+    "/coaching-notes/{note_id}",
+    response_model=schemas.GovernanceCoachingNoteOut,
+)
+def update_coaching_note(
+    note_id: UUID,
+    payload: schemas.GovernanceCoachingNoteUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Update coaching note body, metadata, or moderation state."""
+
+    note = _load_note_with_context(db, note_id)
 
     override = note.override or _load_override(db, note.override_id)
     _ensure_override_access(db, user, override)
@@ -279,27 +469,108 @@ def update_coaching_note(
             note.body = body
             note.last_edited_at = datetime.now(timezone.utc)
             changed = True
-    if payload.moderation_state is not None and payload.moderation_state != note.moderation_state:
-        note.moderation_state = payload.moderation_state
-        changed = True
-    if payload.metadata is not None:
-        note.meta = payload.metadata
-        changed = True
+    metadata_updates = payload.metadata if payload.metadata is not None else None
+    if payload.moderation_state is not None or metadata_updates is not None:
+        target_state = payload.moderation_state or note.moderation_state
+        if target_state is None:
+            target_state = note.moderation_state
+        moderation_changed = _apply_moderation_transition(
+            note,
+            new_state=target_state,
+            actor=user,
+            metadata=metadata_updates,
+        )
+        changed = changed or moderation_changed
 
     if not changed:
         return _serialize_note(note, _thread_reply_counts(db, note.override_id, {note.thread_root_id}).get(note.thread_root_id or note.id, 0))
 
-    note.updated_at = datetime.now(timezone.utc)
     db.add(note)
     db.commit()
     db.refresh(note)
 
-    execution_scope: set[UUID] = set()
-    for candidate in (note.execution_id, override.execution_id):
-        if candidate:
-            execution_scope.add(candidate)
-    if execution_scope:
-        invalidate_governance_analytics_cache(execution_scope)
+    return _note_response_after_mutation(db, note, override)
 
-    reply_counts = _thread_reply_counts(db, note.override_id, {note.thread_root_id})
-    return _serialize_note(note, reply_counts.get(note.thread_root_id or note.id, 0))
+
+@router.patch(
+    "/coaching-notes/{note_id}/flag",
+    response_model=schemas.GovernanceCoachingNoteOut,
+)
+def flag_coaching_note(
+    note_id: UUID,
+    payload: schemas.GovernanceCoachingNoteModerationAction = Body(
+        default_factory=schemas.GovernanceCoachingNoteModerationAction
+    ),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Flag a coaching note for review."""
+
+    note = _load_note_with_context(db, note_id)
+    override = note.override or _load_override(db, note.override_id)
+    _ensure_override_access(db, user, override)
+
+    return _apply_moderation_action(
+        db,
+        note,
+        override,
+        actor=user,
+        new_state="flagged",
+        payload=payload,
+    )
+
+
+@router.patch(
+    "/coaching-notes/{note_id}/resolve",
+    response_model=schemas.GovernanceCoachingNoteOut,
+)
+def resolve_coaching_note(
+    note_id: UUID,
+    payload: schemas.GovernanceCoachingNoteModerationAction = Body(
+        default_factory=schemas.GovernanceCoachingNoteModerationAction
+    ),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Mark a coaching note thread as resolved."""
+
+    note = _load_note_with_context(db, note_id)
+    override = note.override or _load_override(db, note.override_id)
+    _ensure_override_access(db, user, override)
+
+    return _apply_moderation_action(
+        db,
+        note,
+        override,
+        actor=user,
+        new_state="resolved",
+        payload=payload,
+    )
+
+
+@router.patch(
+    "/coaching-notes/{note_id}/remove",
+    response_model=schemas.GovernanceCoachingNoteOut,
+)
+def remove_coaching_note(
+    note_id: UUID,
+    payload: schemas.GovernanceCoachingNoteModerationAction = Body(
+        default_factory=schemas.GovernanceCoachingNoteModerationAction
+    ),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Remove a coaching note from collaborative visibility."""
+
+    note = _load_note_with_context(db, note_id)
+    override = note.override or _load_override(db, note.override_id)
+    _ensure_override_access(db, user, override)
+
+    return _apply_moderation_action(
+        db,
+        note,
+        override,
+        actor=user,
+        new_state="removed",
+        payload=payload,
+    )

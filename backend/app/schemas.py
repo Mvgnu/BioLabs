@@ -1364,6 +1364,18 @@ class GovernanceCoachingNoteUpdate(BaseModel):
     metadata: Dict[str, Any] | None = None
 
 
+class GovernanceCoachingNoteModerationAction(BaseModel):
+    """Request payload for moderation-specific coaching note transitions."""
+
+    # purpose: capture optional operator rationale and metadata updates
+    # inputs: targeted moderation PATCH payloads from governance console
+    # outputs: sanitized arguments for moderation helpers
+    # status: experimental
+
+    reason: str | None = None
+    metadata: Dict[str, Any] | None = None
+
+
 class GovernanceCoachingNoteOut(BaseModel):
     """Serialized governance coaching note for API responses."""
 
@@ -1385,6 +1397,11 @@ class GovernanceCoachingNoteOut(BaseModel):
         default_factory=dict,
         validation_alias="meta",
         serialization_alias="metadata",
+    )
+    moderation_history: list[Dict[str, Any]] = Field(
+        default_factory=list,
+        validation_alias="moderation_history",
+        serialization_alias="moderation_history",
     )
     actor: GovernanceActorSummary | None = None
     created_at: datetime
