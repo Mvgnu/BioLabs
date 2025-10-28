@@ -23,14 +23,14 @@ def create_user_and_headers(email: str | None = None):
     return user, headers
 
 
-def attach_team_membership(user: models.User) -> uuid.UUID:
+def attach_team_membership(user: models.User, role: str = "member") -> uuid.UUID:
     db = TestingSessionLocal()
     try:
         team = models.Team(name="Governance Team", created_by=user.id)
         db.add(team)
         db.commit()
         db.refresh(team)
-        membership = models.TeamMember(team_id=team.id, user_id=user.id)
+        membership = models.TeamMember(team_id=team.id, user_id=user.id, role=role)
         db.add(membership)
         db.commit()
         return team.id

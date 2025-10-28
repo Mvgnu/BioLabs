@@ -18,3 +18,10 @@ async def get_redis():
 async def publish_team_event(team_id: str, event: dict):
     r = await get_redis()
     await r.publish(f"team:{team_id}", json.dumps(event))
+
+
+async def publish_governance_event(topic: str, event: dict):
+    """Publish a governance lock event to subscribers."""
+
+    r = await get_redis()
+    await r.publish(f"governance:{topic}", json.dumps(event))
