@@ -11,6 +11,7 @@ from .sequence import process_sequence_file
 from .eventlog import record_execution_event
 from .analytics.governance import invalidate_governance_analytics_cache
 from . import models, notify
+from .services import approval_ladders
 
 CELERY_BROKER_URL = os.getenv("CELERY_BROKER_URL", "memory://")
 celery_app = Celery("tasks", broker=CELERY_BROKER_URL)
@@ -197,6 +198,10 @@ def monitor_narrative_approval_slas() -> None:
                         notification_message,
                     )
 
+            if export:
+                approval_ladders.verify_export_packaging_guardrails(
+                    db, export=export, actor=escalation_actor
+                )
             if export and export.execution_id:
                 affected_execution_ids.add(export.execution_id)
 

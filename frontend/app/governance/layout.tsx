@@ -1,8 +1,10 @@
 'use client'
 import { ReactNode, useMemo } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import { useCurrentUser } from '../hooks/useCurrentUser'
 import { Alert, Card, CardBody, LoadingState } from '../components/ui'
+import { cn } from '../utils/cn'
 
 interface GovernanceLayoutProps {
   children: ReactNode
@@ -14,6 +16,7 @@ interface GovernanceLayoutProps {
 // status: experimental
 export default function GovernanceLayout({ children }: GovernanceLayoutProps) {
   const { data: user, isLoading } = useCurrentUser()
+  const pathname = usePathname()
 
   const guardState = useMemo(() => {
     if (isLoading) return 'loading' as const
@@ -73,5 +76,33 @@ export default function GovernanceLayout({ children }: GovernanceLayoutProps) {
     )
   }
 
-  return <div className="p-6 space-y-6">{children}</div>
+  const links = [
+    { href: '/governance/dashboard', label: 'Overdue dashboard' },
+    { href: '/governance', label: 'Workflow templates' },
+  ]
+
+  return (
+    <div className="space-y-6 p-6">
+      <nav className="flex flex-wrap gap-3 text-sm font-medium">
+        {links.map((link) => {
+          const isActive = pathname?.startsWith(link.href)
+          return (
+            <Link
+              key={link.href}
+              href={link.href}
+              className={cn(
+                'rounded-md px-3 py-2 transition',
+                isActive
+                  ? 'bg-primary-100 text-primary-700'
+                  : 'text-neutral-600 hover:bg-neutral-100 hover:text-neutral-900',
+              )}
+            >
+              {link.label}
+            </Link>
+          )
+        })}
+      </nav>
+      {children}
+    </div>
+  )
 }

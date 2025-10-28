@@ -551,11 +551,76 @@ export interface GovernanceAnalyticsTotals {
   reviewer_load_band_counts: GovernanceReviewerLoadBandCounts
 }
 
+export interface GovernanceStageDetailMetrics {
+  // purpose: capture per-stage guardrail signals for governance dashboards
+  // status: pilot
+  status: string
+  breached: boolean
+  resolution_minutes: number | null
+  due_at: string | null
+  completed_at: string | null
+}
+
+export interface GovernanceStageMetrics {
+  // purpose: summarise approval ladder performance for analytics surfaces
+  // status: pilot
+  total: number
+  overdue_count: number
+  mean_resolution_minutes: number | null
+  status_counts: Record<string, number>
+  stage_details: Record<string, GovernanceStageDetailMetrics>
+}
+
+export interface GovernanceOverdueStageSample {
+  // purpose: provide actionable records for overdue escalations in dashboards
+  // status: pilot
+  stage_id: string
+  export_id: string
+  sequence_index: number
+  status: string
+  role?: string | null
+  due_at?: string | null
+  detected_at: string
+}
+
+export interface GovernanceOverdueStageTrendBucket {
+  // purpose: chart overdue volume trends across time buckets
+  // status: pilot
+  date: string
+  count: number
+}
+
+export interface GovernanceOverdueStageSummary {
+  // purpose: aggregate overdue ladder telemetry for operator dashboards
+  // status: pilot
+  total_overdue: number
+  open_overdue: number
+  resolved_overdue: number
+  overdue_exports: string[]
+  role_counts: Record<string, number>
+  mean_open_minutes: number | null
+  open_age_buckets: {
+    lt60: number
+    '60to180': number
+    gt180: number
+  }
+  trend: GovernanceOverdueStageTrendBucket[]
+  stage_samples: GovernanceOverdueStageSample[]
+}
+
+export interface GovernanceAnalyticsMeta {
+  // purpose: expose typed governance analytics metadata for dashboards
+  // status: pilot
+  approval_stage_metrics?: Record<string, GovernanceStageMetrics>
+  overdue_stage_summary?: GovernanceOverdueStageSummary
+}
+
 export interface GovernanceAnalyticsReport {
   results: GovernanceAnalyticsPreviewSummary[]
   reviewer_cadence: GovernanceReviewerCadenceSummary[]
   totals: GovernanceAnalyticsTotals
   lineage_summary: GovernanceOverrideLineageAggregates
+  meta: GovernanceAnalyticsMeta
 }
 
 export interface GovernanceReviewerCadenceReport {

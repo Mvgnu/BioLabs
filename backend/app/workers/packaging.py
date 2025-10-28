@@ -195,38 +195,13 @@ def package_execution_narrative_export(self, export_identifier: str) -> str:
             )
             return "error"
 
-        if export.approval_status != "approved" or export.current_stage is not None:
+        if not approval_ladders.verify_export_packaging_guardrails(
+            db, export=export, actor=export.requested_by
+        ):
             _logger.info(
                 "Narrative export %s awaiting staged approvals", export_uuid
             )
-            pending_stage = export.current_stage
-            if pending_stage is None:
-                for stage in export.approval_stages:
-                    if stage.status in {"in_progress", "delegated", "pending"}:
-                        pending_stage = stage
-                        break
-            if export.execution is not None:
-                record_execution_event(
-                    db,
-                    export.execution,
-                    "narrative_export.packaging.awaiting_approval",
-                    {
-                        "export_id": str(export.id),
-                        "approval_status": export.approval_status,
-                        "pending_stage_id": str(pending_stage.id)
-                        if pending_stage
-                        else None,
-                        "pending_stage_index": pending_stage.sequence_index
-                        if pending_stage
-                        else None,
-                        "pending_stage_status": pending_stage.status if pending_stage else None,
-                        "pending_stage_due_at": pending_stage.due_at.isoformat()
-                        if pending_stage and pending_stage.due_at
-                        else None,
-                    },
-                    actor=export.requested_by,
-                )
-                db.commit()
+            db.commit()
             return "pending_approval"
 
         if export.artifact_status == "ready" and export.artifact_file_id:
