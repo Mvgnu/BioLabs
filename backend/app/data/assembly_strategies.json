@@ -1,0 +1,45 @@
+[
+  {
+    "name": "gibson",
+    "base_success": 0.9,
+    "tm_penalty_factor": 0.08,
+    "overlap_optimum": 28,
+    "overlap_tolerance": 6,
+    "ligation_efficiency": 0.85,
+    "kinetics_model": "isothermal_exonuclease",
+    "minimal_site_count": 1,
+    "low_site_penalty": 0.5
+  },
+  {
+    "name": "golden_gate",
+    "base_success": 0.88,
+    "tm_penalty_factor": 0.05,
+    "overhang_diversity_factor": 0.12,
+    "ligation_efficiency": 0.9,
+    "kinetics_model": "type_iis_pulsed",
+    "minimal_site_count": 2,
+    "low_site_penalty": 0.35
+  },
+  {
+    "name": "hifi",
+    "base_success": 0.92,
+    "tm_penalty_factor": 0.04,
+    "overlap_optimum": 20,
+    "overlap_tolerance": 4,
+    "ligation_efficiency": 0.95,
+    "kinetics_model": "high_fidelity",
+    "minimal_site_count": 1,
+    "low_site_penalty": 0.6
+  },
+  {
+    "name": "homologous_recombination",
+    "base_success": 0.75,
+    "tm_penalty_factor": 0.1,
+    "overlap_optimum": 40,
+    "overlap_tolerance": 8,
+    "ligation_efficiency": 0.7,
+    "kinetics_model": "recombinase_mediated",
+    "minimal_site_count": 0,
+    "low_site_penalty": 0.8
+  }
+]
