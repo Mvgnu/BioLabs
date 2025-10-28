@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2025-07-09
+- Locked narrative packaging telemetry to a shared sanitised contract spanning API, CLI, Celery, and SLA monitor flows, preventing stray fields and aligning dashboards.
+- Added governance pytest coverage for the telemetry sanitiser and reinforced CLI queue parity with worker enforcement semantics.
+- Updated export enforcement audit and operator SOP to document CLI parity, sanitised payload specifications, and next audit checkpoints.
+
 ## 2025-07-08
 - Closed governance enforcement gaps by deprecating notebook and inventory export endpoints, logging guardrail block events, and redirecting operators to narrative/DNA packaging workflows.
 - Normalised packaging queue telemetry to emit `state/context` payloads and documented the contract for downstream dashboards and workers.
