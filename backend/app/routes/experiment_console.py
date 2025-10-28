@@ -3877,15 +3877,15 @@ async def create_execution_narrative_export(
 
     db.refresh(export_record)
 
-    should_queue_packaging = approval_ladders.record_packaging_queue_state(
+    queued_packaging = approval_ladders.dispatch_export_for_packaging(
         db,
         export=export_record,
         actor=user,
+        enqueue=enqueue_narrative_export_packaging,
     )
     db.commit()
 
-    if should_queue_packaging:
-        enqueue_narrative_export_packaging(export_record.id)
+    if queued_packaging:
         db.refresh(export_record)
 
     export_with_relations = (
@@ -4103,15 +4103,15 @@ async def approve_execution_narrative_export(
     db.refresh(export_record)
 
     if should_queue_packaging:
-        dispatch_ready = approval_ladders.record_packaging_queue_state(
+        queued_packaging = approval_ladders.dispatch_export_for_packaging(
             db,
             export=export_record,
             actor=user,
+            enqueue=enqueue_narrative_export_packaging,
         )
         db.commit()
-        if dispatch_ready:
-            enqueue_narrative_export_packaging(export_record.id)
-        db.refresh(export_record)
+        if queued_packaging:
+            db.refresh(export_record)
 
     payload = _build_export_payload(db, export_record)
     if payload.artifact_status == "ready" and payload.artifact_file:

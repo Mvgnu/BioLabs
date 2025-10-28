@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Iterable, Mapping, Sequence
+from typing import Callable, Dict, Iterable, Mapping, Sequence
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -303,6 +303,60 @@ def record_packaging_queue_state(
         db.flush()
 
     return False
+
+
+def dispatch_export_for_packaging(
+    db: Session,
+    *,
+    export: models.ExecutionNarrativeExport,
+    actor: models.User | None = None,
+    enqueue: Callable[[UUID | str], None] | None = None,
+) -> bool:
+    """Apply guardrail and ladder gating before enqueuing packaging."""
+
+    # purpose: guarantee narrative packaging dispatch respects shared enforcement
+    # inputs: db session, export ORM instance, optional actor context, optional enqueue hook
+    # outputs: bool indicating whether packaging was queued
+    # status: pilot
+    should_queue = record_packaging_queue_state(db, export=export, actor=actor)
+    db.flush()
+    if not should_queue:
+        return False
+
+    if enqueue is None:
+        from ..workers.packaging import enqueue_narrative_export_packaging as enqueue_fn
+    else:
+        enqueue_fn = enqueue
+
+    enqueue_fn(export.id)
+    return True
+
+
+def dispatch_export_for_packaging_by_id(
+    db: Session,
+    *,
+    export_id: UUID,
+    actor: models.User | None = None,
+    enqueue: Callable[[UUID | str], None] | None = None,
+    include_guardrails: bool = True,
+) -> bool:
+    """Load an export and route it through shared packaging dispatch checks."""
+
+    # purpose: reuse dispatch semantics for CLI, schedulers, and background tasks
+    # inputs: db session, export identifier, optional actor context and enqueue hook
+    # outputs: bool indicating whether packaging was queued after gating
+    # status: pilot
+    export = load_export_with_ladder(
+        db,
+        export_id=export_id,
+        include_guardrails=include_guardrails,
+    )
+    return dispatch_export_for_packaging(
+        db,
+        export=export,
+        actor=actor,
+        enqueue=enqueue,
+    )
 
 
 def _resolve_active_stage(

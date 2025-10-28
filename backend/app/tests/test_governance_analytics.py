@@ -3,12 +3,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from app import models
+from app import models, schemas
 from app.analytics.governance import (
     compute_governance_analytics,
     invalidate_governance_analytics_cache,
 )
 from app.auth import create_access_token
+from app.services import approval_ladders
 from .conftest import TestingSessionLocal
 
 
@@ -228,6 +229,72 @@ def test_governance_analytics_cache_invalidation_cycle():
             include_previews=True,
         )
         assert refreshed_report.totals.total_new_blockers == 4
+    finally:
+        db.close()
+        invalidate_governance_analytics_cache()
+
+
+def test_governance_analytics_reports_overdue_stage_summary():
+    invalidate_governance_analytics_cache()
+    user, _ = create_user_and_headers()
+    team_id = attach_team_membership(user)
+    execution_id = seed_preview_event(user, team_id)
+
+    db = TestingSessionLocal()
+    try:
+        execution = db.get(models.ProtocolExecution, execution_id)
+        assert execution is not None
+        now = datetime.now(timezone.utc)
+
+        export = models.ExecutionNarrativeExport(
+            execution_id=execution.id,
+            requested_by_id=user.id,
+            content="# Export",
+            event_count=0,
+            generated_at=now,
+            approval_stage_count=1,
+        )
+        export.requested_by = db.get(models.User, user.id)
+        db.add(export)
+        db.flush()
+
+        stage_def = schemas.ExecutionNarrativeApprovalStageDefinition(
+            required_role="approver",
+            name="Review",
+            sla_hours=1,
+        )
+        approval_ladders.initialise_export_ladder(
+            export,
+            [stage_def],
+            resolved_users={},
+            now=now - timedelta(hours=4),
+        )
+        stage = export.approval_stages[0]
+        stage.status = "in_progress"
+        stage.due_at = now - timedelta(hours=2)
+        stage.started_at = now - timedelta(hours=3)
+        stage.overdue_notified_at = now - timedelta(minutes=45)
+        db.add(stage)
+        db.add(export)
+        db.commit()
+
+        db_user = db.get(models.User, user.id)
+        assert db_user is not None
+
+        report = compute_governance_analytics(
+            db,
+            db_user,
+            team_ids={team_id},
+            execution_ids=None,
+            include_previews=True,
+        )
+        summary = report.meta.get("overdue_stage_summary")
+        assert summary is not None
+        assert summary["total_overdue"] >= 1
+        assert summary["open_overdue"] >= 1
+        assert summary["role_counts"].get("approver", 0) >= 1
+        assert str(export.id) in summary["overdue_exports"]
+        assert summary["trend"], "Expected overdue trend samples to be populated"
     finally:
         db.close()
         invalidate_governance_analytics_cache()

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from statistics import mean
@@ -180,6 +180,109 @@ def _collect_stage_metrics(export: models.ExecutionNarrativeExport) -> dict[str,
     return metrics
 
 
+def _normalise_stage_timestamp(value: datetime | None) -> datetime | None:
+    """Return a timezone-aware datetime for stage metadata inputs."""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _aggregate_overdue_stage_summary(
+    exports: Iterable[models.ExecutionNarrativeExport],
+) -> dict[str, Any]:
+    """Return aggregated overdue stage analytics for dashboards."""
+
+    # purpose: condense overdue ladder insights into dashboard-ready summary payloads
+    # inputs: iterable of exports with approval stages hydrated
+    # outputs: dict capturing totals, trends, and actionable breach signals
+    # status: pilot
+    now = datetime.now(timezone.utc)
+    total_overdue = 0
+    open_overdue = 0
+    resolved_overdue = 0
+    overdue_exports: set[str] = set()
+    role_counts: Counter[str] = Counter()
+    trend_counter: Counter[str] = Counter()
+    stage_samples: list[dict[str, Any]] = []
+    open_age_samples: list[float] = []
+    aging_buckets = {"lt60": 0, "60to180": 0, "gt180": 0}
+
+    def _is_active_stage(stage_status: str) -> bool:
+        return stage_status in {"in_progress", "delegated", "pending"}
+
+    for export in exports:
+        for stage in export.approval_stages:
+            overdue_timestamp = _normalise_stage_timestamp(stage.overdue_notified_at)
+            due_at = _normalise_stage_timestamp(stage.due_at)
+            if (
+                overdue_timestamp is None
+                and due_at is not None
+                and _is_active_stage(stage.status)
+                and due_at < now
+            ):
+                overdue_timestamp = due_at
+            if overdue_timestamp is None:
+                continue
+
+            total_overdue += 1
+            overdue_exports.add(str(export.id))
+            role_counts[stage.required_role or "unspecified"] += 1
+            bucket_date = overdue_timestamp.astimezone(timezone.utc).date().isoformat()
+            trend_counter[bucket_date] += 1
+
+            stage_samples.append(
+                {
+                    "stage_id": str(stage.id),
+                    "export_id": str(export.id),
+                    "sequence_index": stage.sequence_index,
+                    "status": stage.status,
+                    "role": stage.required_role,
+                    "due_at": due_at.isoformat() if due_at else None,
+                    "detected_at": overdue_timestamp.isoformat(),
+                }
+            )
+
+            if _is_active_stage(stage.status) and due_at is not None:
+                open_overdue += 1
+                overdue_minutes = max(
+                    (now - due_at).total_seconds() / 60.0,
+                    0.0,
+                )
+                open_age_samples.append(overdue_minutes)
+                if overdue_minutes < 60:
+                    aging_buckets["lt60"] += 1
+                elif overdue_minutes < 180:
+                    aging_buckets["60to180"] += 1
+                else:
+                    aging_buckets["gt180"] += 1
+            else:
+                resolved_overdue += 1
+
+    mean_open_minutes = None
+    if open_age_samples:
+        mean_open_minutes = sum(open_age_samples) / len(open_age_samples)
+
+    trend = [
+        {"date": bucket, "count": trend_counter[bucket]}
+        for bucket in sorted(trend_counter.keys())
+    ]
+
+    return {
+        "total_overdue": total_overdue,
+        "open_overdue": open_overdue,
+        "resolved_overdue": resolved_overdue,
+        "overdue_exports": sorted(overdue_exports),
+        "role_counts": dict(role_counts),
+        "mean_open_minutes": mean_open_minutes,
+        "open_age_buckets": aging_buckets,
+        "trend": trend,
+        "stage_samples": stage_samples,
+    }
+
+
 def _include_stage_metrics(
     report: schemas.GovernanceAnalyticsReport,
     exports: Iterable[models.ExecutionNarrativeExport],
@@ -190,6 +293,7 @@ def _include_stage_metrics(
     for export in exports:
         stage_metrics[str(export.id)] = _collect_stage_metrics(export)
     report.meta["approval_stage_metrics"] = stage_metrics
+    report.meta["overdue_stage_summary"] = _aggregate_overdue_stage_summary(exports)
 
 
 def invalidate_governance_analytics_cache(
