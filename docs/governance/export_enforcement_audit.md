@@ -2,7 +2,7 @@
 
 - purpose: catalogue every currently implemented narrative export initiation surface and record governance enforcement coverage
 - status: draft
-- updated: 2025-07-05
+- updated: 2025-07-07
 - related_docs: docs/approval_workflow_design.md, docs/narrative_lifecycle_overview.md
 
 ## Overview
@@ -21,9 +21,9 @@ The compliance stack now persists approval ladders, guardrail simulations, and p
 ## Background Tasks & Workers
 | Surface | File / Function | Guardrail State | Notes |
 | --- | --- | --- | --- |
-| Celery packaging worker | `backend/app/workers/packaging.py:package_execution_narrative_export` | ✅ Reloads export with ladder, invokes `verify_export_packaging_guardrails`, and emits `awaiting_approval` events instead of packaging when approvals regress. Guardrail state is revalidated before any artifact writes.【F:backend/app/workers/packaging.py†L30-L221】【F:backend/app/services/approval_ladders.py†L308-L347】 |
-| Packaging queue enqueue | `backend/app/services/approval_ladders.py:record_packaging_queue_state` | ✅ Central entry point for gating Celery dispatch; logs guardrail blocks and stage waits. Integration tests cover queue vs. block paths.【F:backend/app/services/approval_ladders.py†L213-L307】【F:backend/app/tests/test_experiment_console.py†L736-L848】 |
-| SLA monitor escalation | `backend/app/tasks.py:monitor_narrative_approval_slas` | ✅ Marks overdue stages, emits escalation events, and now re-calls `verify_export_packaging_guardrails` to ensure telemetry stays in sync before notifying reviewers.【F:backend/app/tasks.py†L94-L205】【F:backend/app/services/approval_ladders.py†L308-L347】 |
+| Celery packaging worker | `backend/app/workers/packaging.py:package_execution_narrative_export` | ✅ Reloads export with ladder, invokes `verify_export_packaging_guardrails`, and now relies on deduplicated queue telemetry so repeated pending runs stop spamming the timeline. Guardrail state is revalidated before any artifact writes.【F:backend/app/workers/packaging.py†L30-L221】【F:backend/app/services/approval_ladders.py†L233-L356】 |
+| Packaging queue enqueue | `backend/app/services/approval_ladders.py:record_packaging_queue_state` | ✅ Central entry point for gating Celery dispatch; logs compact `state` payloads (`guardrail_blocked`, `awaiting_approval`, `queued`) and persists the last emission in `export.meta` to prevent redundant events. Integration tests cover queue vs. block paths.【F:backend/app/services/approval_ladders.py†L233-L356】【F:backend/app/tests/governance/test_packaging_guardrails.py†L1-L156】 |
+| SLA monitor escalation | `backend/app/tasks.py:monitor_narrative_approval_slas` | ✅ Marks overdue stages, emits escalation events, and now re-calls `verify_export_packaging_guardrails` which respects the deduplicated telemetry contract before notifying reviewers.【F:backend/app/tasks.py†L94-L205】【F:backend/app/services/approval_ladders.py†L233-L356】 |
 
 ## CLI & Operator Tools
 | Surface | File / Function | Guardrail State | Notes |

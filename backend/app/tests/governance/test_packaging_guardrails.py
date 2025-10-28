@@ -122,6 +122,40 @@ def test_verify_export_packaging_guardrails_blocks_unapproved_stage():
         session.close()
 
 
+def test_guardrail_events_deduplicated_when_state_unmodified():
+    export_id = _create_export_fixture(due_offset_minutes=45)
+
+    session = TestingSessionLocal()
+    try:
+        for _ in range(2):
+            tracked = session.get(models.ExecutionNarrativeExport, export_id)
+            assert tracked is not None
+            ready = approval_ladders.verify_export_packaging_guardrails(
+                session, export=tracked
+            )
+            session.commit()
+            assert ready is False
+            session.expire_all()
+
+        refreshed = session.get(models.ExecutionNarrativeExport, export_id)
+        assert refreshed is not None
+
+        events = (
+            session.query(models.ExecutionEvent)
+            .filter(models.ExecutionEvent.execution_id == refreshed.execution_id)
+            .filter(
+                models.ExecutionEvent.event_type
+                == "narrative_export.packaging.awaiting_approval"
+            )
+            .all()
+        )
+        assert len(events) == 1
+        queue_state = (refreshed.meta or {}).get("packaging_queue_state", {})
+        assert queue_state.get("state") == "awaiting_approval"
+    finally:
+        session.close()
+
+
 def test_packaging_worker_rechecks_guardrails_before_processing():
     export_id = _create_export_fixture(due_offset_minutes=-30)
 

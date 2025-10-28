@@ -2,7 +2,7 @@
 
 - purpose: Provide a step-by-step playbook for operators enforcing narrative export guardrails across API, worker, scheduler, CLI, and UI surfaces.
 - status: pilot
-- updated: 2025-07-06
+- updated: 2025-07-07
 - related_docs: docs/governance/export_enforcement_audit.md, docs/governance/analytics_extension_plan.md, docs/governance/preview.md
 
 ## 1. Enforcement Surfaces
@@ -13,8 +13,8 @@
 - Operators reviewing exports through `/api/governance/exports/*` inherit the same enforcement contract.
 
 ### 1.2 Celery Workers
-- `workers/packaging.py:package_execution_narrative_export` re-loads the export on every execution and invokes `verify_export_packaging_guardrails`. Pending ladders trigger `narrative_export.packaging.awaiting_approval` events and exit early.
-- `tasks.py:monitor_narrative_approval_slas` escalates overdue stages and now reissues `verify_export_packaging_guardrails` to ensure guardrail telemetry stays synchronized before notifications.
+- `workers/packaging.py:package_execution_narrative_export` re-loads the export on every execution and invokes `verify_export_packaging_guardrails`. Pending ladders trigger a single `narrative_export.packaging.awaiting_approval` event with a compact `state` payload; repeated attempts reuse the persisted `packaging_queue_state` metadata instead of duplicating telemetry.
+- `tasks.py:monitor_narrative_approval_slas` escalates overdue stages and now reissues `verify_export_packaging_guardrails` to ensure guardrail telemetry stays synchronized before notifications while respecting the deduplicated payloads.
 
 ### 1.3 CLI Utilities
 - `python -m backend.app.cli queue-narrative-export <export-id>` routes through `dispatch_export_for_packaging_by_id` and surfaces guardrail status, pending stage information, and guardrail forecasts. Use this command before manually retrying packaging jobs.
