@@ -37,6 +37,8 @@ def create_cloning_planner_session(
     )
     db.commit()
     db.refresh(planner)
+    cloning_planner.enqueue_pipeline(planner.id)
+    db.refresh(planner)
     serialised = cloning_planner.serialize_session(planner)
     return schemas.CloningPlannerSessionOut(**serialised)
 
@@ -82,18 +84,51 @@ def record_cloning_planner_stage(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planner session not found")
     if planner.created_by_id not in {None, user.id} and not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access to planner session denied")
+    config = payload.payload or {}
     try:
-        updated = cloning_planner.record_stage_progress(
-            db,
-            planner=planner,
-            step=step,
-            payload=payload.payload,
-            next_step=payload.next_step,
-            status=payload.status,
-            guardrail_state=payload.guardrail_state,
-            task_id=payload.task_id,
-            error=payload.error,
-        )
+        normalised_step = step.lower()
+        if normalised_step == "primers":
+            product_size_range = config.get("product_size_range")
+            if product_size_range and len(product_size_range) == 2:
+                size_range = (int(product_size_range[0]), int(product_size_range[1]))
+            else:
+                size_range = None
+            updated = cloning_planner.run_primer_design(
+                db,
+                planner=planner,
+                product_size_range=size_range,
+                target_tm=config.get("target_tm"),
+            )
+        elif normalised_step == "restriction":
+            updated = cloning_planner.run_restriction_analysis(
+                db,
+                planner=planner,
+                enzymes=config.get("enzymes"),
+            )
+        elif normalised_step == "assembly":
+            updated = cloning_planner.run_assembly_planning(
+                db,
+                planner=planner,
+                strategy=config.get("strategy"),
+            )
+        elif normalised_step == "qc":
+            updated = cloning_planner.run_qc_checks(
+                db,
+                planner=planner,
+                chromatograms=config.get("chromatograms"),
+            )
+        else:
+            updated = cloning_planner.record_stage_progress(
+                db,
+                planner=planner,
+                step=step,
+                payload=config,
+                next_step=payload.next_step,
+                status=payload.status,
+                guardrail_state=payload.guardrail_state,
+                task_id=payload.task_id,
+                error=payload.error,
+            )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     db.commit()
