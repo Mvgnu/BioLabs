@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Tuple, List
+from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -23,6 +23,10 @@ class PrimerDesignConfig(BaseModel):
     opt_size: int = Field(default=22, ge=12)
     max_size: int = Field(default=30, ge=12)
     num_return: int = Field(default=1, ge=1)
+    na_concentration_mM: float = Field(default=50.0, ge=0.0)
+    primer_concentration_nM: float = Field(default=500.0, ge=0.0)
+    gc_clamp_min: int = Field(default=1, ge=0)
+    gc_clamp_max: int = Field(default=2, ge=0)
 
 
 class RestrictionDigestConfig(BaseModel):
@@ -33,6 +37,7 @@ class RestrictionDigestConfig(BaseModel):
         default_factory=lambda: ["EcoRI", "BamHI", "BsaI", "BsmBI"],
     )
     require_all: bool = True
+    reaction_buffer: Optional[str] = None
 
 
 class AssemblySimulationConfig(BaseModel):
@@ -73,4 +78,140 @@ class SequenceToolkitProfile(BaseModel):
             assembly=self.assembly.copy(update={"strategy": strategy}),
             qc=self.qc.copy(),
         )
+
+
+class EnzymeMetadata(BaseModel):
+    """Structured metadata for restriction enzymes."""
+
+    # purpose: expose curated catalog attributes for downstream planning logic
+    name: str
+    recognition_site: str
+    cut_pattern: Optional[str] = None
+    overhang: Optional[str] = None
+    optimal_temperature_c: Optional[float] = Field(default=None, ge=0.0)
+    compatible_buffers: List[str] = Field(default_factory=list)
+    methylation_sensitivity: Optional[str] = None
+    star_activity_notes: Optional[str] = None
+    supplier: Optional[str] = None
+
+
+class RestrictionDigestSite(BaseModel):
+    """Restriction digest site locations for a specific enzyme."""
+
+    # purpose: communicate site counts and annotations per enzyme
+    enzyme: str
+    positions: List[int] = Field(default_factory=list)
+    recognition_site: Optional[str] = None
+    metadata: Optional[EnzymeMetadata] = None
+
+
+class RestrictionDigestResult(BaseModel):
+    """Digest compatibility summary for a template."""
+
+    # purpose: report enzyme coverage and compatibility warnings to planners
+    name: str
+    sites: Dict[str, RestrictionDigestSite]
+    compatible: bool
+    buffer_alerts: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class RestrictionDigestResponse(BaseModel):
+    """Aggregate restriction digest response payload."""
+
+    # purpose: standardize digest outputs for services and routes
+    enzymes: List[EnzymeMetadata]
+    digests: List[RestrictionDigestResult]
+    alerts: List[str] = Field(default_factory=list)
+
+
+class PrimerThermodynamics(BaseModel):
+    """Thermodynamic features for primer candidates."""
+
+    # purpose: capture melting temp and structure risk heuristics
+    tm: float = Field(ge=0.0)
+    gc_content: float = Field(ge=0.0, le=100.0)
+    hairpin_delta_g: Optional[float] = None
+    homodimer_delta_g: Optional[float] = None
+
+
+class PrimerCandidate(BaseModel):
+    """Primer candidate descriptor with contextual metrics."""
+
+    # purpose: unify primer outputs across DNA asset and planner workflows
+    sequence: str
+    start: int
+    length: int
+    thermodynamics: PrimerThermodynamics
+
+
+class PrimerDesignRecord(BaseModel):
+    """Paired primer result for a template."""
+
+    # purpose: express primer design outcome including warnings
+    name: str
+    status: str
+    forward: Optional[PrimerCandidate] = None
+    reverse: Optional[PrimerCandidate] = None
+    product_size: Optional[int] = None
+    warnings: List[str] = Field(default_factory=list)
+    source: Optional[str] = None
+    notes: List[str] = Field(default_factory=list)
+
+
+class PrimerDesignSummary(BaseModel):
+    """Summary statistics for designed primer sets."""
+
+    # purpose: enable dashboards to present aggregated primer metrics
+    primer_count: int
+    average_tm: float
+    min_tm: float
+    max_tm: float
+
+
+class PrimerDesignResponse(BaseModel):
+    """Full primer design response structure."""
+
+    # purpose: share primer results plus summary statistics
+    primers: List[PrimerDesignRecord]
+    summary: PrimerDesignSummary
+
+
+class AssemblyStepMetrics(BaseModel):
+    """Per-template assembly assessment."""
+
+    # purpose: expose assembly scoring inputs to downstream governance
+    template: str
+    strategy: str
+    expected_fragment_count: int
+    junction_success: float = Field(ge=0.0, le=1.0)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class AssemblySimulationResult(BaseModel):
+    """Structured assembly simulation payload."""
+
+    # purpose: align assembly outputs with governance and planner pipelines
+    strategy: str
+    steps: List[AssemblyStepMetrics]
+    average_success: float = Field(ge=0.0, le=1.0)
+    min_success: float = Field(ge=0.0, le=1.0)
+    max_success: float = Field(ge=0.0, le=1.0)
+
+
+class QCReport(BaseModel):
+    """Individual QC checkpoint report."""
+
+    # purpose: unify QC telemetry across planner and governance dashboards
+    template: Optional[str]
+    checkpoint: str
+    status: str
+    details: Dict[str, Any]
+
+
+class QCReportResponse(BaseModel):
+    """Collection of QC reports for a run."""
+
+    # purpose: allow API responses to provide typed QC payloads
+    reports: List[QCReport]
 

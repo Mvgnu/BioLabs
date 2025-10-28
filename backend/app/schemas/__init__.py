@@ -2739,7 +2739,7 @@ class CloningPlannerSessionOut(BaseModel):
     primer_set: dict[str, Any]
     restriction_digest: dict[str, Any]
     assembly_plan: dict[str, Any]
-    qc_reports: list[Any]
+    qc_reports: dict[str, Any]
     inventory_reservations: list[dict[str, Any]]
     guardrail_state: dict[str, Any]
     stage_timings: dict[str, Any]

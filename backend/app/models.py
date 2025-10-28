@@ -1351,7 +1351,7 @@ class CloningPlannerSession(Base):
     primer_set = Column(JSON, default=dict, nullable=False)
     restriction_digest = Column(JSON, default=dict, nullable=False)
     assembly_plan = Column(JSON, default=dict, nullable=False)
-    qc_reports = Column(JSON, default=list, nullable=False)
+    qc_reports = Column(JSON, default=dict, nullable=False)
     inventory_reservations = Column(JSON, default=list, nullable=False)
     guardrail_state = Column(JSON, default=dict, nullable=False)
     stage_timings = Column(JSON, default=dict, nullable=False)
