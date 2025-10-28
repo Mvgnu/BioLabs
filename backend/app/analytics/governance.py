@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from statistics import mean
 from typing import Any, Iterable, Sequence, Set
@@ -73,6 +74,201 @@ def _classify_latency_band(minutes: float | None) -> str | None:
     return REVIEWER_LATENCY_BANDS[-1][0]
 
 
+def _normalise_uuid_set(values: Iterable[object]) -> set[UUID]:
+    """Return a UUID set derived from arbitrary iterable values."""
+
+    # purpose: coerce override detail reviewer lists into deterministic UUID sets
+    # inputs: iterable of string/UUID-like entries extracted from override payloads
+    # outputs: hashable UUID set for comparison and cadence adjustments
+    # status: pilot
+
+    result: set[UUID] = set()
+    for entry in values:
+        candidate = _coerce_uuid(entry)
+        if candidate is not None:
+            result.add(candidate)
+    return result
+
+
+def _load_override_events(
+    db: Session,
+    user: models.User,
+    membership_ids: Set[UUID],
+    execution_ids: set[UUID],
+) -> dict[UUID, list[models.ExecutionEvent]]:
+    """Return override action events grouped by execution within RBAC scope."""
+
+    # purpose: hydrate governance override actions for analytics reconciliation
+    # inputs: SQLAlchemy session, authenticated user, membership scope, execution ids
+    # outputs: mapping of execution id -> ordered override action events
+    # status: pilot
+
+    if not execution_ids:
+        return {}
+
+    query = (
+        db.query(models.ExecutionEvent)
+        .join(
+            models.ProtocolExecution,
+            models.ExecutionEvent.execution_id == models.ProtocolExecution.id,
+        )
+        .join(
+            models.ProtocolTemplate,
+            models.ProtocolExecution.template_id == models.ProtocolTemplate.id,
+        )
+        .filter(models.ExecutionEvent.event_type == "governance.override.action")
+        .filter(models.ExecutionEvent.execution_id.in_(list(execution_ids)))
+    )
+
+    if not user.is_admin:
+        access_filters = [models.ProtocolExecution.run_by == user.id]
+        access_filters.append(models.ProtocolTemplate.team_id.is_(None))
+        if membership_ids:
+            access_filters.append(models.ProtocolTemplate.team_id.in_(membership_ids))
+        query = query.filter(or_(*access_filters))
+
+    query = query.order_by(
+        models.ExecutionEvent.execution_id,
+        models.ExecutionEvent.created_at.asc(),
+        models.ExecutionEvent.sequence.asc(),
+    )
+
+    grouped: dict[UUID, list[models.ExecutionEvent]] = defaultdict(list)
+    for event in query.all():
+        if event.execution_id is None:
+            continue
+        grouped[event.execution_id].append(event)
+    return grouped
+
+
+def _apply_reassign_override_effect(
+    detail: dict[str, Any],
+    status: str,
+    reviewer_stats: dict[UUID, ReviewerCadenceAccumulator],
+    baseline_assignments: dict[UUID, set[UUID]],
+    baseline_pending: dict[UUID, bool],
+) -> float:
+    """Reconcile reviewer assignment deltas stemming from override reassignments."""
+
+    # purpose: translate override reassign/reversal payloads into reviewer cadence deltas
+    # inputs: override detail payload, action status, cadence accumulators, cached baseline maps
+    # outputs: ladder load delta reflecting assignment additions/removals
+    # status: pilot
+
+    baseline_uuid = _coerce_uuid(detail.get("baseline_id") or detail.get("baselineId"))
+    if baseline_uuid is None:
+        return 0.0
+
+    before_values = detail.get("reviewer_ids_before") or []
+    after_values = detail.get("reviewer_ids_after") or []
+    if not isinstance(before_values, Iterable) or not isinstance(after_values, Iterable):
+        return 0.0
+
+    current_assignments = baseline_assignments.get(baseline_uuid)
+    before_set = _normalise_uuid_set(before_values)
+    after_set = _normalise_uuid_set(after_values)
+    if current_assignments is None:
+        current_assignments = before_set
+
+    desired_set = after_set
+    additions = desired_set - current_assignments
+    removals = current_assignments - desired_set
+
+    pending = baseline_pending.get(baseline_uuid, True)
+    for reviewer_id in additions:
+        accumulator = ensure_reviewer_stat(reviewer_stats, reviewer_id)
+        accumulator.assigned += 1
+        if pending:
+            accumulator.pending += 1
+    for reviewer_id in removals:
+        accumulator = ensure_reviewer_stat(reviewer_stats, reviewer_id)
+        if accumulator.assigned > 0:
+            accumulator.assigned -= 1
+        if pending and accumulator.pending > 0:
+            accumulator.pending -= 1
+
+    baseline_assignments[baseline_uuid] = desired_set
+    return float(len(additions) - len(removals))
+
+
+def _summarize_override_events(
+    events: Sequence[models.ExecutionEvent],
+    reviewer_stats: dict[UUID, ReviewerCadenceAccumulator],
+    baseline_assignments: dict[UUID, set[UUID]],
+    baseline_pending: dict[UUID, bool],
+) -> dict[str, Any]:
+    """Aggregate override deltas impacting ladder load, SLA ratios, and cadence stats."""
+
+    # purpose: consolidate override action impacts into analytics adjustments
+    # inputs: execution-scoped override events, cadence accumulators, baseline lookup tables
+    # outputs: summary dict with ladder delta, SLA adjustments, and override counts
+    # status: pilot
+
+    summary = {
+        "executed_count": 0,
+        "reversed_count": 0,
+        "ladder_delta": 0.0,
+        "sla_within_adjustment": 0,
+        "sla_total_adjustment": 0,
+        "cooldown_delta_samples": [],
+        "cooldown_minutes_net": 0.0,
+    }
+
+    for event in events:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        status = str(payload.get("status") or "").lower()
+        action = payload.get("action")
+        detail = payload.get("detail")
+        if not isinstance(detail, dict) or action not in {"reassign", "cooldown", "escalate"}:
+            continue
+        if status not in {"executed", "reversed"}:
+            continue
+
+        if status == "executed":
+            summary["executed_count"] += 1
+        else:
+            summary["reversed_count"] += 1
+
+        if action == "reassign":
+            delta = _apply_reassign_override_effect(
+                detail,
+                status,
+                reviewer_stats,
+                baseline_assignments,
+                baseline_pending,
+            )
+            summary["ladder_delta"] += delta
+        elif action == "cooldown":
+            raw_minutes = detail.get("cooldown_minutes")
+            minutes_value = None
+            try:
+                if raw_minutes is not None:
+                    minutes_value = float(raw_minutes)
+            except (TypeError, ValueError):
+                minutes_value = None
+            if status == "executed":
+                summary["ladder_delta"] -= 1.0
+                summary["sla_within_adjustment"] += 1
+                summary["sla_total_adjustment"] += 1
+                if minutes_value is not None:
+                    summary["cooldown_delta_samples"].append(-minutes_value)
+                    summary["cooldown_minutes_net"] += minutes_value
+            else:
+                summary["ladder_delta"] += 1.0
+                summary["sla_within_adjustment"] -= 1
+                summary["sla_total_adjustment"] -= 1
+                if minutes_value is not None:
+                    summary["cooldown_delta_samples"].append(minutes_value)
+                    summary["cooldown_minutes_net"] -= minutes_value
+        elif action == "escalate":
+            if status == "executed":
+                summary["ladder_delta"] += 0.5
+            else:
+                summary["ladder_delta"] -= 0.5
+
+    return summary
+
+
 def _collect_step_completion_map(execution: models.ProtocolExecution) -> dict[int, datetime]:
     """Extract per-step completion timestamps from execution.result payloads."""
 
@@ -140,7 +336,16 @@ def compute_governance_analytics(
     if limit is not None and limit > 0:
         query = query.limit(limit)
 
-    events: Iterable[models.ExecutionEvent] = query.all()
+    events: list[models.ExecutionEvent] = query.all()
+
+    execution_scope_ids: set[UUID] = {
+        event.execution_id
+        for event in events
+        if getattr(event, "execution_id", None) is not None
+    }
+    override_events_by_execution = _load_override_events(
+        db, user, membership_ids, execution_scope_ids
+    )
 
     results: list[schemas.GovernanceAnalyticsPreviewSummary] = []
     preview_count = 0
@@ -194,6 +399,8 @@ def compute_governance_analytics(
         baseline_approval_latencies: list[float] = []
         baseline_publication_cadence: list[float] = []
         baseline_rollback_count = 0
+        baseline_assignments_map: dict[UUID, set[UUID]] = {}
+        baseline_pending_map: dict[UUID, bool] = {}
 
         published_versions = [
             baseline
@@ -260,6 +467,11 @@ def compute_governance_analytics(
                     accumulator.publish_dates.append(publish_at)
             if baseline.status == "rolled_back" or baseline.rolled_back_at is not None:
                 baseline_rollback_count += 1
+
+            baseline_id = getattr(baseline, "id", None)
+            if isinstance(baseline_id, UUID):
+                baseline_assignments_map[baseline_id] = set(assigned_reviewers)
+                baseline_pending_map[baseline_id] = reviewed_at is None
 
         if len(published_versions) >= 2:
             for previous, current in zip(published_versions, published_versions[1:]):
@@ -332,14 +544,36 @@ def compute_governance_analytics(
                 )
             )
 
+        overrides_for_execution = override_events_by_execution.get(execution.id, [])
+        override_summary = _summarize_override_events(
+            overrides_for_execution,
+            reviewer_stats,
+            baseline_assignments_map,
+            baseline_pending_map,
+        )
+
+        adjusted_within = sla_within_count + override_summary["sla_within_adjustment"]
+        adjusted_total = sla_evaluated_count + override_summary["sla_total_adjustment"]
+        if adjusted_within < 0:
+            adjusted_within = 0
+        if adjusted_total < 0:
+            adjusted_total = 0
+
+        combined_delta_samples: list[float] = [
+            float(value) for value in delta_minutes_collection
+        ]
+        combined_delta_samples.extend(
+            float(value) for value in override_summary["cooldown_delta_samples"]
+        )
+
         sla_within_ratio = None
-        if sla_evaluated_count:
-            sla_within_ratio = sla_within_count / sla_evaluated_count
+        if adjusted_total:
+            sla_within_ratio = adjusted_within / adjusted_total
             sla_ratio_samples.append(sla_within_ratio)
 
         mean_sla_delta = None
-        if delta_minutes_collection:
-            mean_sla_delta = mean(delta_minutes_collection)
+        if combined_delta_samples:
+            mean_sla_delta = mean(combined_delta_samples)
 
         risk_score = blocked_ratio
         if sla_within_ratio is not None:
@@ -351,7 +585,9 @@ def compute_governance_analytics(
         else:
             risk_level = "low"
 
-        ladder_load = float(stage_count + overrides_applied)
+        ladder_load = float(
+            stage_count + overrides_applied + override_summary["ladder_delta"]
+        )
 
         snapshot_id = _coerce_uuid(payload.get("snapshot_id"))
         baseline_snapshot_id = _coerce_uuid(payload.get("baseline_snapshot_id"))
@@ -380,6 +616,13 @@ def compute_governance_analytics(
                     blocked_stage_count=blocked_stage_count,
                     blocked_ratio=blocked_ratio,
                     overrides_applied=overrides_applied,
+                    override_actions_executed=override_summary["executed_count"],
+                    override_actions_reversed=override_summary["reversed_count"],
+                    override_cooldown_minutes=(
+                        None
+                        if abs(override_summary["cooldown_minutes_net"]) < 1e-6
+                        else float(override_summary["cooldown_minutes_net"])
+                    ),
                     new_blocker_count=new_blocker_count,
                     resolved_blocker_count=resolved_blocker_count,
                     ladder_load=ladder_load,

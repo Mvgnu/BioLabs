@@ -237,6 +237,106 @@ def test_governance_analytics_sla_and_blockers(client):
     assert filtered_payload["results"]
 
 
+def test_governance_analytics_override_events_adjust_metrics(client):
+    user, headers = create_user_and_headers()
+    team_id = attach_team_membership(user)
+    execution_id = seed_preview_event(user, team_id)
+
+    db = TestingSessionLocal()
+    try:
+        execution = db.get(models.ProtocolExecution, execution_id)
+        assert execution is not None
+        baseline = (
+            db.query(models.GovernanceBaselineVersion)
+            .filter(models.GovernanceBaselineVersion.execution_id == execution_id)
+            .order_by(models.GovernanceBaselineVersion.version_number.asc())
+            .first()
+        )
+        assert baseline is not None
+
+        override_reviewer = models.User(
+            email=f"override-{uuid.uuid4()}@example.com",
+            hashed_password="placeholder",
+        )
+        db.add(override_reviewer)
+        db.commit()
+        db.refresh(override_reviewer)
+        override_reviewer_id = override_reviewer.id
+        db.add(models.TeamMember(team_id=team_id, user_id=override_reviewer_id))
+        db.commit()
+
+        now = datetime.now(timezone.utc)
+
+        reassign_detail = {
+            "recommendation_id": "cadence_overload:override",
+            "baseline_id": str(baseline.id),
+            "target_reviewer_id": str(override_reviewer_id),
+            "changed": True,
+            "reviewer_ids_before": [str(user.id)],
+            "reviewer_ids_after": [str(user.id), str(override_reviewer_id)],
+            "execution_hash": "hash-reassign",
+            "reversible": True,
+        }
+        reassign_event = models.ExecutionEvent(
+            execution_id=execution.id,
+            event_type="governance.override.action",
+            payload={
+                "recommendation_id": reassign_detail["recommendation_id"],
+                "rule_key": "cadence_overload",
+                "action": "reassign",
+                "status": "executed",
+                "actor_id": str(user.id),
+                "detail": reassign_detail,
+            },
+            actor_id=user.id,
+            sequence=2,
+            created_at=now + timedelta(minutes=1),
+        )
+        cooldown_detail = {
+            "recommendation_id": "streak_cooldown:override",
+            "cooldown_minutes": 30,
+            "notes": "grant rest window",
+            "baseline_id": str(baseline.id),
+            "execution_hash": "hash-cooldown",
+        }
+        cooldown_event = models.ExecutionEvent(
+            execution_id=execution.id,
+            event_type="governance.override.action",
+            payload={
+                "recommendation_id": cooldown_detail["recommendation_id"],
+                "rule_key": "streak_cooldown",
+                "action": "cooldown",
+                "status": "executed",
+                "actor_id": str(user.id),
+                "detail": cooldown_detail,
+            },
+            actor_id=user.id,
+            sequence=3,
+            created_at=now + timedelta(minutes=2),
+        )
+        db.add_all([reassign_event, cooldown_event])
+        db.commit()
+    finally:
+        db.close()
+
+    resp = client.get("/api/governance/analytics", headers=headers)
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    summary = payload["results"][0]
+    assert summary["override_actions_executed"] == 2
+    assert summary["override_actions_reversed"] == 0
+    assert summary["override_cooldown_minutes"] == pytest.approx(30.0)
+    assert summary["sla_within_target_ratio"] == pytest.approx(2 / 3, rel=1e-3)
+    assert summary["mean_sla_delta_minutes"] == pytest.approx(-20 / 3, rel=1e-3)
+
+    totals = payload["totals"]
+    assert totals["reviewer_count"] == 2
+
+    reviewer_ids = {reviewer["reviewer_id"] for reviewer in payload["reviewer_cadence"]}
+    assert str(override_reviewer_id) in reviewer_ids
+
+
 def test_governance_analytics_reviewer_view(client):
     user, headers = create_user_and_headers()
     team_id = attach_team_membership(user)

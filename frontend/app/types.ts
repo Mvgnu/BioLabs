@@ -516,6 +516,9 @@ export interface GovernanceAnalyticsPreviewSummary {
   blocked_stage_count: number
   blocked_ratio: number
   overrides_applied: number
+  override_actions_executed: number
+  override_actions_reversed: number
+  override_cooldown_minutes?: number | null
   new_blocker_count: number
   resolved_blocker_count: number
   ladder_load: number

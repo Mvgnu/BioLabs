@@ -84,7 +84,10 @@ const governanceBaselinesKey = (
   templateId ?? 'all',
 ]
 
-const invalidateTimelineQueries = (qc: QueryClient, executionId: string | null) => {
+export const invalidateTimelineQueries = (
+  qc: QueryClient,
+  executionId: string | null,
+) => {
   if (!executionId) return
   qc.invalidateQueries({
     predicate: (query) =>
@@ -92,6 +95,33 @@ const invalidateTimelineQueries = (qc: QueryClient, executionId: string | null) 
       query.queryKey[0] === 'experiment-console' &&
       query.queryKey[1] === 'timeline' &&
       query.queryKey[2] === executionId,
+  })
+}
+
+export const invalidateGovernanceAnalyticsQueries = (
+  qc: QueryClient,
+  executionId: string | null,
+) => {
+  qc.invalidateQueries({
+    predicate: (query) => {
+      if (!Array.isArray(query.queryKey)) return false
+      const [scope, keySegment] = query.queryKey
+      if (scope === 'experiment-console' && keySegment === 'governance-analytics') {
+        if (!executionId) {
+          return true
+        }
+        const target = query.queryKey[2]
+        return target === 'all' || target === executionId
+      }
+      if (scope === 'governance' && keySegment === 'reviewer-cadence') {
+        if (!executionId) {
+          return true
+        }
+        const target = query.queryKey[2]
+        return target === 'all' || target === executionId
+      }
+      return false
+    },
   })
 }
 

@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import PreviewModal from '../PreviewModal'
@@ -12,9 +13,13 @@ const mocks = vi.hoisted(() => ({
   useUpdateScenario: vi.fn(),
   useCloneScenario: vi.fn(),
   useDeleteScenario: vi.fn(),
+  useGovernanceRecommendations: vi.fn(),
 }))
 
 vi.mock('../../../hooks/useExperimentConsole', () => mocks)
+vi.mock('../../hooks/useGovernanceRecommendations', () => ({
+  useGovernanceRecommendations: mocks.useGovernanceRecommendations,
+}))
 
 const {
   useScenarioWorkspace: mockUseScenarioWorkspace,
@@ -24,9 +29,15 @@ const {
   useUpdateScenario: mockUseUpdateScenario,
   useCloneScenario: mockUseCloneScenario,
   useDeleteScenario: mockUseDeleteScenario,
+  useGovernanceRecommendations: mockUseGovernanceRecommendations,
 } = mocks
 
 describe('PreviewModal', () => {
+  const renderWithClient = (ui: React.ReactElement) => {
+    const client = new QueryClient()
+    return render(<QueryClientProvider client={client}>{ui}</QueryClientProvider>)
+  }
+
   const workspaceData: ExperimentScenarioWorkspace = {
     execution: {
       id: 'exec-1',
@@ -152,11 +163,20 @@ describe('PreviewModal', () => {
     mockUseUpdateScenario.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })
     mockUseCloneScenario.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })
     mockUseDeleteScenario.mockReturnValue({ mutateAsync: vi.fn(), isPending: false })
+    mockUseGovernanceRecommendations.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      recommendations: [],
+      groupedByAction: { reassign: [], cooldown: [], escalate: [] },
+      priorityBuckets: { high: 0, medium: 0, low: 0 },
+      hasRecommendations: false,
+      generatedAt: new Date(0).toISOString(),
+    })
     previewMutate.mockClear()
   })
 
   it('renders scenario list and runs preview for the selected scenario', async () => {
-    render(<PreviewModal executionId="exec-1" open onClose={() => {}} />)
+    renderWithClient(<PreviewModal executionId="exec-1" open onClose={() => {}} />)
 
     expect(screen.getByRole('button', { name: 'Throughput uplift' })).toBeTruthy()
 
@@ -171,7 +191,7 @@ describe('PreviewModal', () => {
   })
 
   it('allows drafting a new scenario', () => {
-    render(<PreviewModal executionId="exec-1" open onClose={() => {}} />)
+    renderWithClient(<PreviewModal executionId="exec-1" open onClose={() => {}} />)
 
     const [initialScenarioName] = screen.getAllByLabelText(/scenario name/i)
     expect((initialScenarioName as HTMLInputElement).value).toBe('Throughput uplift')

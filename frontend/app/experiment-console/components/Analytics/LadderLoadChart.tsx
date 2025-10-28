@@ -41,7 +41,10 @@ export default function LadderLoadChart({ items }: LadderLoadChartProps) {
           >
             <div className="flex items-center justify-between text-sm text-neutral-700">
               <span>
-                Execution {item.execution_id.slice(0, 8)} • Overrides {item.overrides_applied}
+                Execution {item.execution_id.slice(0, 8)} • Executed overrides {item.override_actions_executed}
+                {item.override_actions_reversed > 0
+                  ? ` · Reversed ${item.override_actions_reversed}`
+                  : ''}
               </span>
               <span className="text-xs uppercase tracking-wide text-neutral-500">
                 Risk: {item.risk_level}
@@ -55,7 +58,13 @@ export default function LadderLoadChart({ items }: LadderLoadChartProps) {
             </div>
             <div className="mt-1 flex items-center justify-between text-xs text-neutral-500">
               <span>{item.ladder_load.toFixed(1)} ladder load</span>
-              <span>{Math.round((item.blocked_ratio ?? 0) * 100)}% blocked</span>
+              <span>
+                {Math.round((item.blocked_ratio ?? 0) * 100)}% blocked
+                {typeof item.override_cooldown_minutes === 'number' &&
+                Number.isFinite(item.override_cooldown_minutes)
+                  ? ` · Cooldown ${Math.round(item.override_cooldown_minutes)}m`
+                  : ''}
+              </span>
             </div>
           </li>
         ))}
