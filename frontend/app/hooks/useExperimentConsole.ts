@@ -18,6 +18,7 @@ import type {
   ExperimentRemediationResponse,
   ExperimentStepStatusUpdate,
   ExperimentTimelinePage,
+  GovernanceDecisionTimelinePage,
   ExperimentScenario,
   ExperimentScenarioCloneRequest,
   ExperimentScenarioCreateRequest,
@@ -55,6 +56,11 @@ const timelineKey = (
   executionId,
   filters?.eventTypes?.slice().sort().join(','),
 ]
+
+const governanceTimelineKey = (
+  executionId: string | null,
+  pageSize: number,
+) => ['experiment-console', 'governance-timeline', executionId, pageSize]
 
 const exportsKey = (executionId: string | null) => [
   'experiment-console',
@@ -94,6 +100,20 @@ export const invalidateTimelineQueries = (
       Array.isArray(query.queryKey) &&
       query.queryKey[0] === 'experiment-console' &&
       query.queryKey[1] === 'timeline' &&
+      query.queryKey[2] === executionId,
+  })
+}
+
+export const invalidateGovernanceTimelineQueries = (
+  qc: QueryClient,
+  executionId: string | null,
+) => {
+  if (!executionId) return
+  qc.invalidateQueries({
+    predicate: (query) =>
+      Array.isArray(query.queryKey) &&
+      query.queryKey[0] === 'experiment-console' &&
+      query.queryKey[1] === 'governance-timeline' &&
       query.queryKey[2] === executionId,
   })
 }
@@ -242,6 +262,31 @@ export const useExecutionTimeline = (
         { params },
       )
       return resp.data as ExperimentTimelinePage
+    },
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+  })
+}
+
+export const useGovernanceDecisionTimeline = (
+  executionId: string | null,
+  options?: { pageSize?: number },
+) => {
+  const pageSize = Math.min(Math.max(options?.pageSize ?? 20, 1), 200)
+  return useInfiniteQuery({
+    queryKey: governanceTimelineKey(executionId, pageSize),
+    enabled: Boolean(executionId),
+    queryFn: async ({ pageParam }): Promise<GovernanceDecisionTimelinePage> => {
+      if (!executionId) {
+        throw new Error('Execution id required for governance timeline queries')
+      }
+      const params: Record<string, any> = { limit: pageSize, execution_id: executionId }
+      if (pageParam) {
+        params.cursor = pageParam
+      }
+      const resp = await api.get('/api/experiment-console/governance/timeline', {
+        params,
+      })
+      return resp.data as GovernanceDecisionTimelinePage
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
   })

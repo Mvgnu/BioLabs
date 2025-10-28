@@ -8,3 +8,5 @@
 
 `actions.py` centralizes override workflow execution, persisting `GovernanceOverrideAction` rows when operators accept, decline, execute, or reverse staffing overrides. Helpers enforce idempotent mutations via execution hashes, update affected baselines (including reversal rollbacks), and emit enriched event payloads that capture reviewer roster deltas alongside lineage metadata.
 
+`timeline.py` composes the governance decision timeline feed by blending override recommendation events, override outcomes, baseline lifecycle events, and cadence analytics snapshots. It enforces RBAC-aware joins, emits structured `GovernanceDecisionTimelineEntry` payloads, and supplies cursor-based pagination helpers for the experiment console.
+

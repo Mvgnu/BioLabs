@@ -952,6 +952,44 @@ export interface ExperimentTimelinePage {
   next_cursor?: string | null
 }
 
+export type GovernanceDecisionTimelineEntryType =
+  | 'override_recommendation'
+  | 'override_action'
+  | 'baseline_event'
+  | 'analytics_snapshot'
+  | 'coaching_note'
+
+export interface GovernanceActorSummary {
+  // purpose: provide consistent actor metadata for governance decision entries
+  // status: pilot
+  id?: string | null
+  name?: string | null
+  email?: string | null
+}
+
+export interface GovernanceDecisionTimelineEntry {
+  // purpose: represent a blended governance decision feed record for UI rendering
+  // status: pilot
+  entry_id: string
+  entry_type: GovernanceDecisionTimelineEntryType
+  occurred_at: string
+  execution_id?: string | null
+  baseline_id?: string | null
+  rule_key?: string | null
+  action?: string | null
+  status?: string | null
+  summary?: string | null
+  detail: Record<string, any>
+  actor?: GovernanceActorSummary | null
+}
+
+export interface GovernanceDecisionTimelinePage {
+  // purpose: paginated response for governance decision timeline queries
+  // status: pilot
+  entries: GovernanceDecisionTimelineEntry[]
+  next_cursor?: string | null
+}
+
 // governance template modeling
 export interface GovernanceStageBlueprint {
   // purpose: stage blueprint definition consumed by governance UI

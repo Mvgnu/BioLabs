@@ -1179,6 +1179,46 @@ class ExperimentTimelinePage(BaseModel):
     next_cursor: str | None = None
 
 
+class GovernanceActorSummary(BaseModel):
+    # purpose: minimal actor context for governance timeline entries
+    # status: pilot
+
+    id: UUID | None = None
+    name: str | None = None
+    email: str | None = None
+
+
+class GovernanceDecisionTimelineEntry(BaseModel):
+    # purpose: unify governance decisions, analytics, and overrides into one feed item schema
+    # status: pilot
+
+    entry_id: str
+    entry_type: Literal[
+        "override_recommendation",
+        "override_action",
+        "baseline_event",
+        "analytics_snapshot",
+        "coaching_note",
+    ]
+    occurred_at: datetime
+    execution_id: UUID | None = None
+    baseline_id: UUID | None = None
+    rule_key: str | None = None
+    action: str | None = None
+    status: str | None = None
+    summary: str | None = None
+    detail: Dict[str, Any] = Field(default_factory=dict)
+    actor: GovernanceActorSummary | None = None
+
+
+class GovernanceDecisionTimelinePage(BaseModel):
+    # purpose: paginated wrapper for governance decision timeline consumption
+    # status: pilot
+
+    entries: list[GovernanceDecisionTimelineEntry] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
 class ExecutionNarrativeAttachmentIn(BaseModel):
     """Attachment descriptor for narrative export evidence."""
 
