@@ -132,6 +132,11 @@ def accept_governance_override(
 
     try:
         execution, baseline, _ = _prepare_override_context(db, user, payload)
+        if payload.lineage is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Override lineage payload is required for governance actions",
+            )
         record, _ = recommendation_actions.accept_override(
             db,
             actor=user,
@@ -203,6 +208,11 @@ def decline_governance_override(
 
     try:
         execution, baseline, _ = _prepare_override_context(db, user, payload)
+        if payload.lineage is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Override lineage payload is required for governance actions",
+            )
         record, _ = recommendation_actions.decline_override(
             db,
             actor=user,
@@ -239,6 +249,11 @@ def execute_governance_override(
 
     try:
         execution, baseline, target = _prepare_override_context(db, user, payload)
+        if payload.lineage is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Override lineage payload is required for governance actions",
+            )
         record, _ = recommendation_actions.execute_override(
             db,
             actor=user,

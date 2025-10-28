@@ -616,6 +616,7 @@ export default function ExperimentConsolePage() {
               isFetchingMore={governanceTimelineQuery.isFetchingNextPage}
               hasMore={Boolean(governanceTimelineQuery.hasNextPage)}
               onLoadMore={requestMoreGovernanceTimeline}
+              executionId={executionId ?? null}
             />
             <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-3">
               <h2 className="text-lg font-semibold">Telemetry Anomalies</h2>

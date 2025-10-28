@@ -555,6 +555,7 @@ export interface GovernanceAnalyticsReport {
   results: GovernanceAnalyticsPreviewSummary[]
   reviewer_cadence: GovernanceReviewerCadenceSummary[]
   totals: GovernanceAnalyticsTotals
+  lineage_summary: GovernanceOverrideLineageAggregates
 }
 
 export interface GovernanceReviewerCadenceReport {
@@ -606,6 +607,35 @@ export interface GovernanceNotebookLineage {
   execution_id?: string | null
 }
 
+export interface GovernanceScenarioOverrideAggregate {
+  // purpose: summarise aggregated override counts for a scenario anchor
+  // status: pilot
+  scenario_id?: string | null
+  scenario_name?: string | null
+  folder_name?: string | null
+  executed_count: number
+  reversed_count: number
+  net_count: number
+}
+
+export interface GovernanceNotebookOverrideAggregate {
+  // purpose: summarise notebook-linked override lineage analytics buckets
+  // status: pilot
+  notebook_entry_id?: string | null
+  notebook_title?: string | null
+  execution_id?: string | null
+  executed_count: number
+  reversed_count: number
+  net_count: number
+}
+
+export interface GovernanceOverrideLineageAggregates {
+  // purpose: group override lineage analytics for experiment console visualisations
+  // status: pilot
+  scenarios: GovernanceScenarioOverrideAggregate[]
+  notebooks: GovernanceNotebookOverrideAggregate[]
+}
+
 export interface GovernanceOverrideLineageContext {
   // purpose: aggregate structured scenario/notebook lineage metadata for overrides
   // status: pilot
@@ -614,6 +644,29 @@ export interface GovernanceOverrideLineageContext {
   captured_at?: string | null
   captured_by?: GovernanceActorSummary | null
   metadata?: Record<string, any>
+}
+
+export interface GovernanceOverrideReversalDiff {
+  // purpose: express before/after delta surfaced in override reversals
+  // status: pilot
+  key: string
+  before?: any
+  after?: any
+}
+
+export interface GovernanceOverrideReversalDetail {
+  // purpose: hydrate UI with override reversal context, diffs, and cooldown metadata
+  // status: pilot
+  id: string
+  override_id: string
+  baseline_id?: string | null
+  actor?: GovernanceActorSummary | null
+  created_at?: string | null
+  cooldown_expires_at?: string | null
+  diffs: GovernanceOverrideReversalDiff[]
+  previous_detail: Record<string, any>
+  current_detail: Record<string, any>
+  metadata: Record<string, any>
 }
 
 export interface GovernanceOverrideActionRecord {
@@ -631,6 +684,8 @@ export interface GovernanceOverrideActionRecord {
   created_at: string
   updated_at: string
   lineage?: GovernanceOverrideLineageContext | null
+  reversal_event?: GovernanceOverrideReversalDetail | null
+  cooldown_expires_at?: string | null
 }
 
 export interface GovernanceOverrideActionRequest {
@@ -640,12 +695,21 @@ export interface GovernanceOverrideActionRequest {
   target_reviewer_id?: string | null
   notes?: string | null
   metadata?: Record<string, any>
-  lineage?: {
+  lineage: {
     scenario_id?: string | null
     notebook_entry_id?: string | null
     notebook_entry_version_id?: string | null
     metadata?: Record<string, any>
-  } | null
+  }
+}
+
+export interface GovernanceOverrideReverseRequest {
+  // purpose: capture client payload for override reversal workflow
+  // status: pilot
+  execution_id: string
+  baseline_id?: string | null
+  notes?: string | null
+  metadata?: Record<string, any>
 }
 
 export interface BaselineLifecycleLabel {

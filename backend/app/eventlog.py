@@ -134,12 +134,14 @@ def record_governance_override_action_event(
         "notes",
         "changed",
         "cooldown_minutes",
+        "cooldown_expires_at",
         "urgency",
         "reviewer_ids_before",
         "reviewer_ids_after",
         "execution_hash",
         "reversal",
         "reversal_notes",
+        "reversal_event",
     }})
     payload["detail"] = detail_payload
     return record_execution_event(

@@ -1,10 +1,31 @@
 'use client'
 
-import React, { Fragment } from 'react'
+import React, { Fragment, useCallback, useMemo, useState } from 'react'
 
-import type { GovernanceDecisionTimelineEntry } from '../../../../types'
+import type {
+  GovernanceDecisionTimelineEntry,
+  GovernanceOverrideLineageAggregates,
+} from '../../../../types'
 import { cn } from '../../../../utils/cn'
 import ScenarioContextWidget from './Lineage/ScenarioContextWidget'
+import AnalyticsLineageWidget from './Lineage/AnalyticsLineageWidget'
+import ReversalDiffViewer from './ReversalDiffViewer'
+import { useReverseGovernanceOverride } from '../../../../hooks/useExperimentConsole'
+
+interface ReverseActionInput {
+  recommendationId: string
+  baselineId?: string | null
+  notes: string
+  cooldownMinutes: number | null
+}
+
+interface OverrideActionDetailProps {
+  entry: GovernanceDecisionTimelineEntry
+  detail: Record<string, any>
+  reversalDetail: Record<string, any> | null
+  onReverse: (input: ReverseActionInput) => Promise<void>
+  isReversing: boolean
+}
 
 export interface GovernanceDecisionTimelineProps {
   entries: GovernanceDecisionTimelineEntry[]
@@ -12,6 +33,7 @@ export interface GovernanceDecisionTimelineProps {
   isFetchingMore?: boolean
   hasMore?: boolean
   onLoadMore?: () => void
+  executionId?: string | null
 }
 
 const entryBadgeStyles: Record<string, string> = {
@@ -42,7 +64,14 @@ const formatTimestamp = (value: string) => {
 }
 
 const renderDetail = (detail: Record<string, any>) => {
-  const entries = Object.entries(detail ?? {}).filter(([key]) => key !== 'lineage')
+  const payload =
+    detail && typeof detail.detail === 'object' ? detail.detail : detail ?? {}
+  const entries = Object.entries(payload).filter(
+    ([key]) =>
+      !['lineage', 'lineage_summary', 'reversal_event', 'cooldown_expires_at'].includes(
+        key,
+      ),
+  )
   if (entries.length === 0) {
     return <p className="text-sm text-neutral-500">No supplemental detail available.</p>
   }
@@ -60,6 +89,135 @@ const renderDetail = (detail: Record<string, any>) => {
   )
 }
 
+const OverrideActionDetail = ({
+  entry,
+  detail,
+  reversalDetail,
+  onReverse,
+  isReversing,
+}: OverrideActionDetailProps) => {
+  const [showForm, setShowForm] = useState(false)
+  const [notes, setNotes] = useState('')
+  const [cooldownMinutes, setCooldownMinutes] = useState('30')
+  const [error, setError] = useState<string | null>(null)
+
+  const recommendationId =
+    detail.recommendation_id || entry.detail?.recommendation_id || entry.rule_key
+  const baselineId = detail.baseline_id || entry.baseline_id || null
+  const reversible = Boolean(
+    detail.reversible ?? entry.detail?.reversible ?? entry.detail?.detail?.reversible,
+  )
+  const cooldownUntil = detail.cooldown_expires_at || entry.detail?.cooldown_expires_at
+  const cooldownDate = useMemo(() => {
+    if (!cooldownUntil) return null
+    const parsed = new Date(cooldownUntil)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+  }, [cooldownUntil])
+  const isCoolingDown = Boolean(cooldownDate && cooldownDate.getTime() > Date.now())
+  const canReverse =
+    entry.entry_type === 'override_action' &&
+    entry.status === 'executed' &&
+    reversible &&
+    !reversalDetail &&
+    !isCoolingDown &&
+    Boolean(recommendationId)
+
+  const handleSubmit = async () => {
+    if (!recommendationId) {
+      setError('Recommendation context unavailable for reversal.')
+      return
+    }
+    const trimmed = cooldownMinutes.trim()
+    let parsedMinutes: number | null = null
+    if (trimmed) {
+      const numeric = Number(trimmed)
+      if (!Number.isFinite(numeric) || numeric < 0) {
+        setError('Cooldown minutes must be a non-negative number.')
+        return
+      }
+      parsedMinutes = Math.round(numeric)
+    }
+    try {
+      setError(null)
+      await onReverse({
+        recommendationId,
+        baselineId,
+        notes: notes.trim(),
+        cooldownMinutes: parsedMinutes,
+      })
+      setShowForm(false)
+      setNotes('')
+    } catch (reverseError: any) {
+      const detailMessage =
+        reverseError?.response?.data?.detail ??
+        reverseError?.message ??
+        'Unable to reverse override.'
+      setError(
+        typeof detailMessage === 'string'
+          ? detailMessage
+          : 'Unable to reverse override.',
+      )
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      {reversalDetail && <ReversalDiffViewer reversal={reversalDetail} />}
+      {isCoolingDown && (
+        <p className="text-xs text-amber-600">
+          Override reversal cooling down until {cooldownDate?.toLocaleString()}
+        </p>
+      )}
+      {canReverse && (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setShowForm((prev) => !prev)}
+            className="text-xs font-semibold text-rose-600 border border-rose-200 bg-rose-50 hover:bg-rose-100 px-3 py-1 rounded-md"
+          >
+            {showForm ? 'Cancel reversal' : 'Reverse override'}
+          </button>
+          {showForm && (
+            <div className="space-y-2 rounded-md border border-rose-100 bg-rose-50/60 p-3">
+              <label className="flex flex-col gap-1 text-xs text-neutral-600">
+                <span className="font-medium text-neutral-700">Reversal notes</span>
+                <textarea
+                  className="rounded-md border border-neutral-200 bg-white p-2 text-sm text-neutral-800"
+                  rows={2}
+                  value={notes}
+                  onChange={(event) => setNotes(event.target.value)}
+                  placeholder="Document why this override is being reversed"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs text-neutral-600">
+                <span className="font-medium text-neutral-700">Cooldown minutes</span>
+                <input
+                  type="number"
+                  min={0}
+                  className="rounded-md border border-neutral-200 bg-white p-2 text-sm text-neutral-800"
+                  value={cooldownMinutes}
+                  onChange={(event) => setCooldownMinutes(event.target.value)}
+                />
+              </label>
+              {error && <p className="text-xs text-rose-600">{error}</p>}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={handleSubmit}
+                  disabled={isReversing}
+                  className="text-xs font-semibold px-3 py-1 rounded-md bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-60"
+                >
+                  {isReversing ? 'Reversing…' : 'Confirm reversal'}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // purpose: render governance decision feed blending override, baseline, and analytics insights
 // inputs: paginated entries, loading states, load-more callback
 // outputs: governance timeline cards for experiment console sidebar
@@ -70,7 +228,35 @@ const GovernanceDecisionTimeline = ({
   isFetchingMore = false,
   hasMore = false,
   onLoadMore,
+  executionId = null,
 }: GovernanceDecisionTimelineProps) => {
+  const reversalMutation = useReverseGovernanceOverride(executionId)
+
+  const handleReverse = useCallback(
+    async ({ recommendationId, baselineId, notes, cooldownMinutes }: ReverseActionInput) => {
+      if (!executionId) {
+        throw new Error('Execution context is required for reversals.')
+      }
+      const metadata: Record<string, any> = {
+        source: 'experiment-console',
+        reason: 'operator_request',
+      }
+      if (typeof cooldownMinutes === 'number') {
+        metadata.cooldown_minutes = cooldownMinutes
+      }
+      await reversalMutation.mutateAsync({
+        recommendationId,
+        payload: {
+          execution_id: executionId,
+          baseline_id: baselineId ?? undefined,
+          notes: notes || undefined,
+          metadata,
+        },
+      })
+    },
+    [executionId, reversalMutation],
+  )
+
   if (isLoading && entries.length === 0) {
     return (
       <div className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-2">
@@ -95,6 +281,18 @@ const GovernanceDecisionTimeline = ({
             {entries.map((entry) => {
               const badgeStyle = entryBadgeStyles[entry.entry_type] ?? 'bg-slate-50 text-slate-700 border-slate-200'
               const label = typeLabels[entry.entry_type] ?? entry.entry_type
+              const analyticsSummary =
+                entry.entry_type === 'analytics_snapshot'
+                  ? (entry.detail?.lineage_summary as GovernanceOverrideLineageAggregates | undefined)
+                  : null
+              const detailPayload =
+                entry.detail && typeof entry.detail.detail === 'object'
+                  ? (entry.detail.detail as Record<string, any>)
+                  : ((entry.detail as Record<string, any>) ?? {})
+              const reversalDetail =
+                (detailPayload.reversal_event as Record<string, any> | undefined) ||
+                (entry.detail?.reversal_event as Record<string, any> | undefined) ||
+                null
               return (
                 <li key={entry.entry_id} className="p-4 space-y-2">
                   <div className="flex items-start justify-between gap-3">
@@ -118,8 +316,20 @@ const GovernanceDecisionTimeline = ({
                     <p className="text-xs uppercase tracking-wide text-neutral-500">Rule {entry.rule_key}</p>
                   )}
                   {entry.lineage && <ScenarioContextWidget lineage={entry.lineage} />}
-                  <div className="rounded-md border border-neutral-100 bg-neutral-50 p-3">
+                  {analyticsSummary && (
+                    <AnalyticsLineageWidget summary={analyticsSummary} />
+                  )}
+                  <div className="rounded-md border border-neutral-100 bg-neutral-50 p-3 space-y-3">
                     {renderDetail(entry.detail)}
+                    {entry.entry_type === 'override_action' && (
+                      <OverrideActionDetail
+                        entry={entry}
+                        detail={detailPayload}
+                        reversalDetail={reversalDetail}
+                        onReverse={handleReverse}
+                        isReversing={reversalMutation.isPending}
+                      />
+                    )}
                   </div>
                 </li>
               )

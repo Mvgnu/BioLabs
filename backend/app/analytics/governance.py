@@ -90,6 +90,35 @@ def _normalise_uuid_set(values: Iterable[object]) -> set[UUID]:
     return result
 
 
+def _extract_lineage_context(detail: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return scenario and notebook lineage payloads from override detail."""
+
+    # purpose: reuse lineage parsing logic for analytics aggregation buckets
+    # inputs: override detail payload recorded with execution events
+    # outputs: tuple of (scenario_payload, notebook_payload)
+    # status: pilot
+
+    if not isinstance(detail, dict):
+        return {}, {}
+
+    lineage_payload = detail.get("lineage") if isinstance(detail.get("lineage"), dict) else {}
+    scenario_payload: dict[str, Any] = {}
+    notebook_payload: dict[str, Any] = {}
+
+    if isinstance(lineage_payload, dict):
+        if isinstance(lineage_payload.get("scenario"), dict):
+            scenario_payload = dict(lineage_payload["scenario"])
+        if isinstance(lineage_payload.get("notebook_entry"), dict):
+            notebook_payload = dict(lineage_payload["notebook_entry"])
+
+    if not scenario_payload and isinstance(detail.get("scenario"), dict):
+        scenario_payload = dict(detail["scenario"])
+    if not notebook_payload and isinstance(detail.get("notebook_entry"), dict):
+        notebook_payload = dict(detail["notebook_entry"])
+
+    return scenario_payload, notebook_payload
+
+
 def _load_override_events(
     db: Session,
     user: models.User,
@@ -214,6 +243,13 @@ def _summarize_override_events(
         "cooldown_minutes_net": 0.0,
     }
 
+    scenario_buckets: dict[
+        tuple[UUID | None, str | None, str | None], dict[str, Any]
+    ] = {}
+    notebook_buckets: dict[
+        tuple[UUID | None, str | None], dict[str, Any]
+    ] = {}
+
     for event in events:
         payload = event.payload if isinstance(event.payload, dict) else {}
         status = str(payload.get("status") or "").lower()
@@ -228,6 +264,43 @@ def _summarize_override_events(
             summary["executed_count"] += 1
         else:
             summary["reversed_count"] += 1
+
+        scenario_payload, notebook_payload = _extract_lineage_context(detail)
+        scenario_id = _coerce_uuid(scenario_payload.get("id"))
+        scenario_name = scenario_payload.get("name")
+        folder_name = scenario_payload.get("folder_name")
+        scenario_key = (scenario_id, scenario_name, folder_name)
+        if any(value is not None for value in scenario_key):
+            bucket = scenario_buckets.setdefault(
+                scenario_key,
+                {
+                    "scenario_id": scenario_id,
+                    "scenario_name": scenario_name,
+                    "folder_name": folder_name,
+                    "executed_count": 0,
+                    "reversed_count": 0,
+                },
+            )
+            bucket_key = "executed_count" if status == "executed" else "reversed_count"
+            bucket[bucket_key] += 1
+
+        notebook_id = _coerce_uuid(notebook_payload.get("id"))
+        notebook_title = notebook_payload.get("title")
+        notebook_execution_id = _coerce_uuid(notebook_payload.get("execution_id"))
+        notebook_key = (notebook_id, notebook_title)
+        if any(value is not None for value in notebook_key):
+            nb_bucket = notebook_buckets.setdefault(
+                notebook_key,
+                {
+                    "notebook_entry_id": notebook_id,
+                    "notebook_title": notebook_title,
+                    "execution_id": notebook_execution_id,
+                    "executed_count": 0,
+                    "reversed_count": 0,
+                },
+            )
+            nb_key = "executed_count" if status == "executed" else "reversed_count"
+            nb_bucket[nb_key] += 1
 
         if action == "reassign":
             delta = _apply_reassign_override_effect(
@@ -265,6 +338,21 @@ def _summarize_override_events(
                 summary["ladder_delta"] += 0.5
             else:
                 summary["ladder_delta"] -= 0.5
+
+    summary["scenario_buckets"] = [
+        {
+            **bucket,
+            "net_count": bucket["executed_count"] - bucket["reversed_count"],
+        }
+        for bucket in scenario_buckets.values()
+    ]
+    summary["notebook_buckets"] = [
+        {
+            **bucket,
+            "net_count": bucket["executed_count"] - bucket["reversed_count"],
+        }
+        for bucket in notebook_buckets.values()
+    ]
 
     return summary
 
@@ -359,6 +447,10 @@ def compute_governance_analytics(
     publication_cadence_samples: list[float] = []
 
     reviewer_stats: dict[UUID, ReviewerCadenceAccumulator] = {}
+    scenario_totals: dict[
+        tuple[UUID | None, str | None, str | None], dict[str, Any]
+    ] = {}
+    notebook_totals: dict[tuple[UUID | None, str | None], dict[str, Any]] = {}
 
     for event in events:
         execution = event.execution
@@ -639,6 +731,43 @@ def compute_governance_analytics(
                 )
             )
 
+        for bucket in override_summary.get("scenario_buckets", []):
+            key = (
+                _coerce_uuid(bucket.get("scenario_id")),
+                bucket.get("scenario_name"),
+                bucket.get("folder_name"),
+            )
+            aggregate = scenario_totals.setdefault(
+                key,
+                {
+                    "scenario_id": key[0],
+                    "scenario_name": key[1],
+                    "folder_name": key[2],
+                    "executed_count": 0,
+                    "reversed_count": 0,
+                },
+            )
+            aggregate["executed_count"] += int(bucket.get("executed_count", 0) or 0)
+            aggregate["reversed_count"] += int(bucket.get("reversed_count", 0) or 0)
+
+        for bucket in override_summary.get("notebook_buckets", []):
+            key = (
+                _coerce_uuid(bucket.get("notebook_entry_id")),
+                bucket.get("notebook_title"),
+            )
+            aggregate = notebook_totals.setdefault(
+                key,
+                {
+                    "notebook_entry_id": key[0],
+                    "notebook_title": key[1],
+                    "execution_id": _coerce_uuid(bucket.get("execution_id")),
+                    "executed_count": 0,
+                    "reversed_count": 0,
+                },
+            )
+            aggregate["executed_count"] += int(bucket.get("executed_count", 0) or 0)
+            aggregate["reversed_count"] += int(bucket.get("reversed_count", 0) or 0)
+
     average_blocked_ratio = mean(blocked_ratios) if blocked_ratios else 0.0
     average_sla_within = mean(sla_ratio_samples) if sla_ratio_samples else None
 
@@ -674,7 +803,39 @@ def compute_governance_analytics(
         reviewer_load_band_counts=cadence_totals.load_band_counts,
     )
 
+    lineage_summary = schemas.GovernanceOverrideLineageAggregates(
+        scenarios=[
+            schemas.GovernanceScenarioOverrideAggregate(
+                scenario_id=item.get("scenario_id"),
+                scenario_name=item.get("scenario_name"),
+                folder_name=item.get("folder_name"),
+                executed_count=item.get("executed_count", 0),
+                reversed_count=item.get("reversed_count", 0),
+                net_count=(
+                    item.get("executed_count", 0) - item.get("reversed_count", 0)
+                ),
+            )
+            for item in scenario_totals.values()
+        ],
+        notebooks=[
+            schemas.GovernanceNotebookOverrideAggregate(
+                notebook_entry_id=item.get("notebook_entry_id"),
+                notebook_title=item.get("notebook_title"),
+                execution_id=item.get("execution_id"),
+                executed_count=item.get("executed_count", 0),
+                reversed_count=item.get("reversed_count", 0),
+                net_count=(
+                    item.get("executed_count", 0) - item.get("reversed_count", 0)
+                ),
+            )
+            for item in notebook_totals.values()
+        ],
+    )
+
     return schemas.GovernanceAnalyticsReport(
-        results=results, reviewer_cadence=reviewer_cadence, totals=totals
+        results=results,
+        reviewer_cadence=reviewer_cadence,
+        totals=totals,
+        lineage_summary=lineage_summary,
     )
 

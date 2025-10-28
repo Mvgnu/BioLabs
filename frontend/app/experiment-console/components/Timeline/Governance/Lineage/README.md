@@ -8,4 +8,12 @@
   - Collapses when no lineage data is supplied, keeping the decision timeline compact for legacy entries.
 - **Status**: pilot
 
+- **File**: `AnalyticsLineageWidget.tsx`
+- **Purpose**: visualises aggregated override lineage analytics (scenario and notebook buckets) inside the governance timeline so operators can quickly gauge lineage impact.
+- **Key behaviours**:
+  - Normalises analytics payload counts before rendering dual-column bucket lists with execution/reversal totals.
+  - Emits a container tagged `data-biolab-widget="governance-lineage-analytics"` for downstream telemetry capture.
+  - Hides itself automatically when no lineage aggregates are present to avoid empty chrome.
+- **Status**: pilot
+
 Update this document if additional lineage widgets (e.g., reversal summaries, knowledge graph drill-ins) are introduced so renderers remain discoverable.

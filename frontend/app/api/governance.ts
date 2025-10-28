@@ -16,8 +16,12 @@ import type {
   GovernanceReviewerCadenceReport,
   GovernanceReviewerCadenceTotals,
   GovernanceReviewerLoadBandCounts,
+  GovernanceScenarioOverrideAggregate,
+  GovernanceNotebookOverrideAggregate,
+  GovernanceOverrideLineageAggregates,
   GovernanceOverrideActionRecord,
   GovernanceOverrideActionRequest,
+  GovernanceOverrideReverseRequest,
   GovernanceOverrideRecommendationReport,
 } from '../types'
 
@@ -142,6 +146,16 @@ export const governanceApi = {
     )
     return response.data
   },
+  async reverseOverride(
+    recommendationId: string,
+    payload: GovernanceOverrideReverseRequest,
+  ) {
+    const response = await api.post<GovernanceOverrideActionRecord>(
+      `/api/governance/recommendations/override/${recommendationId}/reverse`,
+      payload,
+    )
+    return response.data
+  },
   async getBaseline(baselineId: string) {
     const response = await api.get<GovernanceBaselineVersion>(
       `/api/governance/baselines/${baselineId}`,
@@ -231,6 +245,35 @@ const mapLoadBandCounts = (
   saturated: Number(counts.saturated ?? 0),
 })
 
+const mapScenarioOverrideAggregate = (
+  bucket: GovernanceScenarioOverrideAggregate,
+): GovernanceScenarioOverrideAggregate => ({
+  scenario_id: bucket.scenario_id ?? null,
+  scenario_name: bucket.scenario_name ?? null,
+  folder_name: bucket.folder_name ?? null,
+  executed_count: Number(bucket.executed_count ?? 0),
+  reversed_count: Number(bucket.reversed_count ?? 0),
+  net_count: Number(bucket.net_count ?? 0),
+})
+
+const mapNotebookOverrideAggregate = (
+  bucket: GovernanceNotebookOverrideAggregate,
+): GovernanceNotebookOverrideAggregate => ({
+  notebook_entry_id: bucket.notebook_entry_id ?? null,
+  notebook_title: bucket.notebook_title ?? null,
+  execution_id: bucket.execution_id ?? null,
+  executed_count: Number(bucket.executed_count ?? 0),
+  reversed_count: Number(bucket.reversed_count ?? 0),
+  net_count: Number(bucket.net_count ?? 0),
+})
+
+const mapGovernanceOverrideLineageAggregates = (
+  summary: GovernanceOverrideLineageAggregates,
+): GovernanceOverrideLineageAggregates => ({
+  scenarios: summary.scenarios.map((item) => mapScenarioOverrideAggregate(item)),
+  notebooks: summary.notebooks.map((item) => mapNotebookOverrideAggregate(item)),
+})
+
 export const mapGovernanceReviewerCadence = (
   cadence: GovernanceReviewerCadenceSummary,
 ): GovernanceReviewerCadenceSummary => ({
@@ -282,6 +325,7 @@ export const mapGovernanceAnalyticsReport = (
   reviewer_cadence: report.reviewer_cadence.map((item) =>
     mapGovernanceReviewerCadence(item),
   ),
+  lineage_summary: mapGovernanceOverrideLineageAggregates(report.lineage_summary),
 })
 
 const mapGovernanceReviewerCadenceTotals = (

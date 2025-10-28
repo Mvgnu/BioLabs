@@ -1,0 +1,29 @@
+# Governance Timeline Lineage Contracts
+
+## Overview
+
+The governance decision timeline now surfaces override lineage data alongside analytics snapshots and captures override reversal events with cooldown metadata. Override actions must include lineage payloads describing the originating scenario and/or notebook entries so that analytics can aggregate activity by provenance. A dedicated Alembic migration (`7c8d21f34abc_backfill_override_lineage.py`) backfills historical override records that were missing lineage rows by extracting any preserved detail snapshots, while migration `8d4f6c7a9b01_override_reversal_events.py` introduces structured reversal event storage.
+
+## Data Contract
+
+- **Requests**: Override write APIs (`accept`, `execute`, `decline`) require a `lineage` object with at least one of `scenario_id` or `notebook_entry_id`. Reversal APIs accept optional `metadata.cooldown_minutes` to enforce a post-reversal cooldown window.
+- **Persistence**: `governance_override_lineages` stores scenario/notebook snapshots, capture metadata, and tags the `metadata` JSON with `"backfilled": true` for rows created by the migration.
+- **Reversal Storage**: `governance_override_reversal_events` retains reversal actor attribution, baseline linkage, cooldown expiry, and a JSON diff between the original override detail snapshot and the reversal output. The ORM exposes this payload via `GovernanceOverrideAction.reversal_event_payload` for API serialization.
+- **Analytics**: `compute_governance_analytics` aggregates lineage activity into scenario and notebook buckets. These aggregates are embedded in timeline analytics entries under `detail.lineage_summary`.
+
+## Backfill Limitations
+
+- Backfill only occurs when historical `detail_snapshot` payloads expose a `lineage`, `scenario`, or `notebook_entry` object. Overrides without any provenance in their stored detail remain without lineage.
+- Snapshot metadata is reconstructed best-effort; missing `id` fields or stale titles are preserved as-is. Operators should audit critical overrides manually if downstream analytics look incomplete.
+
+## Frontend Rendering
+
+- `ScenarioContextWidget` continues to render per-entry lineage context.
+- `AnalyticsLineageWidget` visualises aggregated scenario/notebook override counts using the `lineage_summary` payload.
+- `ReversalDiffViewer` displays before/after diffs, actor attribution, and cooldown countdowns when `detail.reversal_event` is populated. Timeline consumers should ignore `detail.reversal_event` when absent.
+
+## Operational Notes
+
+- Override requests missing lineage now fail with a 422 error. Clients must upgrade before deploying the migration.
+- Reversal submissions are rejected while `governance_override_reversal_events.cooldown_expires_at` lies in the future, preventing double reversal during the cooldown window.
+- The migrations are idempotent; rerunning them will not duplicate lineage rows or reversal events thanks to unique `override_id` constraints.
