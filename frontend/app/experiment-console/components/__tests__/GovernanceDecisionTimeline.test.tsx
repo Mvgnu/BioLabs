@@ -101,4 +101,41 @@ describe('GovernanceDecisionTimeline', () => {
     expect(screen.getByText('Lineage override analytics')).toBeTruthy()
     expect(screen.getByText('Scenario Analytics')).toBeTruthy()
   })
+
+  it('renders live lock and cooldown signals when present', () => {
+    const liveEntry = {
+      ...baseEntry,
+      entry_id: 'override-live',
+      entry_type: 'override_action' as const,
+      status: 'executed',
+      detail: {
+        recommendation_id: 'cadence_overload:baseline',
+        detail: {},
+      },
+      live_state: {
+        override_id: 'override-123',
+        recommendation_id: 'cadence_overload:baseline',
+        execution_id: 'exec-1',
+        execution_hash: 'hash-live',
+        lock: {
+          token: 'lock-abc',
+          actor: { id: 'user-1', name: 'Ops Lead', email: 'ops@example.com' },
+          escalation_prompt: 'Override Actor lock engaged',
+          scope: 'execution',
+        },
+        cooldown: {
+          remaining_seconds: 75,
+          window_minutes: 30,
+        },
+      },
+    }
+
+    render(<GovernanceDecisionTimeline entries={[liveEntry]} />, {
+      wrapper: createWrapper(),
+    })
+
+    expect(screen.getByText(/Live reversal lock/i)).toBeTruthy()
+    expect(screen.getByText('Ops Lead')).toBeTruthy()
+    expect(screen.getByText(/remaining/i)).toBeTruthy()
+  })
 })
