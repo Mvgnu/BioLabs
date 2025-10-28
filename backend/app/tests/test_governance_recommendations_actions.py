@@ -44,7 +44,7 @@ def _create_reviewer() -> models.User:
 
 def test_override_reassign_execution_flow(client):
     operator, headers = create_user_and_headers()
-    team_id = attach_team_membership(operator)
+    team_id = attach_team_membership(operator, role="lead")
     execution_id = seed_preview_event(operator, team_id)
     baseline = _get_current_baseline(execution_id)
     reviewer = _create_reviewer()
@@ -112,7 +112,7 @@ def test_override_reassign_execution_flow(client):
 
 def test_override_execute_is_idempotent(client):
     operator, headers = create_user_and_headers()
-    team_id = attach_team_membership(operator)
+    team_id = attach_team_membership(operator, role="lead")
     execution_id = seed_preview_event(operator, team_id)
     baseline = _get_current_baseline(execution_id)
     reviewer = _create_reviewer()
@@ -171,7 +171,7 @@ def test_override_execute_is_idempotent(client):
 
 def test_override_execution_requires_access(client):
     operator, headers = create_user_and_headers()
-    team_id = attach_team_membership(operator)
+    team_id = attach_team_membership(operator, role="lead")
     execution_id = seed_preview_event(operator, team_id)
     baseline = _get_current_baseline(execution_id)
     reviewer = _create_reviewer()
@@ -200,7 +200,7 @@ def test_override_execution_requires_access(client):
 
 def test_override_reversal_flow(client):
     operator, headers = create_user_and_headers()
-    team_id = attach_team_membership(operator)
+    team_id = attach_team_membership(operator, role="lead")
     execution_id = seed_preview_event(operator, team_id)
     baseline = _get_current_baseline(execution_id)
     reviewer = _create_reviewer()
@@ -275,13 +275,32 @@ def test_override_reversal_flow(client):
         payloads = [event.payload for event in events]
         assert payloads[-1].get("status") == "reversed"
         assert payloads[-1].get("detail", {}).get("reversal") is True
+
+        override_record = (
+            db.query(models.GovernanceOverrideAction)
+            .filter(models.GovernanceOverrideAction.recommendation_id == recommendation_id)
+            .one()
+        )
+        lock_events = (
+            db.query(models.GovernanceOverrideLockEvent)
+            .filter(models.GovernanceOverrideLockEvent.override_id == override_record.id)
+            .order_by(models.GovernanceOverrideLockEvent.created_at.asc())
+            .all()
+        )
+        assert [event.event_type for event in lock_events] == ["acquired", "released"]
+        first_event = lock_events[0]
+        assert first_event.tier_key == "override_actor"
+        assert first_event.tier == "override_actor"
+        assert first_event.tier_level == 80
+        assert first_event.actor_id == operator.id
+        assert first_event.lock_token is not None
     finally:
         db.close()
 
 
 def test_override_reversal_respects_active_lock(client):
     operator, headers = create_user_and_headers()
-    team_id = attach_team_membership(operator)
+    team_id = attach_team_membership(operator, role="lead")
     execution_id = seed_preview_event(operator, team_id)
     baseline = _get_current_baseline(execution_id)
     reviewer = _create_reviewer()
@@ -318,6 +337,10 @@ def test_override_reversal_respects_active_lock(client):
         record.reversal_lock_token = "locked"
         record.reversal_lock_acquired_at = datetime.now(timezone.utc)
         record.reversal_lock_actor_id = operator.id
+        record.reversal_lock_tier_key = "team:lead"
+        record.reversal_lock_tier = "lead"
+        record.reversal_lock_tier_level = 50
+        record.reversal_lock_scope = f"team:{team_id}"
         db.add(record)
         db.commit()
     finally:
@@ -336,4 +359,55 @@ def test_override_reversal_respects_active_lock(client):
     )
     assert response.status_code == 400
     assert "already being processed" in response.json()["detail"]
+
+
+def test_override_reversal_enforces_escalation_tier(client):
+    operator, headers = create_user_and_headers()
+    team_id = attach_team_membership(operator, role="lead")
+    execution_id = seed_preview_event(operator, team_id)
+    baseline = _get_current_baseline(execution_id)
+    reviewer = _create_reviewer()
+
+    recommendation_id = f"cadence_overload:{baseline.id}"
+    execute_payload = {
+        "execution_id": str(execution_id),
+        "action": "reassign",
+        "baseline_id": str(baseline.id),
+        "target_reviewer_id": str(reviewer.id),
+        "notes": "Applying override",
+        "metadata": {"reversible": True},
+        "lineage": {
+            "scenario_id": str(uuid.uuid4()),
+            "metadata": {"source": "test"},
+        },
+    }
+    execute_response = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/execute",
+        headers=headers,
+        json=execute_payload,
+    )
+    assert execute_response.status_code == 200
+
+    junior, junior_headers = create_user_and_headers()
+    db = TestingSessionLocal()
+    try:
+        db.add(models.TeamMember(team_id=team_id, user_id=junior.id, role="member"))
+        db.commit()
+    finally:
+        db.close()
+
+    reversal_payload = {
+        "execution_id": str(execution_id),
+        "baseline_id": str(baseline.id),
+        "notes": "Undo override",
+        "metadata": {"reason": "operator_request"},
+    }
+    response = client.post(
+        f"/api/governance/recommendations/override/{recommendation_id}/reverse",
+        headers=junior_headers,
+        json=reversal_payload,
+    )
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "requires reviewer tier" in detail
 

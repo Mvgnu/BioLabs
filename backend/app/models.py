@@ -626,8 +626,18 @@ class GovernanceOverrideAction(Base):
     reversal_lock_actor_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    reversal_lock_tier_key = Column(String, nullable=True)
+    reversal_lock_tier = Column(String, nullable=True)
+    reversal_lock_tier_level = Column(Integer, nullable=True)
+    reversal_lock_scope = Column(String, nullable=True)
     reversal_lock_actor = relationship(
         "User", foreign_keys=[reversal_lock_actor_id], lazy="joined"
+    )
+    lock_events = relationship(
+        "GovernanceOverrideLockEvent",
+        back_populates="override",
+        cascade="all, delete-orphan",
+        order_by="GovernanceOverrideLockEvent.created_at",
     )
 
     @property
@@ -1094,6 +1104,36 @@ class ExecutionNarrativeApprovalAction(Base):
     stage = relationship("ExecutionNarrativeApprovalStage", back_populates="actions")
     actor = relationship("User", foreign_keys=[actor_id])
     delegation_target = relationship("User", foreign_keys=[delegation_target_id])
+
+
+class GovernanceOverrideLockEvent(Base):
+    __tablename__ = "governance_override_lock_events"
+
+    # purpose: capture reversal lock lifecycle events for governance operators
+    # status: pilot
+    # depends_on: governance_override_actions, teams, users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    override_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_override_actions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    actor_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    event_type = Column(String, nullable=False)
+    lock_token = Column(String(64), nullable=True)
+    tier_key = Column(String, nullable=True)
+    tier = Column(String, nullable=True)
+    tier_level = Column(Integer, nullable=True)
+    scope = Column(String, nullable=True)
+    reason = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    override = relationship("GovernanceOverrideAction", back_populates="lock_events")
+    team = relationship("Team")
+    actor = relationship("User", foreign_keys=[actor_id])
 
 
 class ExecutionNarrativeExportAttachment(Base):

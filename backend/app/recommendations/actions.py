@@ -1,6 +1,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import copy
 import hashlib
@@ -13,11 +15,20 @@ from sqlalchemy.orm import Session
 
 import uuid
 
-from .. import models, schemas
+import logging
+
+from .. import models, schemas, pubsub
 from ..eventlog import (
     record_baseline_event,
     record_governance_override_action_event,
 )
+from ..rbac import (
+    describe_level,
+    required_reversal_level,
+    resolve_override_escalation_tier,
+)
+
+logger = logging.getLogger(__name__)
 
 # purpose: execute governance override workflows and persist auditable action records
 # inputs: recommendation metadata, RBAC-verified ORM entities, acting user
@@ -27,6 +38,22 @@ from ..eventlog import (
 ActionResult = Tuple[models.GovernanceOverrideAction, Dict[str, Any]]
 
 REVERSAL_LOCK_TTL_SECONDS = 300
+
+
+@dataclass(frozen=True)
+class ReversalLockContext:
+    """Capture metadata about a reversal lock acquisition."""
+
+    # purpose: transport reversal lock metadata across workflow helpers
+    # inputs: generated lock token, RBAC tier key/label/level, scope identifier, optional team context
+    # outputs: immutable context for auditing and event fan-out
+    # status: pilot
+    token: str
+    tier_key: str
+    tier_label: str
+    tier_level: int
+    scope: str | None
+    team_id: UUID | None
 
 
 def _stable_json_dumps(payload: Dict[str, Any]) -> str:
@@ -83,8 +110,20 @@ def _acquire_reversal_lock(
     *,
     record: models.GovernanceOverrideAction,
     actor: models.User,
-) -> str:
+) -> ReversalLockContext:
     # purpose: guard against concurrent reversal attempts targeting the same override
+    tier = resolve_override_escalation_tier(db, user=actor, override=record)
+    if tier is None:
+        raise ValueError(
+            "Override reversal requires governance ladder membership; no escalation tier found for operator",
+        )
+    required_level = required_reversal_level(record.action)
+    if tier.level < required_level:
+        raise ValueError(
+            "Override reversal requires "
+            f"{describe_level(required_level)} tier or higher; "
+            f"operator has {tier.label} tier",
+        )
     token = uuid.uuid4().hex
     now = datetime.now(timezone.utc)
     expiry_cutoff = now - timedelta(seconds=REVERSAL_LOCK_TTL_SECONDS)
@@ -106,6 +145,10 @@ def _acquire_reversal_lock(
             reversal_lock_token=token,
             reversal_lock_acquired_at=now,
             reversal_lock_actor_id=actor.id,
+            reversal_lock_tier_key=tier.key,
+            reversal_lock_tier=tier.label,
+            reversal_lock_tier_level=tier.level,
+            reversal_lock_scope=tier.scope,
         )
     ).execution_options(synchronize_session=False)
     result = db.execute(update_stmt)
@@ -115,7 +158,14 @@ def _acquire_reversal_lock(
         )
     db.flush()
     db.refresh(record)
-    return token
+    return ReversalLockContext(
+        token=token,
+        tier_key=tier.key,
+        tier_label=tier.label,
+        tier_level=tier.level,
+        scope=tier.scope,
+        team_id=tier.team_id,
+    )
 
 
 def _release_reversal_lock(
@@ -134,11 +184,89 @@ def _release_reversal_lock(
             reversal_lock_token=None,
             reversal_lock_acquired_at=None,
             reversal_lock_actor_id=None,
+            reversal_lock_tier_key=None,
+            reversal_lock_tier=None,
+            reversal_lock_tier_level=None,
+            reversal_lock_scope=None,
         )
     )
     db.execute(release_stmt.execution_options(synchronize_session=False))
     db.flush()
     db.refresh(record)
+
+
+def _dispatch_lock_event(topic: str, payload: dict[str, Any]) -> None:
+    # purpose: schedule asynchronous pub/sub delivery for lock state changes
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    try:
+        loop.create_task(pubsub.publish_governance_event(topic, payload))
+    except RuntimeError:
+        logger.exception("Failed to schedule governance lock event publish")
+
+
+def _record_reversal_lock_event(
+    db: Session,
+    *,
+    record: models.GovernanceOverrideAction,
+    actor: models.User | None,
+    event_type: str,
+    context: ReversalLockContext | None,
+    reason: str | None = None,
+) -> models.GovernanceOverrideLockEvent:
+    # purpose: persist reversal lock lifecycle audit rows and notify subscribers
+    # inputs: ORM session, override action, acting user metadata, lock event payload
+    # outputs: GovernanceOverrideLockEvent persisted record
+    # status: pilot
+    team_id = None
+    if context and context.team_id:
+        team_id = context.team_id
+    elif record.baseline and record.baseline.team_id:
+        team_id = record.baseline.team_id
+    actor_id = actor.id if actor is not None else None
+    event = models.GovernanceOverrideLockEvent(
+        override_id=record.id,
+        team_id=team_id,
+        actor_id=actor_id,
+        event_type=event_type,
+        lock_token=context.token if context else None,
+        tier_key=context.tier_key if context else record.reversal_lock_tier_key,
+        tier=context.tier_label if context else record.reversal_lock_tier,
+        tier_level=context.tier_level if context else record.reversal_lock_tier_level,
+        scope=context.scope if context else record.reversal_lock_scope,
+        reason=reason,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(event)
+    db.flush()
+    db.refresh(event)
+    payload: dict[str, Any] = {
+        "id": str(event.id),
+        "override_id": str(record.id),
+        "event_type": event.event_type,
+        "lock_token": event.lock_token,
+        "tier": event.tier,
+        "tier_key": event.tier_key,
+        "tier_level": event.tier_level,
+        "scope": event.scope,
+        "reason": event.reason,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "actor": None,
+        "cooldown_expires_at": (
+            record.cooldown_expires_at.isoformat() if record.cooldown_expires_at else None
+        ),
+    }
+    if actor is not None:
+        payload["actor"] = {
+            "id": str(actor.id),
+            "name": actor.full_name,
+            "email": actor.email,
+        }
+    topic = f"override:{record.id}:locks"
+    _dispatch_lock_event(topic, payload)
+    return event
 
 
 def _parse_rule_key(recommendation_id: str, fallback: str | None = None) -> str:
@@ -901,9 +1029,16 @@ def reverse_override(
                 "Override reversal is cooling down and cannot be retried yet"
             )
 
-    lock_token: str | None = None
+    lock_context: ReversalLockContext | None = None
     try:
-        lock_token = _acquire_reversal_lock(db, record=record, actor=actor)
+        lock_context = _acquire_reversal_lock(db, record=record, actor=actor)
+        _record_reversal_lock_event(
+            db,
+            record=record,
+            actor=actor,
+            event_type="acquired",
+            context=lock_context,
+        )
 
         baseline_context = baseline
         if baseline_context is None and record.baseline_id is not None:
@@ -1004,7 +1139,17 @@ def reverse_override(
         )
         return record, detail
     finally:
-        _release_reversal_lock(db, record=record, token=lock_token)
+        if lock_context is not None:
+            try:
+                _release_reversal_lock(db, record=record, token=lock_context.token)
+            finally:
+                _record_reversal_lock_event(
+                    db,
+                    record=record,
+                    actor=actor,
+                    event_type="released",
+                    context=lock_context,
+                )
 
 
 __all__ = [

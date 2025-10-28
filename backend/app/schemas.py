@@ -1020,6 +1020,12 @@ class GovernanceOverrideActionOutcome(BaseModel):
     )
     cooldown_expires_at: datetime | None = None
     cooldown_window_minutes: int | None = None
+    reversal_lock_token: str | None = None
+    reversal_lock_tier_key: str | None = None
+    reversal_lock_tier: str | None = None
+    reversal_lock_tier_level: int | None = None
+    reversal_lock_scope: str | None = None
+    reversal_lock_actor_id: UUID | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
