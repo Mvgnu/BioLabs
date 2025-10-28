@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     Time,
     Text,
+    Float,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -1698,6 +1699,177 @@ class ServiceRequest(Base):
     payment_status = Column(String, default="pending")
     status = Column(String, default="pending")
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
+
+
+class DNAAsset(Base):
+    __tablename__ = "dna_assets"
+
+    # purpose: persist DNA construct descriptors for lifecycle tracking and governance
+    # status: experimental
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    status = Column(String, default="draft", nullable=False)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+    latest_version_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_asset_versions.id"),
+        nullable=True,
+    )
+    meta = Column("metadata", JSON, default=dict)
+
+    versions = relationship(
+        "DNAAssetVersion",
+        back_populates="asset",
+        cascade="all, delete-orphan",
+        order_by="DNAAssetVersion.version_index",
+        foreign_keys="DNAAssetVersion.asset_id",
+    )
+    latest_version = relationship(
+        "DNAAssetVersion",
+        foreign_keys=[latest_version_id],
+        post_update=True,
+    )
+    guardrail_events = relationship(
+        "DNAAssetGuardrailEvent",
+        back_populates="asset",
+        cascade="all, delete-orphan",
+        order_by="DNAAssetGuardrailEvent.created_at.desc()",
+    )
+    tags_rel = relationship(
+        "DNAAssetTag",
+        back_populates="asset",
+        cascade="all, delete-orphan",
+    )
+
+
+class DNAAssetVersion(Base):
+    __tablename__ = "dna_asset_versions"
+
+    # purpose: capture immutable sequence payloads for each DNA asset revision
+    # status: experimental
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version_index = Column(Integer, nullable=False)
+    sequence = Column(Text, nullable=False)
+    sequence_checksum = Column(String, nullable=False)
+    sequence_length = Column(Integer, nullable=False)
+    gc_content = Column(Float, nullable=False)
+    meta = Column("metadata", JSON, default=dict)
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    asset = relationship(
+        "DNAAsset",
+        back_populates="versions",
+        foreign_keys=[asset_id],
+    )
+    annotations = relationship(
+        "DNAAssetAnnotation",
+        back_populates="version",
+        cascade="all, delete-orphan",
+    )
+    attachments = relationship(
+        "DNAAssetAttachment",
+        back_populates="version",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (sa.UniqueConstraint("asset_id", "version_index"),)
+
+
+class DNAAssetAnnotation(Base):
+    __tablename__ = "dna_asset_annotations"
+
+    # purpose: persist annotation features tied to specific DNA asset versions
+    # status: experimental
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    version_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_asset_versions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    label = Column(String, nullable=False)
+    feature_type = Column(String, nullable=False)
+    start = Column(Integer, nullable=False)
+    end = Column(Integer, nullable=False)
+    strand = Column(Integer, nullable=True)
+    qualifiers = Column(JSON, default=dict)
+
+    version = relationship("DNAAssetVersion", back_populates="annotations")
+
+
+class DNAAssetTag(Base):
+    __tablename__ = "dna_asset_tags"
+
+    # purpose: maintain normalized tags for DNA asset discovery and sharing filters
+    # status: experimental
+    asset_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_assets.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    tag = Column(String, primary_key=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    asset = relationship("DNAAsset", back_populates="tags_rel")
+
+
+class DNAAssetAttachment(Base):
+    __tablename__ = "dna_asset_attachments"
+
+    # purpose: link supporting files (QC traces, design docs) to DNA asset versions
+    # status: experimental
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    version_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_asset_versions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    file_id = Column(UUID(as_uuid=True), ForeignKey("files.id"), nullable=True)
+    description = Column(Text, nullable=True)
+    meta = Column("metadata", JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    version = relationship("DNAAssetVersion", back_populates="attachments")
+
+
+class DNAAssetGuardrailEvent(Base):
+    __tablename__ = "dna_asset_guardrail_events"
+
+    # purpose: log guardrail transitions for DNA asset governance dashboards
+    # status: experimental
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_assets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version_id = Column(UUID(as_uuid=True), ForeignKey("dna_asset_versions.id"), nullable=True)
+    event_type = Column(String, nullable=False)
+    details = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    asset = relationship("DNAAsset", back_populates="guardrail_events")
+    version = relationship("DNAAssetVersion")
+
 
 class ItemType(Base):
     __tablename__ = "item_types"

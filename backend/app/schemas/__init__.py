@@ -1,7 +1,32 @@
+"""Pydantic schemas consolidating backend API contracts."""
+
+# purpose: aggregate request and response schemas for FastAPI surfaces and services
+# status: transitional
+# related_docs: docs/README.md
+
 from datetime import datetime, time
 from typing import Optional, Any, Dict, Literal, List
 from pydantic import BaseModel, EmailStr, ConfigDict, Field, model_validator
 from uuid import UUID
+
+from .dna_assets import (
+    DNAAnnotationOut,
+    DNAAnnotationPayload,
+    DNAAssetCreate,
+    DNAAssetDiffResponse,
+    DNAAssetGovernanceUpdate,
+    DNAAssetGuardrailEventOut,
+    DNAAssetSummary,
+    DNAAssetVersionCreate,
+    DNAAssetVersionOut,
+)
+from .sequence_toolkit import (
+    AssemblySimulationConfig,
+    PrimerDesignConfig,
+    QCConfig,
+    RestrictionDigestConfig,
+    SequenceToolkitProfile,
+)
 
 
 class UserCreate(BaseModel):

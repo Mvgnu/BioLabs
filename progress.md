@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2025-07-11
+- Landed DNA asset lifecycle foundation: Alembic migration `20241010_02_dna_asset_lifecycle`, SQLAlchemy models, and FastAPI routes exposing create/list/version/diff/guardrail workflows.
+- Expanded `sequence_toolkit` with configuration schemas, reusable sequence metrics, and diff utilities to support cloning planner and DNA assets.
+- Implemented `backend/app/services/dna_assets.py`, wiring persistence, diffing, guardrail logging, plus pytest coverage and documentation updates (`docs/dna_assets.md`).
+
 ## 2025-07-10
 - Landed cloning planner backend scaffolding including `CloningPlannerSession` model, Alembic migration, FastAPI routes, and serialization helpers for resumable assembly workflows.
 - Added pytest coverage for session creation, stage progression, and guardrail-aware finalization plus documentation updates highlighting new orchestration endpoints.
