@@ -67,14 +67,18 @@ def _assembly_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _qc_guardrail_summary(result: list[dict[str, Any]]) -> dict[str, Any]:
+def _qc_guardrail_summary(result: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
     """Summarise QC checkpoints for guardrail tracking."""
 
-    statuses = {entry.get("status") for entry in result}
+    if isinstance(result, dict):
+        reports = result.get("reports", [])
+    else:
+        reports = result
+    statuses = {entry.get("status") for entry in reports}
     state = "ok" if statuses <= {"pass"} else "review"
     return {
         "qc_state": state,
-        "qc_checks": len(result),
+        "qc_checks": len(reports),
     }
 
 

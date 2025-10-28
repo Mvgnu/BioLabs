@@ -7,8 +7,12 @@
 
 from __future__ import annotations
 
+import json
+import math
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from statistics import mean
 from typing import Any
 
@@ -17,9 +21,22 @@ import primer3
 from .. import sequence as sequence_utils
 from ..schemas.sequence_toolkit import (
     AssemblySimulationConfig,
+    AssemblySimulationResult,
+    AssemblyStepMetrics,
+    EnzymeMetadata,
+    PrimerCandidate,
     PrimerDesignConfig,
+    PrimerDesignRecord,
+    PrimerDesignResponse,
+    PrimerDesignSummary,
+    PrimerThermodynamics,
     QCConfig,
+    QCReport,
+    QCReportResponse,
     RestrictionDigestConfig,
+    RestrictionDigestResponse,
+    RestrictionDigestResult,
+    RestrictionDigestSite,
     SequenceToolkitProfile,
 )
 
@@ -35,6 +52,8 @@ class PrimerDesignResult:
     gc_content: float
     start: int
     length: int
+    hairpin_delta_g: float | None = None
+    homodimer_delta_g: float | None = None
 
 
 @dataclass
@@ -47,6 +66,177 @@ class PrimerSet:
     reverse: PrimerDesignResult
     product_size: int
     warnings: list[str]
+
+
+_GAS_CONSTANT = 1.987
+_BASE_DIR = Path(__file__).resolve().parent.parent
+_ENZYME_CATALOG_PATH = _BASE_DIR / "data" / "enzymes.json"
+
+_NEAREST_NEIGHBOR_PARAMS: dict[str, tuple[float, float]] = {
+    "AA": (-7.9, -22.2),
+    "TT": (-7.9, -22.2),
+    "AT": (-7.2, -20.4),
+    "TA": (-7.2, -21.3),
+    "CA": (-8.5, -22.7),
+    "TG": (-8.5, -22.7),
+    "GT": (-8.4, -22.4),
+    "AC": (-8.4, -22.4),
+    "CT": (-7.8, -21.0),
+    "AG": (-7.8, -21.0),
+    "GA": (-8.2, -22.2),
+    "TC": (-8.2, -22.2),
+    "CG": (-10.6, -27.2),
+    "GC": (-9.8, -24.4),
+    "GG": (-8.0, -19.9),
+    "CC": (-8.0, -19.9),
+}
+
+
+def _normalize_sequence(seq: str) -> str:
+    """Return uppercase DNA sequence replacing U with T."""
+
+    # purpose: create canonical uppercase DNA sequences for downstream heuristics
+    normalized = (seq or "").upper().replace("U", "T")
+    return normalized
+
+
+def _reverse_complement(seq: str) -> str:
+    """Return reverse complement of DNA sequence."""
+
+    table = str.maketrans("ACGTN", "TGCAN")
+    return _normalize_sequence(seq).translate(table)[::-1]
+
+
+def _nearest_neighbor_tm(
+    seq: str,
+    *,
+    na_conc_mM: float,
+    primer_conc_nM: float,
+) -> float:
+    """Compute melting temperature using nearest-neighbor thermodynamics."""
+
+    # purpose: provide calibrated tm scores for primer evaluation and guardrails
+    sequence = _normalize_sequence(seq)
+    if len(sequence) < 2:
+        return 0.0
+    delta_h = 0.0
+    delta_s = 0.0
+    for i in range(len(sequence) - 1):
+        pair = sequence[i : i + 2]
+        if pair not in _NEAREST_NEIGHBOR_PARAMS:
+            pair = pair[::-1]
+        enthalpy, entropy = _NEAREST_NEIGHBOR_PARAMS.get(pair, (-7.0, -20.0))
+        delta_h += enthalpy
+        delta_s += entropy
+    delta_h *= 1000  # convert to cal/mol
+    primer_conc = max(primer_conc_nM * 1e-9, 1e-12)
+    salt_conc = max(na_conc_mM * 1e-3, 1e-6)
+    denominator = delta_s + (_GAS_CONSTANT * math.log(primer_conc / 4))
+    if denominator == 0:
+        return 0.0
+    tm_kelvin = (delta_h / denominator) + (16.6 * math.log10(salt_conc))
+    tm_celsius = tm_kelvin - 273.15
+    return max(0.0, tm_celsius)
+
+
+def _max_hairpin_run(seq: str) -> int:
+    """Estimate longest complement run contributing to hairpin formation."""
+
+    # purpose: approximate secondary structure risk for single primers
+    sequence = _normalize_sequence(seq)
+    rc = _reverse_complement(sequence)
+    max_run = 0
+    for offset in range(3, len(sequence)):
+        run = 0
+        for idx in range(len(sequence) - offset):
+            if sequence[idx] == rc[offset + idx]:
+                run += 1
+                if run > max_run:
+                    max_run = run
+            else:
+                run = 0
+    return max_run
+
+
+def _max_homodimer_run(seq: str) -> int:
+    """Estimate longest homodimer complement run."""
+
+    # purpose: approximate homodimerization risk for primer validation
+    sequence = _normalize_sequence(seq)
+    rc = _reverse_complement(sequence)
+    max_run = 0
+    for offset in range(len(sequence)):
+        run = 0
+        for idx in range(len(sequence) - offset):
+            if sequence[offset + idx] == rc[idx]:
+                run += 1
+                if run > max_run:
+                    max_run = run
+            else:
+                run = 0
+    return max_run
+
+
+def _delta_g_from_run(match_length: int) -> float | None:
+    """Convert contiguous complement run length to approximate ΔG."""
+
+    # purpose: derive thermodynamic penalties from complement run length heuristics
+    if match_length < 4:
+        return None
+    return -1.5 * (match_length - 3)
+
+
+def _thermodynamic_profile(
+    sequence: str, primer_config: PrimerDesignConfig
+) -> tuple[float, float | None, float | None]:
+    """Return tm and secondary structure heuristics for a primer."""
+
+    # purpose: standardize tm/ΔG metrics used across planner workflows
+    tm_value = _nearest_neighbor_tm(
+        sequence,
+        na_conc_mM=primer_config.na_concentration_mM,
+        primer_conc_nM=primer_config.primer_concentration_nM,
+    )
+    hairpin_match = _max_hairpin_run(sequence)
+    homodimer_match = _max_homodimer_run(sequence)
+    return tm_value, _delta_g_from_run(hairpin_match), _delta_g_from_run(homodimer_match)
+
+
+@lru_cache(maxsize=1)
+def get_enzyme_catalog() -> list[EnzymeMetadata]:
+    """Load and cache curated enzyme metadata records."""
+
+    # purpose: surface curated restriction enzyme metadata for repeated lookups
+    if not _ENZYME_CATALOG_PATH.exists():
+        return []
+    with _ENZYME_CATALOG_PATH.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    return [EnzymeMetadata(**entry) for entry in payload]
+
+
+def _enzyme_index() -> dict[str, EnzymeMetadata]:
+    """Return catalog records keyed by normalized enzyme name."""
+
+    # purpose: accelerate metadata lookups during digest analysis
+    return {record.name.lower(): record for record in get_enzyme_catalog()}
+
+
+def _primer_candidate_from_result(result: PrimerDesignResult) -> PrimerCandidate:
+    """Convert dataclass metrics into a schema candidate object."""
+
+    # purpose: translate internal dataclass metrics into Pydantic schema payloads
+    thermo = PrimerThermodynamics(
+        tm=result.tm,
+        gc_content=result.gc_content,
+        hairpin_delta_g=result.hairpin_delta_g,
+        homodimer_delta_g=result.homodimer_delta_g,
+    )
+    return PrimerCandidate(
+        sequence=result.sequence,
+        start=result.start,
+        length=result.length,
+        thermodynamics=thermo,
+    )
 
 
 def _gc_content(seq: str) -> float:
@@ -163,18 +353,20 @@ def design_primers(
         product_size_range=product_size_range,
         target_tm=target_tm,
     )
-    results: dict[str, Any] = {"primers": [], "summary": {}}
+    records: list[PrimerDesignRecord] = []
     tm_values: list[float] = []
     for descriptor in template_sequences:
         name = descriptor.get("name") or descriptor.get("id") or "template"
         template = (descriptor.get("sequence") or "").upper()
         if len(template) < size_range[0]:
-            results["primers"].append(
-                {
-                    "name": name,
-                    "status": "insufficient_sequence",
-                    "reason": f"Sequence length {len(template)} below minimum {size_range[0]}",
-                }
+            records.append(
+                PrimerDesignRecord(
+                    name=name,
+                    status="insufficient_sequence",
+                    notes=[
+                        f"Sequence length {len(template)} below minimum {size_range[0]}",
+                    ],
+                )
             )
             continue
         seq_args = {
@@ -190,6 +382,7 @@ def design_primers(
             "PRIMER_OPT_SIZE": primer_config.opt_size,
             "PRIMER_MAX_SIZE": primer_config.max_size,
             "PRIMER_NUM_RETURN": primer_config.num_return,
+            "PRIMER_GC_CLAMP": primer_config.gc_clamp_min,
         }
         design = primer3.bindings.designPrimers(seq_args, global_args)
         forward_seq = design.get("PRIMER_LEFT_0_SEQUENCE")
@@ -205,50 +398,107 @@ def design_primers(
             forward_stats = None
             reverse_stats = None
             primer_source = "primer3"
+        forward_tm, forward_hairpin, forward_dimer = _thermodynamic_profile(
+            forward_seq, primer_config
+        )
+        reverse_tm, reverse_hairpin, reverse_dimer = _thermodynamic_profile(
+            reverse_seq, primer_config
+        )
         forward = PrimerDesignResult(
             sequence=forward_seq,
-            tm=(forward_stats or {"tm": design.get("PRIMER_LEFT_0_TM", tm_target)})["tm"],
-            gc_content=(forward_stats or {"gc_content": _gc_content(forward_seq)})["gc_content"],
+            tm=(
+                forward_stats or {"tm": design.get("PRIMER_LEFT_0_TM", forward_tm)}
+            )["tm"],
+            gc_content=(forward_stats or {"gc_content": _gc_content(forward_seq)})[
+                "gc_content"
+            ],
             start=(design.get("PRIMER_LEFT_0") or (0, len(forward_seq)))[0],
             length=(design.get("PRIMER_LEFT_0") or (0, len(forward_seq)))[1],
+            hairpin_delta_g=forward_hairpin,
+            homodimer_delta_g=forward_dimer,
         )
         reverse = PrimerDesignResult(
             sequence=reverse_seq,
-            tm=(reverse_stats or {"tm": design.get("PRIMER_RIGHT_0_TM", tm_target)})["tm"],
-            gc_content=(reverse_stats or {"gc_content": _gc_content(reverse_seq)})["gc_content"],
-            start=(design.get("PRIMER_RIGHT_0") or (len(template) - len(reverse_seq), len(reverse_seq)))[0],
-            length=(design.get("PRIMER_RIGHT_0") or (len(reverse_seq), len(reverse_seq)))[1],
+            tm=(
+                reverse_stats or {"tm": design.get("PRIMER_RIGHT_0_TM", reverse_tm)}
+            )["tm"],
+            gc_content=(reverse_stats or {"gc_content": _gc_content(reverse_seq)})[
+                "gc_content"
+            ],
+            start=(
+                design.get("PRIMER_RIGHT_0")
+                or (len(template) - len(reverse_seq), len(reverse_seq))
+            )[0],
+            length=(
+                design.get("PRIMER_RIGHT_0")
+                or (len(reverse_seq), len(reverse_seq))
+            )[1],
+            hairpin_delta_g=reverse_hairpin,
+            homodimer_delta_g=reverse_dimer,
         )
         product_size = design.get("PRIMER_PAIR_0_PRODUCT_SIZE") or len(template)
         tm_values.extend([forward.tm, reverse.tm])
         warnings: list[str] = []
+        notes: list[str] = []
+        if primer_source == "fallback":
+            notes.append("Primer3 returned no candidates; deterministic fallback used.")
         tm_delta = abs(forward.tm - reverse.tm)
         if tm_delta > 2.0:
             warnings.append(f"Primer Tm delta {tm_delta:.2f} exceeds tolerance")
         gc_delta = abs(forward.gc_content - reverse.gc_content)
         if gc_delta > 10:
             warnings.append(f"Primer GC delta {gc_delta:.2f} exceeds tolerance")
-        results["primers"].append(
-            {
-                "name": name,
-                "status": "ok",
-                "forward": forward.__dict__,
-                "reverse": reverse.__dict__,
-                "product_size": product_size,
-                "warnings": warnings,
-                "source": primer_source,
-            }
+        forward_clamp = sum(
+            1 for base in forward.sequence[-primer_config.gc_clamp_max :] if base in {"G", "C"}
+        )
+        reverse_clamp = sum(
+            1 for base in reverse.sequence[-primer_config.gc_clamp_max :] if base in {"G", "C"}
+        )
+        if forward_clamp < primer_config.gc_clamp_min or reverse_clamp < primer_config.gc_clamp_min:
+            warnings.append("GC clamp below configured minimum")
+        if forward.hairpin_delta_g and forward.hairpin_delta_g < -6:
+            warnings.append(
+                f"Forward primer predicted hairpin ΔG {forward.hairpin_delta_g:.2f} kcal/mol"
+            )
+        if reverse.hairpin_delta_g and reverse.hairpin_delta_g < -6:
+            warnings.append(
+                f"Reverse primer predicted hairpin ΔG {reverse.hairpin_delta_g:.2f} kcal/mol"
+            )
+        if forward.homodimer_delta_g and forward.homodimer_delta_g < -6:
+            warnings.append(
+                f"Forward primer homodimer ΔG {forward.homodimer_delta_g:.2f} kcal/mol"
+            )
+        if reverse.homodimer_delta_g and reverse.homodimer_delta_g < -6:
+            warnings.append(
+                f"Reverse primer homodimer ΔG {reverse.homodimer_delta_g:.2f} kcal/mol"
+            )
+        records.append(
+            PrimerDesignRecord(
+                name=name,
+                status="ok",
+                forward=_primer_candidate_from_result(forward),
+                reverse=_primer_candidate_from_result(reverse),
+                product_size=product_size,
+                warnings=warnings,
+                source=primer_source,
+                notes=notes,
+            )
         )
     if tm_values:
-        results["summary"] = {
-            "primer_count": len(tm_values) // 2,
-            "average_tm": mean(tm_values),
-            "min_tm": min(tm_values),
-            "max_tm": max(tm_values),
-        }
+        summary = PrimerDesignSummary(
+            primer_count=len(tm_values) // 2,
+            average_tm=mean(tm_values),
+            min_tm=min(tm_values),
+            max_tm=max(tm_values),
+        )
     else:
-        results["summary"] = {"primer_count": 0, "average_tm": 0.0, "min_tm": 0.0, "max_tm": 0.0}
-    return results
+        summary = PrimerDesignSummary(
+            primer_count=0,
+            average_tm=0.0,
+            min_tm=0.0,
+            max_tm=0.0,
+        )
+    return PrimerDesignResponse(primers=records, summary=summary).model_dump()
 
 
 def analyze_restriction_digest(
@@ -265,8 +515,24 @@ def analyze_restriction_digest(
     # status: experimental
     digest_config = _resolve_restriction_config(config, enzymes=enzymes)
     enzyme_list = list(digest_config.enzymes)
-    digest_results: list[dict[str, Any]] = []
+    catalog_index = _enzyme_index()
+    enzyme_catalog: list[EnzymeMetadata] = []
+    digest_results: list[RestrictionDigestResult] = []
     compatibility_alerts: list[str] = []
+    metadata_alerts: list[str] = []
+    for enzyme_name in enzyme_list:
+        meta = catalog_index.get(enzyme_name.lower())
+        if meta:
+            enzyme_catalog.append(meta)
+        else:
+            metadata_alerts.append(f"No catalog metadata available for {enzyme_name}")
+            enzyme_catalog.append(
+                EnzymeMetadata(
+                    name=enzyme_name,
+                    recognition_site="unknown",
+                    compatible_buffers=[],
+                )
+            )
     for descriptor in template_sequences:
         name = descriptor.get("name") or descriptor.get("id") or "template"
         template = descriptor.get("sequence") or ""
@@ -275,23 +541,44 @@ def analyze_restriction_digest(
             compatible = all(len(positions) > 0 for positions in site_map.values())
         else:
             compatible = any(len(positions) > 0 for positions in site_map.values())
+        buffer_alerts: list[str] = []
+        site_payload: dict[str, RestrictionDigestSite] = {}
+        for enzyme_name, positions in site_map.items():
+            meta = catalog_index.get(enzyme_name.lower())
+            if digest_config.reaction_buffer and meta:
+                if digest_config.reaction_buffer not in meta.compatible_buffers:
+                    buffer_alerts.append(
+                        f"{enzyme_name} not validated for buffer {digest_config.reaction_buffer}"
+                    )
+            site_payload[enzyme_name] = RestrictionDigestSite(
+                enzyme=enzyme_name,
+                positions=positions,
+                recognition_site=(meta.recognition_site if meta else None),
+                metadata=meta,
+            )
+        digest_notes: list[str] = []
+        for enzyme_name, meta in ((entry.name, entry) for entry in enzyme_catalog):
+            if meta.star_activity_notes:
+                digest_notes.append(f"{enzyme_name}: {meta.star_activity_notes}")
         digest_results.append(
-            {
-                "name": name,
-                "sites": site_map,
-                "compatible": compatible,
-            }
+            RestrictionDigestResult(
+                name=name,
+                sites=site_payload,
+                compatible=compatible,
+                buffer_alerts=buffer_alerts,
+                notes=digest_notes,
+            )
         )
         absent_enzymes = [enz for enz, positions in site_map.items() if not positions]
         if absent_enzymes:
             compatibility_alerts.append(
                 f"{name} lacks cut sites for {', '.join(absent_enzymes)}"
             )
-    return {
-        "enzymes": enzyme_list,
-        "digests": digest_results,
-        "alerts": compatibility_alerts,
-    }
+    return RestrictionDigestResponse(
+        enzymes=enzyme_catalog,
+        digests=digest_results,
+        alerts=compatibility_alerts + metadata_alerts,
+    ).model_dump()
 
 
 def simulate_assembly(
@@ -308,40 +595,48 @@ def simulate_assembly(
     # outputs: plan structure containing steps and success scoring
     # status: experimental
     assembly_config = _resolve_assembly_config(config, strategy=strategy)
-    steps: list[dict[str, Any]] = []
+    steps: list[AssemblyStepMetrics] = []
     success_scores: list[float] = []
     primers = primer_results.get("primers", [])
-    digests = {item["name"]: item for item in digest_results.get("digests", [])}
+    digests = {
+        item["name"]: item for item in digest_results.get("digests", [])
+    }
     for entry in primers:
         name = entry.get("name")
         digest = digests.get(name, {})
         tm_delta = 0.0
         if entry.get("status") == "ok":
-            forward_tm = entry["forward"]["tm"]
-            reverse_tm = entry["reverse"]["tm"]
+            forward_tm = entry["forward"]["thermodynamics"]["tm"]
+            reverse_tm = entry["reverse"]["thermodynamics"]["tm"]
             tm_delta = abs(forward_tm - reverse_tm)
-        site_count = sum(len(positions) for positions in digest.get("sites", {}).values())
+        site_count = 0
+        for site in digest.get("sites", {}).values():
+            if isinstance(site, dict):
+                site_positions = site.get("positions", [])
+            else:
+                site_positions = site
+            site_count += len(site_positions)
         score = assembly_config.base_success - (tm_delta * assembly_config.tm_penalty_factor)
         if site_count < assembly_config.minimal_site_count:
             score *= assembly_config.low_site_penalty
         score = max(0.0, min(1.0, score))
         success_scores.append(score)
         steps.append(
-            {
-                "template": name,
-                "strategy": assembly_config.strategy,
-                "expected_fragment_count": max(1, site_count),
-                "junction_success": score,
-                "warnings": entry.get("warnings", []),
-            }
+            AssemblyStepMetrics(
+                template=name,
+                strategy=assembly_config.strategy,
+                expected_fragment_count=max(1, site_count),
+                junction_success=score,
+                warnings=entry.get("warnings", []),
+            )
         )
-    return {
-        "strategy": assembly_config.strategy,
-        "steps": steps,
-        "average_success": mean(success_scores) if success_scores else 0.0,
-        "min_success": min(success_scores) if success_scores else 0.0,
-        "max_success": max(success_scores) if success_scores else 0.0,
-    }
+    return AssemblySimulationResult(
+        strategy=assembly_config.strategy,
+        steps=steps,
+        average_success=mean(success_scores) if success_scores else 0.0,
+        min_success=min(success_scores) if success_scores else 0.0,
+        max_success=max(success_scores) if success_scores else 0.0,
+    ).model_dump()
 
 
 def evaluate_qc_reports(
@@ -357,7 +652,7 @@ def evaluate_qc_reports(
     # outputs: list of qc assessment dicts consumed by planner responses
     # status: experimental
     qc_config = _resolve_qc_config(config)
-    reports: list[dict[str, Any]] = []
+    reports: list[QCReport] = []
     for step in assembly_plan.get("steps", []):
         status = (
             "pass"
@@ -365,15 +660,15 @@ def evaluate_qc_reports(
             else "review"
         )
         reports.append(
-            {
-                "template": step.get("template"),
-                "checkpoint": "assembly_quality",
-                "status": status,
-                "details": {
+            QCReport(
+                template=step.get("template"),
+                checkpoint="assembly_quality",
+                status=status,
+                details={
                     "junction_success": step.get("junction_success"),
                     "strategy": assembly_plan.get("strategy"),
                 },
-            }
+            )
         )
     for chromatogram in chromatograms or []:
         qc_status = (
@@ -383,11 +678,11 @@ def evaluate_qc_reports(
             else "review"
         )
         reports.append(
-            {
-                "template": chromatogram.get("template"),
-                "checkpoint": "chromatogram_validation",
-                "status": qc_status,
-                "details": chromatogram,
-            }
+            QCReport(
+                template=chromatogram.get("template"),
+                checkpoint="chromatogram_validation",
+                status=qc_status,
+                details=dict(chromatogram),
+            )
         )
-    return reports
+    return QCReportResponse(reports=reports).model_dump()

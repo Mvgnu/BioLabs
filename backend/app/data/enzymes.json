@@ -1,0 +1,46 @@
+[
+  {
+    "name": "EcoRI",
+    "recognition_site": "GAATTC",
+    "cut_pattern": "G^AATTC",
+    "overhang": "sticky",
+    "optimal_temperature_c": 37,
+    "compatible_buffers": ["CutSmart", "Buffer E"],
+    "methylation_sensitivity": "dam, dcm",
+    "star_activity_notes": "Star activity observed above 0.1 U/µL and in low-salt buffers.",
+    "supplier": "NEB"
+  },
+  {
+    "name": "BamHI-HF",
+    "recognition_site": "GGATCC",
+    "cut_pattern": "G^GATCC",
+    "overhang": "sticky",
+    "optimal_temperature_c": 37,
+    "compatible_buffers": ["CutSmart"],
+    "methylation_sensitivity": "dam",
+    "star_activity_notes": "High-fidelity formulation reduces off-target cleavage.",
+    "supplier": "NEB"
+  },
+  {
+    "name": "BsaI-HFv2",
+    "recognition_site": "GGTCTC",
+    "cut_pattern": "GGTCTC(N)1/N5",
+    "overhang": "sticky",
+    "optimal_temperature_c": 37,
+    "compatible_buffers": ["CutSmart"],
+    "methylation_sensitivity": "insensitive",
+    "star_activity_notes": "Designed for Golden Gate assembly with minimized star activity.",
+    "supplier": "NEB"
+  },
+  {
+    "name": "BsmBI",
+    "recognition_site": "CGTCTC",
+    "cut_pattern": "CGTCTC(N)1/N5",
+    "overhang": "sticky",
+    "optimal_temperature_c": 55,
+    "compatible_buffers": ["CutSmart", "Buffer 3.1"],
+    "methylation_sensitivity": "partial",
+    "star_activity_notes": "Maintains activity in Golden Gate cycling conditions.",
+    "supplier": "NEB"
+  }
+]
