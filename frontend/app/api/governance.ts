@@ -23,6 +23,7 @@ import type {
   GovernanceOverrideActionRequest,
   GovernanceOverrideReverseRequest,
   GovernanceOverrideRecommendationReport,
+  GovernanceGuardrailSimulationRecord,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -124,6 +125,24 @@ export const governanceApi = {
       { params },
     )
     return response.data
+  },
+  async listGuardrailSimulations(params: { executionId: string; limit?: number | null }) {
+    const response = await api.get<GovernanceGuardrailSimulationRecord[]>(
+      '/api/governance/guardrails/simulations',
+      {
+        params: {
+          execution_id: params.executionId,
+          limit: params.limit ?? undefined,
+        },
+      },
+    )
+    return response.data.map((record) => mapGuardrailSimulationRecord(record))
+  },
+  async getGuardrailSimulation(simulationId: string) {
+    const response = await api.get<GovernanceGuardrailSimulationRecord>(
+      `/api/governance/guardrails/simulations/${simulationId}`,
+    )
+    return mapGuardrailSimulationRecord(response.data)
   },
   async acceptOverride(recommendationId: string, payload: GovernanceOverrideActionRequest) {
     const response = await api.post<GovernanceOverrideActionRecord>(
@@ -272,6 +291,24 @@ const mapGovernanceOverrideLineageAggregates = (
 ): GovernanceOverrideLineageAggregates => ({
   scenarios: summary.scenarios.map((item) => mapScenarioOverrideAggregate(item)),
   notebooks: summary.notebooks.map((item) => mapNotebookOverrideAggregate(item)),
+})
+
+const mapGuardrailSimulationRecord = (
+  record: GovernanceGuardrailSimulationRecord,
+): GovernanceGuardrailSimulationRecord => ({
+  ...record,
+  metadata: record.metadata ?? {},
+  projected_delay_minutes: Number(record.projected_delay_minutes ?? 0),
+  summary: {
+    ...record.summary,
+    projected_delay_minutes: Number(record.summary.projected_delay_minutes ?? 0),
+    reasons: Array.isArray(record.summary.reasons)
+      ? [...record.summary.reasons]
+      : [],
+    regressed_stage_indexes: Array.isArray(record.summary.regressed_stage_indexes)
+      ? [...record.summary.regressed_stage_indexes]
+      : [],
+  },
 })
 
 export const mapGovernanceReviewerCadence = (

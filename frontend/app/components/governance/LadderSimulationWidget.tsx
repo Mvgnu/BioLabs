@@ -6,8 +6,10 @@ import type {
   ExperimentPreviewRequest,
   ExperimentPreviewResponse,
   GovernanceStageBlueprint,
+  GovernanceGuardrailSimulationRecord,
 } from '../../types'
 import { useExperimentPreview } from '../../hooks/useExperimentConsole'
+import { governanceApi } from '../../api/governance'
 import { Button, Card, CardBody, Input } from '../ui'
 
 interface LadderSimulationWidgetProps {
@@ -38,8 +40,39 @@ export default function LadderSimulationWidget({
   const [history, setHistory] = useState<ExperimentPreviewResponse[]>([])
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [error, setError] = useState<string | null>(null)
+  const [guardrails, setGuardrails] = useState<GovernanceGuardrailSimulationRecord[]>([])
+  const [guardrailError, setGuardrailError] = useState<string | null>(null)
+  const [isGuardrailLoading, setGuardrailLoading] = useState(false)
 
   const previewMutation = useExperimentPreview(executionId || null)
+
+  const refreshGuardrails = useCallback(async () => {
+    const trimmedExecutionId = executionId.trim()
+    if (!trimmedExecutionId) {
+      setGuardrails([])
+      setGuardrailError(null)
+      return
+    }
+    setGuardrailLoading(true)
+    try {
+      const records = await governanceApi.listGuardrailSimulations({
+        executionId: trimmedExecutionId,
+        limit: 10,
+      })
+      setGuardrails(records)
+      setGuardrailError(null)
+    } catch (requestError: any) {
+      const detail =
+        requestError?.response?.data?.detail ??
+        requestError?.message ??
+        'Unable to load guardrail forecasts'
+      setGuardrailError(
+        typeof detail === 'string' ? detail : 'Unable to load guardrail forecasts',
+      )
+    } finally {
+      setGuardrailLoading(false)
+    }
+  }, [executionId])
 
   useEffect(() => {
     if (!executionId || !snapshotId) return
@@ -67,6 +100,10 @@ export default function LadderSimulationWidget({
       console.warn('Unable to persist ladder simulation history', storageError)
     }
   }, [executionId, snapshotId, history])
+
+  useEffect(() => {
+    refreshGuardrails()
+  }, [refreshGuardrails])
 
   const activePreview = useMemo(() => {
     if (history.length === 0) return null
@@ -105,6 +142,7 @@ export default function LadderSimulationWidget({
       const result = await previewMutation.mutateAsync(payload)
       setHistory((prev) => [result, ...prev].slice(0, 5))
       setSelectedIndex(0)
+      await refreshGuardrails()
     } catch (requestError: any) {
       const detail =
         requestError?.response?.data?.detail ?? requestError?.message ?? 'Unable to simulate ladder preview'
@@ -117,6 +155,7 @@ export default function LadderSimulationWidget({
     executionId,
     inventoryIds,
     previewMutation,
+    refreshGuardrails,
     snapshotId,
     stageBlueprint,
   ])
@@ -294,6 +333,50 @@ export default function LadderSimulationWidget({
             Provide an execution and snapshot identifier to preview readiness, SLA projections, and blockers for this draft.
           </p>
         )}
+        <div className="space-y-2">
+          <h4 className="text-sm font-semibold text-neutral-700">Persisted guardrail forecasts</h4>
+          {guardrailError && <p className="text-sm text-rose-600">{guardrailError}</p>}
+          {isGuardrailLoading ? (
+            <p className="text-sm text-neutral-500">Loading guardrail forecasts…</p>
+          ) : guardrails.length === 0 ? (
+            <p className="text-sm text-neutral-500">No guardrail simulations persisted yet.</p>
+          ) : (
+            <ul className="space-y-2 text-xs text-neutral-700">
+              {guardrails.map((simulation) => {
+                const isBlocked = simulation.summary.state === 'blocked'
+                return (
+                  <li
+                    key={simulation.id}
+                    className={`rounded border px-3 py-2 ${
+                      isBlocked
+                        ? 'border-rose-200 bg-rose-50 text-rose-700'
+                        : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium">
+                        {isBlocked ? 'Blocked forecast' : 'Clear forecast'} •{' '}
+                        {new Date(simulation.created_at).toLocaleString()}
+                      </span>
+                      {simulation.projected_delay_minutes > 0 && (
+                        <span className="text-[11px]">
+                          Delay: {simulation.projected_delay_minutes} min
+                        </span>
+                      )}
+                    </div>
+                    {simulation.summary.reasons.length > 0 && (
+                      <ul className="list-disc pl-4 mt-1 space-y-0.5">
+                        {simulation.summary.reasons.map((reason) => (
+                          <li key={`${simulation.id}-${reason}`}>{reason}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
       </CardBody>
     </Card>
   )
