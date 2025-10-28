@@ -21,6 +21,7 @@ from ..eventlog import record_execution_event
 from ..narratives import render_execution_narrative, render_preview_narrative
 from ..auth import get_current_user
 from ..database import get_db
+from ..recommendations.timeline import load_governance_decision_timeline
 from ..storage import (
     generate_signed_download_url,
     load_binary_payload,
@@ -3065,6 +3066,49 @@ async def get_execution_timeline(
     ]
 
     return schemas.ExperimentTimelinePage(events=serialized, next_cursor=next_cursor)
+
+
+@router.get(
+    "/governance/timeline",
+    response_model=schemas.GovernanceDecisionTimelinePage,
+)
+async def get_governance_decision_timeline(
+    execution_id: str | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    """Return unified governance decision feed for experiment console."""
+
+    # purpose: expose composite governance timeline blending overrides, baselines, and analytics
+    # inputs: optional execution filter, pagination params, authenticated user
+    # outputs: GovernanceDecisionTimelinePage with incremental pagination cursor
+    # status: pilot
+
+    membership_ids = _get_user_team_ids(db, user)
+    execution_scope: list[UUID] = []
+
+    if execution_id:
+        try:
+            exec_uuid = UUID(execution_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid execution id") from exc
+        execution = db.get(models.ProtocolExecution, exec_uuid)
+        template = _ensure_execution_access(db, execution, user, membership_ids)
+        execution_scope = [exec_uuid]
+        if template.team_id:
+            membership_ids = {template.team_id} if not user.is_admin else {template.team_id}
+
+    page = load_governance_decision_timeline(
+        db,
+        user,
+        membership_ids=membership_ids,
+        execution_ids=execution_scope,
+        cursor=cursor,
+        limit=limit,
+    )
+    return page
 
 
 @router.post(

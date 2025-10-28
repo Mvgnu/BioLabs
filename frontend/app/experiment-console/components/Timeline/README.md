@@ -10,4 +10,6 @@
   - Uses a lightweight manual virtualisation strategy (`ITEM_HEIGHT` + overscan) to avoid introducing third-party dependencies.
   - The component defends against environments without `ResizeObserver` by falling back to the container height on mount.
 
+See `Governance/README.md` for the governance decision timeline companion component that renders the blended override/baseline feed.
+
 Update this document when adding new controls (e.g., annotation persistence, export buttons) or altering the virtualisation heuristics.

@@ -6,12 +6,14 @@ import {
   useAdvanceExperimentStep,
   useExperimentSession,
   useExecutionTimeline,
+  useGovernanceDecisionTimeline,
   useRemediateExperimentStep,
   useUpdateExperimentStep,
 } from '../../hooks/useExperimentConsole'
 import { useCurrentUser } from '../../hooks/useCurrentUser'
 import type { ExperimentRemediationResult } from '../../types'
 import Timeline from '../components/Timeline'
+import GovernanceDecisionTimeline from '../components/Timeline/Governance/DecisionTimeline'
 import ExportsPanel from '../components/ExportsPanel'
 import GovernanceAnalyticsPanel from '../components/Analytics/AnalyticsPanel'
 import { BaselinesPanel } from '../components/Baselines'
@@ -126,6 +128,7 @@ export default function ExperimentConsolePage() {
     eventTypes: timelineFilters,
     pageSize: 40,
   })
+  const governanceTimelineQuery = useGovernanceDecisionTimeline(executionId ?? null)
   const [pendingAction, setPendingAction] = useState<string | null>(null)
   const [actionStepIndex, setActionStepIndex] = useState<number | null>(null)
   const [actionContext, setActionContext] = useState<Record<string, any>>({})
@@ -139,6 +142,12 @@ export default function ExperimentConsolePage() {
     }
     return sessionQuery.data?.timeline_preview ?? []
   }, [timelineQuery.data, sessionQuery.data])
+  const governanceEntries = useMemo(() => {
+    if (governanceTimelineQuery.data?.pages) {
+      return governanceTimelineQuery.data.pages.flatMap((page) => page.entries)
+    }
+    return []
+  }, [governanceTimelineQuery.data])
 
   const handleTimelineFilterChange = (types: string[]) => {
     setTimelineFilters(types)
@@ -158,6 +167,11 @@ export default function ExperimentConsolePage() {
   const requestMoreTimeline = () => {
     if (timelineQuery.hasNextPage) {
       timelineQuery.fetchNextPage()
+    }
+  }
+  const requestMoreGovernanceTimeline = () => {
+    if (governanceTimelineQuery.hasNextPage) {
+      governanceTimelineQuery.fetchNextPage()
     }
   }
 
@@ -595,6 +609,13 @@ export default function ExperimentConsolePage() {
               onLoadMore={requestMoreTimeline}
               annotations={timelineAnnotations}
               onAnnotate={handleTimelineAnnotate}
+            />
+            <GovernanceDecisionTimeline
+              entries={governanceEntries}
+              isLoading={governanceTimelineQuery.isLoading && !governanceTimelineQuery.data}
+              isFetchingMore={governanceTimelineQuery.isFetchingNextPage}
+              hasMore={Boolean(governanceTimelineQuery.hasNextPage)}
+              onLoadMore={requestMoreGovernanceTimeline}
             />
             <section className="border border-neutral-200 rounded-lg bg-white shadow-sm p-4 space-y-3">
               <h2 className="text-lg font-semibold">Telemetry Anomalies</h2>
