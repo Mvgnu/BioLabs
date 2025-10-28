@@ -4,6 +4,7 @@ import React, { Fragment } from 'react'
 
 import type { GovernanceDecisionTimelineEntry } from '../../../../types'
 import { cn } from '../../../../utils/cn'
+import ScenarioContextWidget from './Lineage/ScenarioContextWidget'
 
 export interface GovernanceDecisionTimelineProps {
   entries: GovernanceDecisionTimelineEntry[]
@@ -41,7 +42,7 @@ const formatTimestamp = (value: string) => {
 }
 
 const renderDetail = (detail: Record<string, any>) => {
-  const entries = Object.entries(detail ?? {})
+  const entries = Object.entries(detail ?? {}).filter(([key]) => key !== 'lineage')
   if (entries.length === 0) {
     return <p className="text-sm text-neutral-500">No supplemental detail available.</p>
   }
@@ -116,6 +117,7 @@ const GovernanceDecisionTimeline = ({
                   {entry.rule_key && (
                     <p className="text-xs uppercase tracking-wide text-neutral-500">Rule {entry.rule_key}</p>
                   )}
+                  {entry.lineage && <ScenarioContextWidget lineage={entry.lineage} />}
                   <div className="rounded-md border border-neutral-100 bg-neutral-50 p-3">
                     {renderDetail(entry.detail)}
                   </div>

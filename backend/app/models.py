@@ -602,6 +602,12 @@ class GovernanceOverrideAction(Base):
     baseline = relationship("GovernanceBaselineVersion")
     target_reviewer = relationship("User", foreign_keys=[target_reviewer_id])
     actor = relationship("User", foreign_keys=[actor_id])
+    lineage = relationship(
+        "GovernanceOverrideLineage",
+        back_populates="override",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
 
     __table_args__ = (
         sa.CheckConstraint(
@@ -613,6 +619,45 @@ class GovernanceOverrideAction(Base):
             name="uq_governance_override_execution_hash",
         ),
     )
+
+
+class GovernanceOverrideLineage(Base):
+    __tablename__ = "governance_override_lineages"
+
+    # purpose: link override actions to authored scenarios and notebook provenance snapshots
+    # status: pilot
+    # depends_on: governance_override_actions, experiment_preview_scenarios, notebook_entries, users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    override_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_override_actions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    scenario_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("experiment_preview_scenarios.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    scenario_snapshot = Column(JSON, default=dict, nullable=False)
+    notebook_entry_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("notebook_entries.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    notebook_snapshot = Column(JSON, default=dict, nullable=False)
+    captured_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    captured_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    meta = Column("metadata", JSON, default=dict, nullable=False)
+
+    override = relationship("GovernanceOverrideAction", back_populates="lineage")
+    scenario = relationship("ExperimentScenario")
+    notebook_entry = relationship("NotebookEntry")
+    captured_by = relationship("User")
 
 
 class ExecutionNarrativeWorkflowTemplateAssignment(Base):

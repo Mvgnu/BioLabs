@@ -16,6 +16,13 @@ const baseEntry = {
   summary: 'Reassign reviewer to balance load',
   detail: { priority: 'high', reviewer_id: 'rev-1' },
   actor: { id: 'user-1', name: 'Pat Researcher', email: 'pat@example.com' },
+  lineage: {
+    scenario: { id: 'scenario-1', name: 'Scenario Alpha' },
+    notebook_entry: { id: 'notebook-1', title: 'Review Notebook' },
+    captured_at: new Date('2024-04-01T14:00:00Z').toISOString(),
+    captured_by: { id: 'user-2', name: 'Coordinator Cole', email: 'cole@example.com' },
+    metadata: { source: 'unit-test' },
+  },
 }
 
 describe('GovernanceDecisionTimeline', () => {
@@ -27,6 +34,8 @@ describe('GovernanceDecisionTimeline', () => {
     expect(screen.getByText('Reassign reviewer to balance load')).toBeTruthy()
     expect(screen.getByText(/cadence_overload/i)).toBeTruthy()
     expect(screen.getByText(/Pat Researcher/)).toBeTruthy()
+    expect(screen.getByText('Lineage Context')).toBeTruthy()
+    expect(screen.getByText('Scenario Alpha')).toBeTruthy()
   })
 
   it('invokes load more callback when button pressed', () => {

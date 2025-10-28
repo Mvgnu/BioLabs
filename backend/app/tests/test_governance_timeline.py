@@ -123,6 +123,7 @@ def seed_governance_artifacts(
         )
 
         if include_override:
+            execution_hash = uuid.uuid4().hex
             db.add(
                 models.ExecutionEvent(
                     execution_id=execution.id,
@@ -146,12 +147,61 @@ def seed_governance_artifacts(
                         "action": "reassign",
                         "status": "accepted",
                         "summary": "Override executed",
+                        "detail": {
+                            "execution_hash": execution_hash,
+                            "notes": "Seed override",
+                        },
                     },
                     actor_id=actor.id,
                     sequence=3,
                     created_at=now - timedelta(hours=18),
                 )
             )
+
+            notebook_entry = models.NotebookEntry(
+                title="Lineage Notebook",
+                content="{}",
+                execution_id=execution.id,
+                created_by=actor.id,
+            )
+            db.add(notebook_entry)
+            db.flush()
+
+            override_action = models.GovernanceOverrideAction(
+                recommendation_id="cadence_overload",
+                action="reassign",
+                status="executed",
+                execution_id=execution.id,
+                baseline_id=baseline.id,
+                target_reviewer_id=actor.id,
+                actor_id=actor.id,
+                reversible=True,
+                notes="Seed override",
+                meta={},
+                execution_hash=execution_hash,
+                detail_snapshot={
+                    "execution_hash": execution_hash,
+                    "notes": "Seed override",
+                },
+            )
+            db.add(override_action)
+            db.flush()
+
+            lineage = models.GovernanceOverrideLineage(
+                override_id=override_action.id,
+                notebook_entry_id=notebook_entry.id,
+                notebook_snapshot={
+                    "id": str(notebook_entry.id),
+                    "title": notebook_entry.title,
+                },
+                scenario_snapshot={
+                    "id": str(uuid.uuid4()),
+                    "name": "Simulated Scenario",
+                },
+                captured_by_id=actor.id,
+                meta={"source": "test"},
+            )
+            db.add(lineage)
 
         db.commit()
         return execution.id, baseline.id
@@ -179,6 +229,7 @@ def test_load_governance_decision_timeline_blends_sources():
 
     entry_types = {entry.entry_type for entry in page.entries}
     assert {"baseline_event", "override_recommendation", "override_action", "analytics_snapshot"}.issubset(entry_types)
+    assert any(entry.lineage and entry.lineage.notebook_entry for entry in page.entries)
 
 
 @pytest.mark.usefixtures("client")
@@ -223,3 +274,8 @@ def test_governance_timeline_endpoint_returns_feed(client):
     assert "entries" in payload
     assert payload["entries"]
     assert any(entry["entry_type"] == "baseline_event" for entry in payload["entries"])
+    assert any(
+        entry.get("lineage")
+        for entry in payload["entries"]
+        if entry.get("entry_type") == "override_action"
+    )

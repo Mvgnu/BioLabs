@@ -6,7 +6,7 @@ import base64
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Sequence
+from typing import Any, Dict, Sequence
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from sqlalchemy import or_
@@ -104,6 +104,74 @@ def _normalise_timestamp(value: datetime | None) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _build_override_lineage_context(
+    override: models.GovernanceOverrideAction | None,
+) -> schemas.GovernanceOverrideLineageContext | None:
+    """Return structured lineage context for override actions."""
+
+    # purpose: translate ORM override lineage records into schema payloads
+    # inputs: GovernanceOverrideAction with optional lineage relationship
+    # outputs: GovernanceOverrideLineageContext for timeline entries
+    # status: pilot
+
+    if override is None or override.lineage is None:
+        return None
+
+    lineage = override.lineage
+    scenario_payload: Dict[str, Any] | None = None
+    if lineage.scenario is not None:
+        folder_name = None
+        if getattr(lineage.scenario, "folder", None) is not None:
+            folder_name = lineage.scenario.folder.name
+        scenario_payload = {
+            "id": lineage.scenario.id,
+            "name": lineage.scenario.name,
+            "folder_id": lineage.scenario.folder_id,
+            "folder_name": folder_name,
+            "owner_id": lineage.scenario.owner_id,
+        }
+    elif lineage.scenario_snapshot:
+        scenario_payload = dict(lineage.scenario_snapshot)
+        if lineage.scenario_id and "id" not in scenario_payload:
+            scenario_payload["id"] = lineage.scenario_id
+    elif lineage.scenario_id:
+        scenario_payload = {"id": lineage.scenario_id}
+
+    notebook_payload: Dict[str, Any] | None = None
+    if lineage.notebook_entry is not None:
+        notebook_payload = {
+            "id": lineage.notebook_entry.id,
+            "title": lineage.notebook_entry.title,
+            "execution_id": lineage.notebook_entry.execution_id,
+        }
+    elif lineage.notebook_snapshot:
+        notebook_payload = dict(lineage.notebook_snapshot)
+        if lineage.notebook_entry_id and "id" not in notebook_payload:
+            notebook_payload["id"] = lineage.notebook_entry_id
+    elif lineage.notebook_entry_id:
+        notebook_payload = {"id": lineage.notebook_entry_id}
+
+    captured_by_summary: schemas.GovernanceActorSummary | None = None
+    if lineage.captured_by is not None:
+        captured_by_summary = schemas.GovernanceActorSummary(
+            id=lineage.captured_by.id,
+            name=lineage.captured_by.full_name,
+            email=lineage.captured_by.email,
+        )
+
+    return schemas.GovernanceOverrideLineageContext(
+        scenario=schemas.GovernanceScenarioLineage.model_validate(scenario_payload)
+        if scenario_payload
+        else None,
+        notebook_entry=schemas.GovernanceNotebookLineage.model_validate(notebook_payload)
+        if notebook_payload
+        else None,
+        captured_at=lineage.captured_at,
+        captured_by=captured_by_summary,
+        metadata=lineage.meta or {},
+    )
+
+
 def _load_governance_events(
     db: Session,
     user: models.User,
@@ -132,6 +200,36 @@ def _load_governance_events(
     query = query.order_by(models.ExecutionEvent.created_at.desc(), models.ExecutionEvent.id.desc())
     events: list[models.ExecutionEvent] = query.limit(limit * 2).all()
 
+    execution_hashes: set[str] = set()
+    for event in events:
+        payload = event.payload or {}
+        detail_payload = payload.get("detail") if isinstance(payload.get("detail"), dict) else {}
+        execution_hash = detail_payload.get("execution_hash") if isinstance(detail_payload, dict) else None
+        if execution_hash:
+            execution_hashes.add(str(execution_hash))
+
+    override_index: dict[str, models.GovernanceOverrideAction] = {}
+    if execution_hashes:
+        overrides = (
+            db.query(models.GovernanceOverrideAction)
+            .options(
+                joinedload(models.GovernanceOverrideAction.lineage)
+                .joinedload(models.GovernanceOverrideLineage.scenario)
+                .joinedload(models.ExperimentScenario.folder),
+                joinedload(models.GovernanceOverrideAction.lineage)
+                .joinedload(models.GovernanceOverrideLineage.notebook_entry),
+                joinedload(models.GovernanceOverrideAction.lineage)
+                .joinedload(models.GovernanceOverrideLineage.captured_by),
+            )
+            .filter(models.GovernanceOverrideAction.execution_hash.in_(list(execution_hashes)))
+            .all()
+        )
+        override_index = {
+            str(override.execution_hash): override
+            for override in overrides
+            if override.execution_hash
+        }
+
     entries: list[schemas.GovernanceDecisionTimelineEntry] = []
     for event in events:
         occurred_at = _normalise_timestamp(event.created_at)
@@ -156,6 +254,14 @@ def _load_governance_events(
             if actor is not None
             else None
         )
+        detail_payload: Dict[str, Any] = payload.get("detail", {}) if isinstance(payload.get("detail"), dict) else {}
+        lineage_context: schemas.GovernanceOverrideLineageContext | None = None
+        execution_hash = detail_payload.get("execution_hash") if isinstance(detail_payload, dict) else None
+        if execution_hash and entry_type == "override_action":
+            override = override_index.get(str(execution_hash))
+            lineage_context = _build_override_lineage_context(override)
+            if lineage_context is not None:
+                detail_payload.setdefault("lineage", lineage_context.model_dump(mode="json"))
         entries.append(
             schemas.GovernanceDecisionTimelineEntry(
                 entry_id=str(event.id),
@@ -169,6 +275,7 @@ def _load_governance_events(
                 actor=actor_payload,
                 summary=payload.get("summary"),
                 detail=payload,
+                lineage=lineage_context,
             )
         )
         if len(entries) >= limit:

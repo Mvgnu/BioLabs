@@ -825,6 +825,63 @@ def build_governance_override_recommendation(
 
 # purpose: assemble GovernanceOverrideRecommendationReport from recommendations and timestamp
 
+
+class GovernanceActorSummary(BaseModel):
+    # purpose: minimal actor context for governance timeline entries
+    # status: pilot
+
+    id: UUID | None = None
+    name: str | None = None
+    email: str | None = None
+
+
+class GovernanceScenarioLineage(BaseModel):
+    # purpose: convey authored scenario provenance for override lineage widgets
+    # status: pilot
+
+    id: UUID
+    name: str | None = None
+    folder_id: UUID | None = None
+    folder_name: str | None = None
+    owner_id: UUID | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GovernanceNotebookLineage(BaseModel):
+    # purpose: surface notebook provenance for override lineage blocks
+    # status: pilot
+
+    id: UUID
+    title: str | None = None
+    execution_id: UUID | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GovernanceOverrideLineageContext(BaseModel):
+    # purpose: bundle structured override lineage details for timeline consumers
+    # status: pilot
+
+    scenario: GovernanceScenarioLineage | None = None
+    notebook_entry: GovernanceNotebookLineage | None = None
+    captured_at: datetime | None = None
+    captured_by: GovernanceActorSummary | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict, alias="meta")
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class GovernanceOverrideLineagePayload(BaseModel):
+    # purpose: validate lineage payload supplied during override actions
+    # status: pilot
+
+    scenario_id: UUID | None = None
+    notebook_entry_id: UUID | None = None
+    notebook_entry_version_id: UUID | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
 class GovernanceOverrideActionRequest(BaseModel):
     # purpose: validate override action invocations for governance routes
     # inputs: execution scope, optional baseline context, reviewer targets, metadata
@@ -836,6 +893,7 @@ class GovernanceOverrideActionRequest(BaseModel):
     target_reviewer_id: UUID | None = None
     notes: str | None = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+    lineage: GovernanceOverrideLineagePayload | None = None
 
     @model_validator(mode="after")
     def _validate_action(self) -> "GovernanceOverrideActionRequest":
@@ -876,6 +934,7 @@ class GovernanceOverrideActionOutcome(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, alias="meta")
     created_at: datetime
     updated_at: datetime
+    lineage: GovernanceOverrideLineageContext | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
@@ -1179,15 +1238,6 @@ class ExperimentTimelinePage(BaseModel):
     next_cursor: str | None = None
 
 
-class GovernanceActorSummary(BaseModel):
-    # purpose: minimal actor context for governance timeline entries
-    # status: pilot
-
-    id: UUID | None = None
-    name: str | None = None
-    email: str | None = None
-
-
 class GovernanceDecisionTimelineEntry(BaseModel):
     # purpose: unify governance decisions, analytics, and overrides into one feed item schema
     # status: pilot
@@ -1209,6 +1259,7 @@ class GovernanceDecisionTimelineEntry(BaseModel):
     summary: str | None = None
     detail: Dict[str, Any] = Field(default_factory=dict)
     actor: GovernanceActorSummary | None = None
+    lineage: GovernanceOverrideLineageContext | None = None
 
 
 class GovernanceDecisionTimelinePage(BaseModel):
