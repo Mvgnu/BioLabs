@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, status
 import json
 from sqlalchemy.orm import Session
 import sqlalchemy as sa
@@ -196,37 +196,13 @@ async def export_items(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow([
-        "id",
-        "item_type",
-        "name",
-        "barcode",
-        "status",
-    ])
-    query = db.query(models.InventoryItem)
-    if not user.is_admin:
-        team_ids = [m.team_id for m in user.teams]
-        query = query.filter(
-            (models.InventoryItem.owner_id == user.id)
-            | (models.InventoryItem.team_id.in_(team_ids))
-        )
-    for item in query.all():
-        writer.writerow(
-            [
-                str(item.id),
-                item.item_type,
-                item.name,
-                item.barcode or "",
-                item.status,
-            ]
-        )
-    output.seek(0)
-    headers = {
-        "Content-Disposition": "attachment; filename=inventory.csv"
-    }
-    return Response(content=output.read(), media_type="text/csv", headers=headers)
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "Inventory exports now require DNA asset governance packaging. "
+            "Initiate an approved narrative export or asset release to retrieve inventory dossiers."
+        ),
+    )
 
 
 @router.post("/import", response_model=List[schemas.InventoryItemOut])

@@ -247,18 +247,23 @@ def record_packaging_queue_state(
     if isinstance(meta_payload.get("packaging_queue_state"), dict):
         previous_state = dict(meta_payload["packaging_queue_state"])
 
-    def _emit(event_type: str, state_payload: dict[str, Any]) -> None:
+    def _emit(event_type: str, *, state: str, context: dict[str, Any] | None = None) -> None:
         nonlocal previous_state, meta_payload
         if export.execution is None:
             return
-        next_state = {"event": event_type, **state_payload}
+        next_state: dict[str, Any] = {"event": event_type, "state": state}
+        if context:
+            next_state["context"] = context
         if previous_state == next_state:
             return
+        payload = {"export_id": str(export.id), "state": state}
+        if context:
+            payload["context"] = context
         record_execution_event(
             db,
             export.execution,
             event_type,
-            {"export_id": str(export.id), **state_payload},
+            payload,
             actor=actor,
         )
         previous_state = next_state
@@ -269,23 +274,25 @@ def record_packaging_queue_state(
     if guardrail is None:
         guardrail = attach_guardrail_forecast(db, export)
     if guardrail and guardrail.summary.state == "blocked":
-        payload: dict[str, Any] = {
-            "state": "guardrail_blocked",
-            "guardrail_state": guardrail.summary.state,
-        }
+        context: dict[str, Any] = {}
         if guardrail.summary.projected_delay_minutes is not None:
-            payload["projected_delay_minutes"] = guardrail.summary.projected_delay_minutes
+            context["projected_delay_minutes"] = guardrail.summary.projected_delay_minutes
         if guardrail.summary.reasons:
-            payload["reasons"] = guardrail.summary.reasons
-        _emit("narrative_export.packaging.guardrail_blocked", payload)
+            context["reasons"] = guardrail.summary.reasons
+        context["guardrail_state"] = guardrail.summary.state
+        _emit(
+            "narrative_export.packaging.guardrail_blocked",
+            state="guardrail_blocked",
+            context=context,
+        )
         return False
     if export.approval_status == "approved" and export.current_stage is None:
-        payload = {
-            "state": "queued",
-            "version": export.version,
-            "event_count": export.event_count,
-        }
-        _emit("narrative_export.packaging.queued", payload)
+        context = {"version": export.version}
+        _emit(
+            "narrative_export.packaging.queued",
+            state="queued",
+            context=context,
+        )
         return True
 
     pending_stage = export.current_stage
@@ -295,15 +302,18 @@ def record_packaging_queue_state(
                 pending_stage = stage
                 break
 
-    payload = {
-        "state": "awaiting_approval",
-        "pending_stage_id": str(pending_stage.id) if pending_stage else None,
-        "pending_stage_index": pending_stage.sequence_index if pending_stage else None,
-        "pending_stage_status": pending_stage.status if pending_stage else None,
-    }
-    if pending_stage and pending_stage.due_at:
-        payload["pending_stage_due_at"] = pending_stage.due_at.isoformat()
-    _emit("narrative_export.packaging.awaiting_approval", payload)
+    pending_context: dict[str, Any] = {}
+    if pending_stage:
+        pending_context["pending_stage_id"] = str(pending_stage.id)
+        pending_context["pending_stage_index"] = pending_stage.sequence_index
+        pending_context["pending_stage_status"] = pending_stage.status
+        if pending_stage.due_at:
+            pending_context["pending_stage_due_at"] = pending_stage.due_at.isoformat()
+    _emit(
+        "narrative_export.packaging.awaiting_approval",
+        state="awaiting_approval",
+        context=pending_context or None,
+    )
 
     return False
 

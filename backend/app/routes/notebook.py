@@ -1,13 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from uuid import UUID
 from datetime import datetime, timezone
-from fpdf import FPDF
 
 from ..database import get_db
 from ..auth import get_current_user
 from .. import models, schemas
+from ..eventlog import record_execution_event
 
 router = APIRouter(prefix="/api/notebook", tags=["notebook"])
 
@@ -131,17 +130,30 @@ async def export_entry(
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
 
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    pdf.cell(0, 10, txt=entry.title, ln=True)
-    pdf.multi_cell(0, 10, entry.content)
-    pdf_bytes = pdf.output(dest="S")
-    if isinstance(pdf_bytes, str):
-        pdf_bytes = pdf_bytes.encode("latin-1")
-    else:
-        pdf_bytes = bytes(pdf_bytes)
-    return Response(content=pdf_bytes, media_type="application/pdf")
+    # purpose: guard notebook exports until governance packaging can enforce approvals
+    # status: deprecated
+    if entry.execution_id:
+        execution = db.get(models.ProtocolExecution, entry.execution_id)
+        if execution:
+            record_execution_event(
+                db,
+                execution,
+                "notebook_export.guardrail_blocked",
+                {
+                    "entry_id": str(entry.id),
+                    "reason": "Notebook exports require narrative packaging flow",
+                },
+                actor=user,
+            )
+            db.commit()
+
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail=(
+            "Notebook entry exports are routed through narrative packaging guardrails. "
+            "Create a governance-approved narrative export to obtain dossier artifacts."
+        ),
+    )
 
 @router.put("/entries/{entry_id}", response_model=schemas.NotebookEntryOut)
 async def update_entry(
