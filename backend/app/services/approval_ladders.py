@@ -19,6 +19,80 @@ from ..eventlog import record_execution_event
 # related_docs: backend/app/README.md
 
 
+PACKAGING_EVENT_PAYLOAD_SPEC: dict[str, dict[str, set[str] | None]] = {
+    "narrative_export.packaging.guardrail_blocked": {
+        "fields": {"export_id", "state"},
+        "context_fields": {
+            "guardrail_state",
+            "projected_delay_minutes",
+            "reasons",
+        },
+    },
+    "narrative_export.packaging.awaiting_approval": {
+        "fields": {"export_id", "state"},
+        "context_fields": {
+            "pending_stage_id",
+            "pending_stage_index",
+            "pending_stage_status",
+            "pending_stage_due_at",
+        },
+    },
+    "narrative_export.packaging.queued": {
+        "fields": {"export_id", "state"},
+        "context_fields": {"version"},
+    },
+    "narrative_export.packaging.started": {
+        "fields": {"export_id", "version", "attempt"},
+        "context_fields": None,
+    },
+    "narrative_export.packaging.retrying": {
+        "fields": {"export_id", "version", "attempt"},
+        "context_fields": None,
+    },
+    "narrative_export.packaging.ready": {
+        "fields": {"export_id", "version", "artifact_file_id", "checksum", "attempt"},
+        "context_fields": None,
+    },
+    "narrative_export.packaging.failed": {
+        "fields": {"export_id", "version", "attempt", "error"},
+        "context_fields": None,
+    },
+}
+
+
+def sanitize_packaging_event_payload(
+    event_type: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return a payload restricted to the sanctioned packaging telemetry contract."""
+
+    # purpose: enforce minimal packaging telemetry schema shared by API, CLI, and workers
+    # inputs: event type identifier, payload mapping proposed for telemetry emission
+    # outputs: sanitized payload dictionary adhering to PACKAGING_EVENT_PAYLOAD_SPEC
+    # status: pilot
+    spec = PACKAGING_EVENT_PAYLOAD_SPEC.get(event_type)
+    if spec is None:
+        return dict(payload)
+
+    allowed_fields = spec.get("fields", set()) or set()
+    sanitized: dict[str, Any] = {
+        field: payload[field]
+        for field in allowed_fields
+        if field in payload
+    }
+
+    context_fields = spec.get("context_fields")
+    context_value = payload.get("context")
+    if context_fields and isinstance(context_value, Mapping):
+        context_sanitized = {
+            key: context_value[key]
+            for key in context_fields
+            if key in context_value
+        }
+        if context_sanitized:
+            sanitized["context"] = context_sanitized
+    return sanitized
+
+
 @dataclass(slots=True)
 class StageActionResult:
     """Outcome of a stage action including packaging trigger metadata."""
@@ -251,14 +325,23 @@ def record_packaging_queue_state(
         nonlocal previous_state, meta_payload
         if export.execution is None:
             return
-        next_state: dict[str, Any] = {"event": event_type, "state": state}
-        if context:
-            next_state["context"] = context
+        payload = sanitize_packaging_event_payload(
+            event_type,
+            {
+                "export_id": str(export.id),
+                "state": state,
+                **({"context": context} if context else {}),
+            },
+        )
+        sanitized_context = payload.get("context")
+        next_state = {
+            "event": event_type,
+            "state": payload.get("state", state),
+        }
+        if sanitized_context:
+            next_state["context"] = sanitized_context
         if previous_state == next_state:
             return
-        payload = {"export_id": str(export.id), "state": state}
-        if context:
-            payload["context"] = context
         record_execution_event(
             db,
             export.execution,

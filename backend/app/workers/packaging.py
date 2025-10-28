@@ -215,11 +215,14 @@ def package_execution_narrative_export(self, export_identifier: str) -> str:
             db,
             export.execution,
             "narrative_export.packaging.started" if attempt == 1 else "narrative_export.packaging.retrying",
-            {
-                "export_id": str(export.id),
-                "version": export.version,
-                "attempt": attempt,
-            },
+            approval_ladders.sanitize_packaging_event_payload(
+                "narrative_export.packaging.started" if attempt == 1 else "narrative_export.packaging.retrying",
+                {
+                    "export_id": str(export.id),
+                    "version": export.version,
+                    "attempt": attempt,
+                },
+            ),
             actor=export.requested_by,
         )
         db.commit()
@@ -273,13 +276,16 @@ def package_execution_narrative_export(self, export_identifier: str) -> str:
                 db,
                 export.execution,
                 "narrative_export.packaging.ready",
-                {
-                    "export_id": str(export.id),
-                    "version": export.version,
-                    "artifact_file_id": str(artifact_file.id),
-                    "checksum": checksum,
-                    "attempt": attempt,
-                },
+                approval_ladders.sanitize_packaging_event_payload(
+                    "narrative_export.packaging.ready",
+                    {
+                        "export_id": str(export.id),
+                        "version": export.version,
+                        "artifact_file_id": str(artifact_file.id),
+                        "checksum": checksum,
+                        "attempt": attempt,
+                    },
+                ),
                 actor=export.requested_by,
             )
             db.commit()
@@ -291,12 +297,15 @@ def package_execution_narrative_export(self, export_identifier: str) -> str:
                 db,
                 export.execution,
                 "narrative_export.packaging.failed",
-                {
-                    "export_id": str(export.id),
-                    "version": export.version,
-                    "attempt": attempt,
-                    "error": str(exc),
-                },
+                approval_ladders.sanitize_packaging_event_payload(
+                    "narrative_export.packaging.failed",
+                    {
+                        "export_id": str(export.id),
+                        "version": export.version,
+                        "attempt": attempt,
+                        "error": str(exc),
+                    },
+                ),
                 actor=export.requested_by,
             )
             db.commit()

@@ -8,6 +8,42 @@ from app.workers.packaging import package_execution_narrative_export
 from ..conftest import TestingSessionLocal
 
 
+
+
+def test_sanitize_packaging_event_payload_filters_context_keys():
+    payload = {
+        "export_id": "123",  # values intentionally stringified to mimic runtime payloads
+        "state": "awaiting_approval",
+        "context": {
+            "pending_stage_id": "stage-1",
+            "pending_stage_index": 1,
+            "pending_stage_status": "in_progress",
+            "pending_stage_due_at": "2025-07-09T12:00:00+00:00",
+            "unexpected": "ignored",
+        },
+        "extra": "removed",
+    }
+    sanitized = approval_ladders.sanitize_packaging_event_payload(
+        "narrative_export.packaging.awaiting_approval",
+        payload,
+    )
+    assert "extra" not in sanitized
+    assert sanitized["state"] == "awaiting_approval"
+    assert "context" in sanitized
+    assert set(sanitized["context"].keys()) == {
+        "pending_stage_id",
+        "pending_stage_index",
+        "pending_stage_status",
+        "pending_stage_due_at",
+    }
+
+
+def test_sanitize_packaging_event_payload_passthrough_for_unknown_event():
+    payload = {"export_id": "123", "state": "custom", "context": {"foo": "bar"}}
+    sanitized = approval_ladders.sanitize_packaging_event_payload("custom.event", payload)
+    assert sanitized == payload
+
+
 def _create_export_fixture(*, due_offset_minutes: int) -> UUID:
     session = TestingSessionLocal()
     try:

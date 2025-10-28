@@ -2,7 +2,7 @@
 
 - purpose: Provide a step-by-step playbook for operators enforcing narrative export guardrails across API, worker, scheduler, CLI, and UI surfaces.
 - status: pilot
-- updated: 2025-07-07
+- updated: 2025-07-09
 - related_docs: docs/governance/export_enforcement_audit.md, docs/governance/analytics_extension_plan.md, docs/governance/preview.md
 
 ## 1. Enforcement Surfaces
@@ -13,11 +13,11 @@
 - Legacy notebook (`GET /api/notebook/entries/{entry_id}/export`) and inventory (`GET /api/inventory/export`) endpoints are formally deprecated. They emit guardrail block events and respond with `409 Conflict`, redirecting operators to narrative or DNA asset packaging workflows.
 
 ### 1.2 Celery Workers
-- `workers/packaging.py:package_execution_narrative_export` re-loads the export on every execution and invokes `verify_export_packaging_guardrails`. Pending ladders trigger a single `narrative_export.packaging.awaiting_approval` event with a compact `state` payload; repeated attempts reuse the persisted `packaging_queue_state` metadata instead of duplicating telemetry.
+- `workers/packaging.py:package_execution_narrative_export` re-loads the export on every execution and invokes `verify_export_packaging_guardrails`. Pending ladders trigger a single `narrative_export.packaging.awaiting_approval` event with a sanitised payload; repeated attempts reuse the persisted `packaging_queue_state` metadata instead of duplicating telemetry.
 - `tasks.py:monitor_narrative_approval_slas` escalates overdue stages and now reissues `verify_export_packaging_guardrails` to ensure guardrail telemetry stays synchronized before notifications while respecting the deduplicated payloads.
 
 ### 1.3 CLI Utilities
-- `python -m backend.app.cli queue-narrative-export <export-id>` routes through `dispatch_export_for_packaging_by_id` and surfaces guardrail status, pending stage information, and guardrail forecasts. Use this command before manually retrying packaging jobs.
+- `python -m backend.app.cli queue-narrative-export <export-id>` routes through `dispatch_export_for_packaging_by_id`, surfaces guardrail status, pending stage information, and guardrail forecasts, and now emits the same sanitised telemetry payloads consumed by dashboards and workers. Use this command before manually retrying packaging jobs to confirm enforcement parity.
 
 ### 1.4 Scheduler Jobs
 - Celery beat schedules call `monitor_narrative_approval_slas` every 15 minutes. When stage SLAs breach, the task logs `stage_overdue` and `stage_escalated` events, revalidates guardrails, and invalidates analytics caches.
@@ -37,7 +37,7 @@
 ## 3. Verification Checklist
 
 - [ ] Confirm `verify_export_packaging_guardrails` blocks packaging when any stage returns to `in_progress`.
-- [ ] Ensure `monitor_narrative_approval_slas` records `narrative_export.packaging.awaiting_approval` alongside escalation events and that `packaging_queue_state.context` mirrors pending stage metadata.
+- [ ] Ensure `monitor_narrative_approval_slas` records `narrative_export.packaging.awaiting_approval` alongside escalation events and that `packaging_queue_state.context` mirrors pending stage metadata after sanitisation.
 - [ ] Confirm notebook and inventory export attempts log guardrail block events and produce `409 Conflict` responses.
 - [ ] Validate `/governance/dashboard` reflects the latest overdue counts after cache invalidation (max 30s delay).
 - [ ] Update Problem Trackers under `/problems/` if enforcement inconsistencies persist across two monitoring cycles.

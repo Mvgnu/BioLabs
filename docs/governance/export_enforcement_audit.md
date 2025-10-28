@@ -2,7 +2,7 @@
 
 - purpose: catalogue every currently implemented narrative export initiation surface and record governance enforcement coverage
 - status: draft
-- updated: 2025-07-07
+- updated: 2025-07-09
 - related_docs: docs/approval_workflow_design.md, docs/narrative_lifecycle_overview.md
 
 ## Overview
@@ -28,13 +28,13 @@ The compliance stack now persists approval ladders, guardrail simulations, and p
 ## CLI & Operator Tools
 | Surface | File / Function | Guardrail State | Notes |
 | --- | --- | --- | --- |
-| `migrate-exports` CLI | `backend/app/cli/migrate_templates.py:migrate_exports_command` | ⚠️ Read/modify only. Adjusts metadata but does not dispatch packaging; however, lacks confirmation that migrated exports remain blocked until ladders complete. Should invoke integrity checks post-migration.【F:backend/app/cli/migrate_templates.py†L1-L117】 |
+| `queue-narrative-export` CLI | `backend/app/cli/migrate_templates.py:queue_narrative_export_command` | ✅ Routes through `dispatch_export_for_packaging_by_id`, returns guardrail summaries, and now participates in the shared telemetry contract so dashboards and operators receive consistent queue state payloads.【F:backend/app/cli/migrate_templates.py†L152-L243】【F:backend/app/services/approval_ladders.py†L233-L356】 |
+| `migrate-exports` CLI | `backend/app/cli/migrate_templates.py:migrate_exports_command` | ⚠️ Read/modify only. Adjusts metadata but does not dispatch packaging; continue to run a follow-up queue check via the command above before approving migrations.【F:backend/app/cli/migrate_templates.py†L1-L117】 |
 
 ## Outstanding Actions
-1. Ensure future export additions reuse `dispatch_export_for_packaging[_by_id]` or explicitly deprecate legacy surfaces with recorded guardrail telemetry.
-2. Introduce shared enforcement decorators for CLI utilities and any future scheduler tasks to ensure `record_packaging_queue_state` runs before artifact generation.
-3. Expand integration coverage to include CLI dry-run vs. commit scenarios once enforcement hooks exist.
-4. Maintain the operator SOP (`docs/governance/operator_sop.md`) alongside future enforcement changes so dashboard guidance stays accurate.
+1. Continue auditing future export additions to ensure they reuse `dispatch_export_for_packaging[_by_id]` or land with a deprecation path plus guardrail telemetry.
+2. Extend CLI regression coverage to include dry-run vs. commit migration scenarios once follow-on enforcement hooks are prioritised.
+3. Maintain the operator SOP (`docs/governance/operator_sop.md`) alongside future enforcement changes so dashboard guidance stays accurate.
 
 ## Test Coverage Snapshot
 - `backend/app/tests/test_experiment_console.py::test_narrative_export_packaging_blocked_until_final_stage` asserts API-to-worker blocking semantics and event emission.【F:backend/app/tests/test_experiment_console.py†L736-L848】
@@ -42,10 +42,17 @@ The compliance stack now persists approval ladders, guardrail simulations, and p
 
 ## Guardrail Telemetry Contract
 
-- Events emitted during packaging queue evaluations now use a consistent payload structure: `{ "export_id": str, "state": <queued|awaiting_approval|guardrail_blocked>, "context": { ... } }`.
-- `context` remains optional and only includes distilled data:
-  - `queued`: `{ "version": export.version }`
-  - `awaiting_approval`: `{ "pending_stage_id", "pending_stage_index", "pending_stage_status", "pending_stage_due_at"? }`
-  - `guardrail_blocked`: `{ "guardrail_state", "projected_delay_minutes"?, "reasons"? }`
-- The latest payload is persisted to `export.meta["packaging_queue_state"]` so workers, CLI utilities, and dashboards can render synchronized status without rehydrating event history.【F:backend/app/services/approval_ladders.py†L233-L356】
+All packaging telemetry now flows through a sanitiser that enforces the minimal payload specification below before events reach the execution log. The helper is shared by API dispatch, CLI utilities, Celery workers, and SLA monitors so consumers see identical shapes regardless of the initiating surface.
+
+| Event | Required Fields | Optional Context Keys |
+| --- | --- | --- |
+| `narrative_export.packaging.guardrail_blocked` | `export_id`, `state` | `guardrail_state`, `projected_delay_minutes`, `reasons` |
+| `narrative_export.packaging.awaiting_approval` | `export_id`, `state` | `pending_stage_id`, `pending_stage_index`, `pending_stage_status`, `pending_stage_due_at` |
+| `narrative_export.packaging.queued` | `export_id`, `state` | `version` |
+| `narrative_export.packaging.started` / `retrying` | `export_id`, `version`, `attempt` | — |
+| `narrative_export.packaging.ready` | `export_id`, `version`, `artifact_file_id`, `checksum`, `attempt` | — |
+| `narrative_export.packaging.failed` | `export_id`, `version`, `attempt`, `error` | — |
+
+- Sanitisation occurs inside `services.approval_ladders.record_packaging_queue_state` and `workers.packaging.package_execution_narrative_export`, trimming any stray fields while preserving the queue metadata persisted to `export.meta["packaging_queue_state"]` for UI reuse.【F:backend/app/services/approval_ladders.py†L233-L356】【F:backend/app/workers/packaging.py†L200-L311】
+- Governance pytest coverage asserts both the sanitiser behaviour and the guardrail enforcement paths for CLI and worker flows, ensuring parity with API-triggered checks.【F:backend/app/tests/governance/test_packaging_guardrails.py†L1-L212】【F:backend/app/tests/test_cli_narrative_exports.py†L1-L122】
 
