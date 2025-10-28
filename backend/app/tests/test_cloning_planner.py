@@ -20,8 +20,8 @@ def _create_session(client) -> tuple[str, dict]:
         "input_sequences": [
             {
                 "name": "vector",
-                "sequence": "ATGC",
-                "metadata": {"length": 4},
+                "sequence": "ATGC" * 30,
+                "metadata": {"length": 120},
             }
         ],
         "metadata": {"guardrail_state": {"state": "intake"}},
@@ -34,8 +34,8 @@ def _create_session(client) -> tuple[str, dict]:
 def test_create_cloning_planner_session_persists_inputs(client):
     _, body = _create_session(client)
     assert body["assembly_strategy"] == "gibson"
-    assert body["status"] == "draft"
-    assert body["input_sequences"][0]["metadata"]["length"] == 4
+    assert body["status"] == "qc_complete"
+    assert body["input_sequences"][0]["metadata"]["length"] == 120
     session_id = uuid.UUID(body["id"])
 
     db = TestingSessionLocal()
@@ -45,6 +45,8 @@ def test_create_cloning_planner_session_persists_inputs(client):
         assert record.assembly_strategy == "gibson"
         assert record.input_sequences[0]["name"] == "vector"
         assert record.stage_timings["intake"]
+        assert "primers" in record.stage_timings
+        assert record.primer_set["summary"]["primer_count"] >= 1
     finally:
         db.close()
 
@@ -54,9 +56,7 @@ def test_record_cloning_planner_stage_updates_payload(client):
     session_id = body["id"]
 
     stage_payload = {
-        "payload": {"forward": "ATGC", "reverse": "GCAT"},
-        "next_step": "restriction",
-        "status": "in_progress",
+        "payload": {"product_size_range": [90, 110], "target_tm": 62},
     }
     update_resp = client.post(
         f"/api/cloning-planner/sessions/{session_id}/steps/primers",
@@ -65,9 +65,9 @@ def test_record_cloning_planner_stage_updates_payload(client):
     )
     assert update_resp.status_code == 200, update_resp.text
     updated = update_resp.json()
-    assert updated["primer_set"]["forward"] == "ATGC"
     assert updated["current_step"] == "restriction"
-    assert updated["status"] == "in_progress"
+    assert updated["primer_set"]["primers"][0]["status"] == "ok"
+    assert updated["guardrail_state"]["primers"]["primer_state"] in {"ok", "review"}
 
 
 def test_finalize_cloning_planner_session_sets_completion(client):
@@ -88,3 +88,4 @@ def test_finalize_cloning_planner_session_sets_completion(client):
 
     completed_at = data["completed_at"]
     assert "T" in completed_at
+    assert data["guardrail_state"]["qc"]["qc_checks"] >= 1
