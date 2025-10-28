@@ -332,6 +332,27 @@ def dispatch_export_for_packaging(
     return True
 
 
+def verify_export_packaging_guardrails(
+    db: Session,
+    *,
+    export: models.ExecutionNarrativeExport,
+    actor: models.User | None = None,
+) -> bool:
+    """Re-evaluate ladder readiness before performing packaging side effects."""
+
+    # purpose: guard Celery workers and schedulers from processing unapproved exports
+    # inputs: db session, export ORM instance, optional actor context for telemetry
+    # outputs: bool signalling whether packaging side effects may proceed
+    # status: pilot
+    ready = export.approval_status == "approved" and export.current_stage is None
+    if ready:
+        return True
+
+    record_packaging_queue_state(db, export=export, actor=actor)
+    db.flush()
+    return False
+
+
 def dispatch_export_for_packaging_by_id(
     db: Session,
     *,

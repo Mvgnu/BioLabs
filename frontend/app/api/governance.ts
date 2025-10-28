@@ -24,6 +24,12 @@ import type {
   GovernanceOverrideReverseRequest,
   GovernanceOverrideRecommendationReport,
   GovernanceGuardrailSimulationRecord,
+  GovernanceAnalyticsMeta,
+  GovernanceOverdueStageSummary,
+  GovernanceOverdueStageSample,
+  GovernanceOverdueStageTrendBucket,
+  GovernanceStageMetrics,
+  GovernanceStageDetailMetrics,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -363,6 +369,120 @@ export const mapGovernanceAnalyticsReport = (
     mapGovernanceReviewerCadence(item),
   ),
   lineage_summary: mapGovernanceOverrideLineageAggregates(report.lineage_summary),
+  meta: mapGovernanceAnalyticsMeta(report.meta),
+})
+
+const mapGovernanceAnalyticsMeta = (
+  meta: Record<string, any> | GovernanceAnalyticsMeta | undefined,
+): GovernanceAnalyticsMeta => {
+  if (!meta) {
+    return {}
+  }
+
+  const stageMetricsRaw = (meta as any).approval_stage_metrics ?? {}
+  const stageMetrics: Record<string, GovernanceStageMetrics> = {}
+  Object.entries(stageMetricsRaw).forEach(([exportId, metrics]) => {
+    stageMetrics[exportId] = mapGovernanceStageMetrics(metrics)
+  })
+
+  const overdueSummaryRaw = (meta as any).overdue_stage_summary
+  const overdueSummary = overdueSummaryRaw
+    ? mapGovernanceOverdueStageSummary(overdueSummaryRaw)
+    : undefined
+
+  const payload: GovernanceAnalyticsMeta = {}
+  if (Object.keys(stageMetrics).length > 0) {
+    payload.approval_stage_metrics = stageMetrics
+  }
+  if (overdueSummary) {
+    payload.overdue_stage_summary = overdueSummary
+  }
+  return payload
+}
+
+const mapGovernanceStageMetrics = (metrics: any): GovernanceStageMetrics => {
+  const statusCountsEntries = Object.entries(metrics?.status_counts ?? {})
+  const status_counts = statusCountsEntries.reduce<Record<string, number>>(
+    (acc, [key, value]) => {
+      acc[key] = Number(value ?? 0)
+      return acc
+    },
+    {},
+  )
+
+  const detailsEntries = Object.entries(metrics?.stage_details ?? {})
+  const stage_details = detailsEntries.reduce<
+    Record<string, GovernanceStageDetailMetrics>
+  >((acc, [stageId, detail]) => {
+    acc[stageId] = mapGovernanceStageDetail(detail)
+    return acc
+  }, {})
+
+  return {
+    total: Number(metrics?.total ?? 0),
+    overdue_count: Number(metrics?.overdue_count ?? 0),
+    mean_resolution_minutes: coerceNumber(metrics?.mean_resolution_minutes),
+    status_counts,
+    stage_details,
+  }
+}
+
+const mapGovernanceStageDetail = (detail: any): GovernanceStageDetailMetrics => ({
+  status: typeof detail?.status === 'string' ? detail.status : 'unknown',
+  breached: Boolean(detail?.breached),
+  resolution_minutes: coerceNumber(detail?.resolution_minutes),
+  due_at: detail?.due_at ?? null,
+  completed_at: detail?.completed_at ?? null,
+})
+
+const mapGovernanceOverdueStageSummary = (
+  summary: any,
+): GovernanceOverdueStageSummary => ({
+  total_overdue: Number(summary?.total_overdue ?? 0),
+  open_overdue: Number(summary?.open_overdue ?? 0),
+  resolved_overdue: Number(summary?.resolved_overdue ?? 0),
+  overdue_exports: Array.isArray(summary?.overdue_exports)
+    ? summary.overdue_exports.map((value: any) => String(value))
+    : [],
+  role_counts: Object.entries(summary?.role_counts ?? {}).reduce<
+    Record<string, number>
+  >((acc, [key, value]) => {
+    acc[key] = Number(value ?? 0)
+    return acc
+  }, {}),
+  mean_open_minutes: coerceNumber(summary?.mean_open_minutes),
+  open_age_buckets: {
+    lt60: Number(summary?.open_age_buckets?.lt60 ?? 0),
+    '60to180': Number(summary?.open_age_buckets?.['60to180'] ?? 0),
+    gt180: Number(summary?.open_age_buckets?.gt180 ?? 0),
+  },
+  trend: Array.isArray(summary?.trend)
+    ? summary.trend.map((bucket: any) => mapGovernanceOverdueTrendBucket(bucket))
+    : [],
+  stage_samples: Array.isArray(summary?.stage_samples)
+    ? summary.stage_samples.map((sample: any) =>
+        mapGovernanceOverdueStageSample(sample),
+      )
+    : [],
+})
+
+const mapGovernanceOverdueTrendBucket = (
+  bucket: any,
+): GovernanceOverdueStageTrendBucket => ({
+  date: String(bucket?.date ?? ''),
+  count: Number(bucket?.count ?? 0),
+})
+
+const mapGovernanceOverdueStageSample = (
+  sample: any,
+): GovernanceOverdueStageSample => ({
+  stage_id: String(sample?.stage_id ?? ''),
+  export_id: String(sample?.export_id ?? ''),
+  sequence_index: Number(sample?.sequence_index ?? 0),
+  status: String(sample?.status ?? ''),
+  role: sample?.role ?? null,
+  due_at: sample?.due_at ?? null,
+  detected_at: String(sample?.detected_at ?? ''),
 })
 
 const mapGovernanceReviewerCadenceTotals = (

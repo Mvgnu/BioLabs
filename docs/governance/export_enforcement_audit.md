@@ -21,9 +21,9 @@ The compliance stack now persists approval ladders, guardrail simulations, and p
 ## Background Tasks & Workers
 | Surface | File / Function | Guardrail State | Notes |
 | --- | --- | --- | --- |
-| Celery packaging worker | `backend/app/workers/packaging.py:package_execution_narrative_export` | ✅ Reloads export with ladder, aborts when `approval_status != "approved"`, and emits `awaiting_approval` events. Also respects guardrail forecasts before enqueueing via `record_packaging_queue_state`.【F:backend/app/workers/packaging.py†L30-L221】【F:backend/app/services/approval_ladders.py†L213-L284】 |
-| Packaging queue enqueue | `backend/app/services/approval_ladders.py:record_packaging_queue_state` | ✅ Central entry point for gating Celery dispatch; logs guardrail blocks and stage waits. Integration tests cover queue vs. block paths.【F:backend/app/services/approval_ladders.py†L213-L284】【F:backend/app/tests/test_experiment_console.py†L736-L848】 |
-| Celery beat schedules | `backend/app/tasks.py` | ⚠️ No export-dispatching schedules discovered; current beat tasks target notifications and digests. Documented here to confirm absence of export bypasses.【F:backend/app/tasks.py†L46-L69】 |
+| Celery packaging worker | `backend/app/workers/packaging.py:package_execution_narrative_export` | ✅ Reloads export with ladder, invokes `verify_export_packaging_guardrails`, and emits `awaiting_approval` events instead of packaging when approvals regress. Guardrail state is revalidated before any artifact writes.【F:backend/app/workers/packaging.py†L30-L221】【F:backend/app/services/approval_ladders.py†L308-L347】 |
+| Packaging queue enqueue | `backend/app/services/approval_ladders.py:record_packaging_queue_state` | ✅ Central entry point for gating Celery dispatch; logs guardrail blocks and stage waits. Integration tests cover queue vs. block paths.【F:backend/app/services/approval_ladders.py†L213-L307】【F:backend/app/tests/test_experiment_console.py†L736-L848】 |
+| SLA monitor escalation | `backend/app/tasks.py:monitor_narrative_approval_slas` | ✅ Marks overdue stages, emits escalation events, and now re-calls `verify_export_packaging_guardrails` to ensure telemetry stays in sync before notifying reviewers.【F:backend/app/tasks.py†L94-L205】【F:backend/app/services/approval_ladders.py†L308-L347】 |
 
 ## CLI & Operator Tools
 | Surface | File / Function | Guardrail State | Notes |
@@ -34,7 +34,7 @@ The compliance stack now persists approval ladders, guardrail simulations, and p
 1. Wrap notebook and inventory exports with ladder-aware workflows or explicitly mark them as governance-exempt with audit justification.
 2. Introduce shared enforcement decorators for CLI utilities and any future scheduler tasks to ensure `record_packaging_queue_state` runs before artifact generation.
 3. Expand integration coverage to include CLI dry-run vs. commit scenarios once enforcement hooks exist.
-4. Extend operator documentation (SOP) to explain how ladder gating behaves across API, worker, and CLI surfaces once the gaps above are addressed.
+4. Maintain the operator SOP (`docs/governance/operator_sop.md`) alongside future enforcement changes so dashboard guidance stays accurate.
 
 ## Test Coverage Snapshot
 - `backend/app/tests/test_experiment_console.py::test_narrative_export_packaging_blocked_until_final_stage` asserts API-to-worker blocking semantics and event emission.【F:backend/app/tests/test_experiment_console.py†L736-L848】

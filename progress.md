@@ -1,6 +1,7 @@
 # Progress Log
 
 ## 2025-07-06
+- Hardened narrative export guardrails by adding `verify_export_packaging_guardrails`, wiring packaging workers and SLA monitors to revalidate ladders, and covering the flow with new governance pytest cases plus SOP documentation and an overdue analytics dashboard in `/governance/dashboard`.
 - Completed governance export enforcement audit documenting API/worker coverage and gaps for notebook/inventory exports.
 - Authored governance analytics extension plan capturing overdue-stage metrics and serializer updates.
 - Opened planning dossier with cloning orchestrator scope, DNA asset data model draft, and documentation readiness checklist.
