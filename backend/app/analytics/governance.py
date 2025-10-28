@@ -145,12 +145,38 @@ def _store_governance_report_cache_entry(
         _GOVERNANCE_ANALYTICS_CACHE[cache_key] = entry
 
 
-def _collect_stage_metrics(export: models.ExecutionNarrativeExport) -> dict[str, int]:
-    """Return counts of approval stages grouped by status."""
+def _collect_stage_metrics(export: models.ExecutionNarrativeExport) -> dict[str, Any]:
+    """Return approval stage metrics including breach counts and resolution timings."""
 
-    metrics: dict[str, int] = {"total": export.approval_stage_count or 0}
+    metrics: dict[str, Any] = {
+        "total": export.approval_stage_count or len(export.approval_stages),
+        "overdue_count": 0,
+        "mean_resolution_minutes": None,
+        "status_counts": {},
+        "stage_details": {},
+    }
+    resolution_samples: list[float] = []
     for stage in export.approval_stages:
         metrics[stage.status] = metrics.get(stage.status, 0) + 1
+        metrics["status_counts"][stage.status] = (
+            metrics["status_counts"].get(stage.status, 0) + 1
+        )
+        if stage.overdue_notified_at:
+            metrics["overdue_count"] += 1
+        resolution_minutes: float | None = None
+        if stage.completed_at and stage.started_at:
+            delta = stage.completed_at - stage.started_at
+            resolution_minutes = max(delta.total_seconds() / 60.0, 0.0)
+            resolution_samples.append(resolution_minutes)
+        metrics["stage_details"][str(stage.id)] = {
+            "status": stage.status,
+            "breached": bool(stage.overdue_notified_at),
+            "resolution_minutes": resolution_minutes,
+            "due_at": stage.due_at.isoformat() if stage.due_at else None,
+            "completed_at": stage.completed_at.isoformat() if stage.completed_at else None,
+        }
+    if resolution_samples:
+        metrics["mean_resolution_minutes"] = sum(resolution_samples) / len(resolution_samples)
     return metrics
 
 

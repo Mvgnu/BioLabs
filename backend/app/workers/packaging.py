@@ -13,11 +13,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from celery.utils.log import get_task_logger
+from fastapi import HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models
 from ..database import SessionLocal
 from ..eventlog import record_execution_event
+from ..services import approval_ladders
 from ..storage import load_binary_payload, save_binary_payload, validate_checksum
 from ..tasks import celery_app
 
@@ -178,24 +180,53 @@ def package_execution_narrative_export(self, export_identifier: str) -> str:
 
     db = SessionLocal()
     try:
-        export = (
-            db.query(models.ExecutionNarrativeExport)
-            .options(
-                joinedload(models.ExecutionNarrativeExport.execution),
-                joinedload(models.ExecutionNarrativeExport.requested_by),
-                joinedload(models.ExecutionNarrativeExport.attachments).joinedload(
-                    models.ExecutionNarrativeExportAttachment.file
-                ),
+        try:
+            export = approval_ladders.load_export_with_ladder(
+                db,
+                export_id=export_uuid,
+                include_attachments=True,
             )
-            .filter(models.ExecutionNarrativeExport.id == export_uuid)
-            .first()
-        )
-        if not export:
-            _logger.warning("Narrative export %s missing", export_uuid)
-            return "missing"
+        except HTTPException as exc:  # pragma: no cover - defensive guard
+            if exc.status_code == status.HTTP_404_NOT_FOUND:
+                _logger.warning("Narrative export %s missing", export_uuid)
+                return "missing"
+            _logger.error(
+                "Failed to load export %s for packaging: %s", export_uuid, exc.detail
+            )
+            return "error"
 
-        if export.approval_status != "approved":
-            _logger.info("Narrative export %s awaiting staged approvals", export_uuid)
+        if export.approval_status != "approved" or export.current_stage is not None:
+            _logger.info(
+                "Narrative export %s awaiting staged approvals", export_uuid
+            )
+            pending_stage = export.current_stage
+            if pending_stage is None:
+                for stage in export.approval_stages:
+                    if stage.status in {"in_progress", "delegated", "pending"}:
+                        pending_stage = stage
+                        break
+            if export.execution is not None:
+                record_execution_event(
+                    db,
+                    export.execution,
+                    "narrative_export.packaging.awaiting_approval",
+                    {
+                        "export_id": str(export.id),
+                        "approval_status": export.approval_status,
+                        "pending_stage_id": str(pending_stage.id)
+                        if pending_stage
+                        else None,
+                        "pending_stage_index": pending_stage.sequence_index
+                        if pending_stage
+                        else None,
+                        "pending_stage_status": pending_stage.status if pending_stage else None,
+                        "pending_stage_due_at": pending_stage.due_at.isoformat()
+                        if pending_stage and pending_stage.due_at
+                        else None,
+                    },
+                    actor=export.requested_by,
+                )
+                db.commit()
             return "pending_approval"
 
         if export.artifact_status == "ready" and export.artifact_file_id:

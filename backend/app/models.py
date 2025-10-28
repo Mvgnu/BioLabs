@@ -1136,6 +1136,35 @@ class GovernanceOverrideLockEvent(Base):
     actor = relationship("User", foreign_keys=[actor_id])
 
 
+class GovernanceGuardrailSimulation(Base):
+    __tablename__ = "governance_guardrail_simulations"
+
+    # purpose: persist guardrail simulation results for governance forecasting
+    # status: pilot
+    # depends_on: protocol_executions, users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    actor_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    state = Column(String, nullable=False, default="clear")
+    projected_delay_minutes = Column(Integer, default=0, nullable=False)
+    payload = Column(JSON, default=dict)
+    summary = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    execution = relationship("ProtocolExecution")
+    actor = relationship("User")
+
+
 class ExecutionNarrativeExportAttachment(Base):
     __tablename__ = "execution_narrative_export_attachments"
 

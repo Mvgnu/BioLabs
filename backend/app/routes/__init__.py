@@ -25,6 +25,7 @@ modules = [
     'governance_baselines',
     'governance_recommendations',
     'governance_approvals',
+    'governance_guardrails',
     'audit',
     'equipment',
     'experiment_console',
