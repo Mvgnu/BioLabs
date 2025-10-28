@@ -652,6 +652,83 @@ def test_multistage_approval_delegation_and_reset(client):
     assert any(event["event_type"] == "narrative_export.approval.rejected" for event in final_timeline)
 
 
+def test_export_history_includes_guardrail_simulation(client):
+    headers, user_id, _ = create_user_headers()
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Guardrail Export", "content": "Prep"},
+        headers=headers,
+    ).json()
+
+    session = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Guardrail Session"},
+        headers=headers,
+    ).json()
+
+    execution_id = session["execution"]["id"]
+
+    export = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        json={
+            "approval_stages": [
+                {"required_role": "scientist", "name": "Scientist Review", "sla_hours": 2},
+            ]
+        },
+        headers=headers,
+    ).json()
+
+    now = datetime.now(timezone.utc)
+    simulation_payload = {
+        "execution_id": execution_id,
+        "comparisons": [
+            {
+                "index": 0,
+                "name": "Scientist Review",
+                "required_role": "scientist",
+                "baseline": {
+                    "status": "ready",
+                    "sla_hours": 2,
+                    "projected_due_at": (now + timedelta(hours=2)).isoformat(),
+                    "blockers": [],
+                    "required_actions": [],
+                    "auto_triggers": [],
+                    "assignee_id": str(user_id),
+                    "delegate_id": None,
+                },
+                "simulated": {
+                    "status": "pending",
+                    "sla_hours": 6,
+                    "projected_due_at": (now + timedelta(hours=6)).isoformat(),
+                    "blockers": ["missing-evidence"],
+                    "required_actions": ["notify:compliance"],
+                    "auto_triggers": [],
+                    "assignee_id": str(user_id),
+                    "delegate_id": None,
+                },
+            }
+        ],
+    }
+    guardrail_response = client.post(
+        "/api/governance/guardrails/simulations",
+        json=simulation_payload,
+        headers=headers,
+    )
+    assert guardrail_response.status_code == 200, guardrail_response.text
+    guardrail_payload = guardrail_response.json()
+
+    history = client.get(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        headers=headers,
+    )
+    assert history.status_code == 200, history.text
+    history_payload = history.json()
+    export_record = next(item for item in history_payload["exports"] if item["id"] == export["id"])
+    assert export_record["guardrail_simulation"]["id"] == guardrail_payload["id"]
+    assert export_record["guardrail_simulation"]["summary"]["state"] == "blocked"
+
+
 def test_narrative_export_packaging_blocked_until_final_stage(client):
     headers, user_id, _ = create_user_headers()
 
@@ -694,6 +771,10 @@ def test_narrative_export_packaging_blocked_until_final_stage(client):
 
     assert any(
         event["event_type"] == "narrative_export.packaging.awaiting_approval"
+        for event in timeline["events"]
+    )
+    assert not any(
+        event["event_type"] == "narrative_export.packaging.queued"
         for event in timeline["events"]
     )
 
@@ -755,6 +836,10 @@ def test_narrative_export_packaging_blocked_until_final_stage(client):
         f"/api/experiment-console/sessions/{execution_id}/timeline",
         headers=headers,
     ).json()
+    assert any(
+        event["event_type"] == "narrative_export.packaging.queued"
+        for event in timeline_after["events"]
+    )
     assert any(
         event["event_type"] == "narrative_export.packaging.ready"
         for event in timeline_after["events"]

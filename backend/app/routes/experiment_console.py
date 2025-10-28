@@ -104,6 +104,19 @@ def _calculate_remaining_seconds(
     return max(remaining, 0)
 
 
+def _build_export_payload(
+    db: Session, export: models.ExecutionNarrativeExport
+) -> schemas.ExecutionNarrativeExport:
+    """Serialise an export with guardrail forecasts attached."""
+
+    # purpose: centralise export serialisation with guardrail annotation
+    # inputs: database session and execution export ORM instance
+    # outputs: ExecutionNarrativeExport schema enriched with guardrail_simulation
+    # status: pilot
+    approval_ladders.attach_guardrail_forecast(db, export)
+    return schemas.ExecutionNarrativeExport.model_validate(export)
+
+
 def _build_escalation_prompt(tier: str | None, level: int | None) -> str | None:
     """Generate concise escalation copy for lock displays."""
 
@@ -3861,20 +3874,18 @@ async def create_execution_narrative_export(
     )
     db.commit()
 
-    record_execution_event(
+    db.refresh(export_record)
+
+    should_queue_packaging = approval_ladders.record_packaging_queue_state(
         db,
-        execution,
-        "narrative_export.packaging.queued",
-        {
-            "export_id": str(export_record.id),
-            "version": export_record.version,
-            "event_count": export_record.event_count,
-        },
+        export=export_record,
         actor=user,
     )
     db.commit()
 
-    enqueue_narrative_export_packaging(export_record.id)
+    if should_queue_packaging:
+        enqueue_narrative_export_packaging(export_record.id)
+        db.refresh(export_record)
 
     export_with_relations = (
         db.query(models.ExecutionNarrativeExport)
@@ -3903,9 +3914,7 @@ async def create_execution_narrative_export(
     if not export_with_relations:
         raise HTTPException(status_code=500, detail="Failed to persist narrative export")
 
-    response_payload = schemas.ExecutionNarrativeExport.model_validate(
-        export_with_relations
-    )
+    response_payload = _build_export_payload(db, export_with_relations)
     if response_payload.artifact_status == "ready" and response_payload.artifact_file:
         response_payload.artifact_download_path = _build_artifact_download_path(
             response_payload.execution_id, response_payload.id
@@ -3972,7 +3981,7 @@ async def list_execution_narrative_exports(
 
     serialized: list[schemas.ExecutionNarrativeExport] = []
     for export in exports:
-        payload = schemas.ExecutionNarrativeExport.model_validate(export)
+        payload = _build_export_payload(db, export)
         if payload.artifact_status == "ready" and payload.artifact_file:
             payload.artifact_download_path = _build_artifact_download_path(
                 payload.execution_id, payload.id
@@ -4093,10 +4102,17 @@ async def approve_execution_narrative_export(
     db.refresh(export_record)
 
     if should_queue_packaging:
-        enqueue_narrative_export_packaging(export_record.id)
+        dispatch_ready = approval_ladders.record_packaging_queue_state(
+            db,
+            export=export_record,
+            actor=user,
+        )
+        db.commit()
+        if dispatch_ready:
+            enqueue_narrative_export_packaging(export_record.id)
         db.refresh(export_record)
 
-    payload = schemas.ExecutionNarrativeExport.model_validate(export_record)
+    payload = _build_export_payload(db, export_record)
     if payload.artifact_status == "ready" and payload.artifact_file:
         payload.artifact_download_path = _build_artifact_download_path(
             payload.execution_id, payload.id
@@ -4180,7 +4196,7 @@ async def delegate_execution_narrative_approval_stage(
     db.commit()
     db.refresh(export_record)
 
-    return schemas.ExecutionNarrativeExport.model_validate(export_record)
+    return _build_export_payload(db, export_record)
 
 
 @router.post(
@@ -4249,7 +4265,7 @@ async def reset_execution_narrative_approval_stage(
     db.commit()
     db.refresh(export_record)
 
-    return schemas.ExecutionNarrativeExport.model_validate(export_record)
+    return _build_export_payload(db, export_record)
 
 
 @router.get(

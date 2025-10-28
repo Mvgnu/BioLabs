@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from app import models
 from app.auth import create_access_token
@@ -52,6 +53,47 @@ def test_governance_ladder_endpoints_flow(client):
     first_stage_id = export["approval_stages"][0]["id"]
     second_stage_id = export["approval_stages"][1]["id"]
 
+    now = datetime.now(timezone.utc)
+    simulation_payload = {
+        "execution_id": execution_id,
+        "metadata": {"scenario": "qa-blocked"},
+        "comparisons": [
+            {
+                "index": 0,
+                "name": "Scientist Review",
+                "required_role": "scientist",
+                "baseline": {
+                    "status": "ready",
+                    "sla_hours": 1,
+                    "projected_due_at": (now + timedelta(hours=1)).isoformat(),
+                    "blockers": [],
+                    "required_actions": [],
+                    "auto_triggers": [],
+                    "assignee_id": admin_id,
+                    "delegate_id": None,
+                },
+                "simulated": {
+                    "status": "pending",
+                    "sla_hours": 3,
+                    "projected_due_at": (now + timedelta(hours=3)).isoformat(),
+                    "blockers": ["awaiting-evidence"],
+                    "required_actions": ["notify:qa"],
+                    "auto_triggers": [],
+                    "assignee_id": admin_id,
+                    "delegate_id": None,
+                },
+            }
+        ],
+    }
+    simulation_response = client.post(
+        "/api/governance/guardrails/simulations",
+        json=simulation_payload,
+        headers=headers,
+    )
+    assert simulation_response.status_code == 200, simulation_response.text
+    simulation_data = simulation_response.json()
+    assert simulation_data["summary"]["state"] == "blocked"
+
     ladder_response = client.get(
         f"/api/governance/exports/{export_id}", headers=headers
     )
@@ -59,6 +101,8 @@ def test_governance_ladder_endpoints_flow(client):
     ladder_payload = ladder_response.json()
     assert ladder_payload["approval_stage_count"] == 2
     assert ladder_payload["approval_stages"][0]["status"] == "in_progress"
+    assert ladder_payload["guardrail_simulation"]["id"] == simulation_data["id"]
+    assert ladder_payload["guardrail_simulation"]["summary"]["state"] == "blocked"
 
     delegate_response = client.post(
         f"/api/governance/exports/{export_id}/stages/{second_stage_id}/delegate",

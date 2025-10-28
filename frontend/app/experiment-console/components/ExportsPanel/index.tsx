@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import type {
   ExecutionEvent,
   ExecutionNarrativeExportCreate,
@@ -359,6 +359,14 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
           {exports.map((record) => {
             const currentStage = record.current_stage
             const stageError = currentStage ? stageErrors[currentStage.id] : undefined
+            const guardrail = record.guardrail_simulation
+            const guardrailSummary = guardrail?.summary
+            const guardrailState = guardrailSummary?.state ?? 'clear'
+            const guardrailReasons = guardrailSummary?.reasons ?? []
+            const guardrailBlockedStages = new Set<number>(
+              guardrailSummary?.regressed_stage_indexes ?? [],
+            )
+            const guardrailProjectedDelay = guardrailSummary?.projected_delay_minutes ?? 0
             return (
               <article
                 key={record.id}
@@ -377,6 +385,24 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                       >
                         {record.approval_status}
                       </span>
+                      {guardrail && (
+                        <span
+                          className={`text-xs font-medium px-2 py-1 rounded-full border ${
+                            guardrailState === 'blocked'
+                              ? 'border-rose-200 bg-rose-50 text-rose-700'
+                              : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                          }`}
+                          title={
+                            guardrailReasons.length
+                              ? guardrailReasons.join(' • ')
+                              : guardrailState === 'blocked'
+                              ? 'Guardrail forecast blocking approvals'
+                              : 'Guardrail forecast clear'
+                          }
+                        >
+                          {guardrailState === 'blocked' ? 'Guardrail blocked' : 'Guardrail clear'}
+                        </span>
+                      )}
                     </div>
                     <p className="text-xs text-neutral-500">
                       Generated {formatDateTime(record.generated_at)} by{' '}
@@ -387,6 +413,24 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                     Events: {record.event_count} • Attachments: {record.attachments.length}
                   </div>
                 </header>
+
+                {guardrailState === 'blocked' && (
+                  <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                    <p className="font-medium">Forecast blocked</p>
+                    {guardrailReasons.length > 0 ? (
+                      <ul className="list-disc pl-4 space-y-0.5">
+                        {guardrailReasons.map((reason) => (
+                          <li key={reason}>{reason}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p>Guardrail simulations detected a blocking risk for this export.</p>
+                    )}
+                    {guardrailProjectedDelay > 0 && (
+                      <p className="mt-1">Projected delay: {guardrailProjectedDelay} minutes</p>
+                    )}
+                  </div>
+                )}
 
                 {record.notes && <p className="text-sm text-neutral-700">{record.notes}</p>}
 
@@ -428,11 +472,18 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                       const notesValue = approvalNotes[stage.id] ?? ''
                       const delegateValue = delegationInputs[stage.id] ?? ''
                       const delegateDueValue = delegationDueInputs[stage.id] ?? ''
+                      const stageIndexZero = stage.sequence_index - 1
+                      const stageBlocked =
+                        guardrailState === 'blocked' && guardrailBlockedStages.has(stageIndexZero)
                       return (
                         <div
                           key={stage.id}
                           className={`rounded-md border px-3 py-3 bg-white ${
-                            isCurrent ? 'border-blue-200 shadow-sm' : 'border-neutral-200'
+                            stageBlocked
+                              ? 'border-rose-200'
+                              : isCurrent
+                              ? 'border-blue-200 shadow-sm'
+                              : 'border-neutral-200'
                           }`}
                         >
                           <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
@@ -473,6 +524,11 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                               )}
                             </div>
                           </div>
+                          {stageBlocked && (
+                            <div className="mt-2 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
+                              Guardrail forecast blocks progressing this stage. Resolve flagged risks before approving.
+                            </div>
+                          )}
                           {actionHistory.length > 0 && (
                             <div className="mt-2 space-y-1 text-xs text-neutral-500">
                               <p className="font-medium text-neutral-600">Recent activity</p>
@@ -530,7 +586,7 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                                   type="button"
                                   className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:bg-neutral-300"
                                   onClick={() => handleApproval(record, stage.id, 'approved')}
-                                  disabled={approveMutation.isLoading}
+                                  disabled={approveMutation.isLoading || stageBlocked}
                                 >
                                   Approve stage
                                 </button>
@@ -578,7 +634,7 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                                   type="button"
                                   className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:bg-neutral-300"
                                   onClick={() => handleDelegation(record, stage.id)}
-                                  disabled={delegateMutation.isLoading}
+                                  disabled={delegateMutation.isLoading || stageBlocked}
                                 >
                                   Delegate stage
                                 </button>

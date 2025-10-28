@@ -43,6 +43,7 @@ def get_execution_export_ladder(
         db,
         export_id=export_uuid,
         include_attachments=True,
+        include_guardrails=True,
     )
     return schemas.ExecutionNarrativeExport.model_validate(export_record)
 
@@ -66,6 +67,7 @@ def admin_approve_execution_export(
         db,
         export_id=export_uuid,
         include_attachments=True,
+        include_guardrails=True,
     )
     result = approval_ladders.record_stage_decision(
         db,
@@ -77,7 +79,14 @@ def admin_approve_execution_export(
     db.refresh(export_record)
 
     if result.should_queue_packaging:
-        enqueue_narrative_export_packaging(export_record.id)
+        dispatch_ready = approval_ladders.record_packaging_queue_state(
+            db,
+            export=export_record,
+            actor=user,
+        )
+        db.commit()
+        if dispatch_ready:
+            enqueue_narrative_export_packaging(export_record.id)
         db.refresh(export_record)
 
     return schemas.ExecutionNarrativeExport.model_validate(export_record)
@@ -107,6 +116,7 @@ def admin_delegate_export_stage(
         db,
         export_id=export_uuid,
         include_attachments=True,
+        include_guardrails=True,
     )
     export_record = approval_ladders.delegate_stage(
         db,
@@ -144,6 +154,7 @@ def admin_reset_export_stage(
         db,
         export_id=export_uuid,
         include_attachments=True,
+        include_guardrails=True,
     )
     export_record = approval_ladders.reset_stage(
         db,

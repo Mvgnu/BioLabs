@@ -31,12 +31,60 @@ class StageActionResult:
     should_queue_packaging: bool = False
 
 
+def _serialise_guardrail_record(
+    record: models.GovernanceGuardrailSimulation,
+) -> schemas.GovernanceGuardrailSimulationRecord:
+    summary_payload = record.summary or {}
+    summary = schemas.GovernanceGuardrailSummary(
+        state=summary_payload.get("state", record.state or "clear"),
+        reasons=list(summary_payload.get("reasons", [])),
+        regressed_stage_indexes=list(summary_payload.get("regressed_stage_indexes", [])),
+        projected_delay_minutes=int(summary_payload.get("projected_delay_minutes", 0)),
+    )
+    actor = record.actor
+    actor_schema = schemas.UserOut.model_validate(actor) if actor is not None else None
+    metadata = (record.payload or {}).get("metadata", {})
+    return schemas.GovernanceGuardrailSimulationRecord(
+        id=record.id,
+        execution_id=record.execution_id,
+        actor=actor_schema,
+        summary=summary,
+        metadata=metadata,
+        created_at=record.created_at,
+        state=record.state,
+        projected_delay_minutes=record.projected_delay_minutes,
+    )
+
+
+def attach_guardrail_forecast(
+    db: Session, export: models.ExecutionNarrativeExport
+) -> None:
+    """Annotate export with the latest guardrail forecast snapshot for its execution."""
+
+    # purpose: decorate exports with guardrail simulation summaries for UI consumers
+    # inputs: SQLAlchemy session and export record
+    # outputs: mutates export with guardrail_simulation attribute when forecast exists
+    # status: pilot
+    forecast = (
+        db.query(models.GovernanceGuardrailSimulation)
+        .options(joinedload(models.GovernanceGuardrailSimulation.actor))
+        .filter(models.GovernanceGuardrailSimulation.execution_id == export.execution_id)
+        .order_by(models.GovernanceGuardrailSimulation.created_at.desc())
+        .first()
+    )
+    if forecast is None:
+        export.guardrail_simulation = None
+        return
+    export.guardrail_simulation = _serialise_guardrail_record(forecast)
+
+
 def load_export_with_ladder(
     db: Session,
     *,
     export_id: UUID,
     execution_id: UUID | None = None,
     include_attachments: bool = False,
+    include_guardrails: bool = False,
 ) -> models.ExecutionNarrativeExport:
     """Return an export with approval ladder relationships eager loaded."""
 
@@ -71,6 +119,8 @@ def load_export_with_ladder(
     export = query.first()
     if not export:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Narrative export not found")
+    if include_guardrails:
+        attach_guardrail_forecast(db, export)
     return export
 
 
@@ -125,6 +175,63 @@ def _ordered_stages(
     export: models.ExecutionNarrativeExport,
 ) -> list[models.ExecutionNarrativeApprovalStage]:
     return sorted(export.approval_stages, key=lambda item: item.sequence_index)
+
+
+def record_packaging_queue_state(
+    db: Session,
+    *,
+    export: models.ExecutionNarrativeExport,
+    actor: models.User | None = None,
+) -> bool:
+    """Emit packaging queue state events and signal when dispatch is allowed."""
+
+    # purpose: centralise packaging gating semantics for exports across API surfaces
+    # inputs: db session, export with ladder relationships, optional actor for audit trail
+    # outputs: bool indicating whether packaging may be enqueued immediately
+    # status: pilot
+    if export.approval_status == "approved" and export.current_stage is None:
+        if export.execution is not None:
+            record_execution_event(
+                db,
+                export.execution,
+                "narrative_export.packaging.queued",
+                {
+                    "export_id": str(export.id),
+                    "version": export.version,
+                    "event_count": export.event_count,
+                },
+                actor=actor,
+            )
+            db.flush()
+        return True
+
+    pending_stage = export.current_stage
+    if pending_stage is None:
+        for stage in _ordered_stages(export):
+            if stage.status in {"in_progress", "pending", "delegated"}:
+                pending_stage = stage
+                break
+
+    if export.execution is not None:
+        record_execution_event(
+            db,
+            export.execution,
+            "narrative_export.packaging.awaiting_approval",
+            {
+                "export_id": str(export.id),
+                "approval_status": export.approval_status,
+                "pending_stage_id": str(pending_stage.id) if pending_stage else None,
+                "pending_stage_index": pending_stage.sequence_index if pending_stage else None,
+                "pending_stage_status": pending_stage.status if pending_stage else None,
+                "pending_stage_due_at": pending_stage.due_at.isoformat()
+                if pending_stage and pending_stage.due_at
+                else None,
+            },
+            actor=actor,
+        )
+        db.flush()
+
+    return False
 
 
 def _resolve_active_stage(

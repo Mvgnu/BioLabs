@@ -714,6 +714,28 @@ export interface GovernanceOverrideReverseRequest {
   metadata?: Record<string, any>
 }
 
+export interface GovernanceGuardrailSummary {
+  // purpose: expose guardrail forecast status for ladder annotations
+  // status: pilot
+  state: 'clear' | 'blocked'
+  reasons: string[]
+  regressed_stage_indexes: number[]
+  projected_delay_minutes: number
+}
+
+export interface GovernanceGuardrailSimulationRecord {
+  // purpose: persist guardrail simulation metadata for UI consumption
+  // status: pilot
+  id: string
+  execution_id: string
+  actor?: UserIdentity | null
+  summary: GovernanceGuardrailSummary
+  metadata: Record<string, any>
+  created_at: string
+  state: 'clear' | 'blocked'
+  projected_delay_minutes: number
+}
+
 export interface BaselineLifecycleLabel {
   key: string
   value: string
@@ -965,6 +987,7 @@ export interface ExecutionNarrativeExportRecord {
   approval_stages: ExecutionNarrativeApprovalStage[]
   attachments: ExecutionNarrativeAttachment[]
   metadata: Record<string, any>
+  guardrail_simulation?: GovernanceGuardrailSimulationRecord | null
   artifact_status: 'queued' | 'processing' | 'ready' | 'retrying' | 'failed' | 'expired'
   artifact_checksum?: string | null
   artifact_error?: string | null
