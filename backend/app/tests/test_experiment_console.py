@@ -727,6 +727,10 @@ def test_export_history_includes_guardrail_simulation(client):
     export_record = next(item for item in history_payload["exports"] if item["id"] == export["id"])
     assert export_record["guardrail_simulation"]["id"] == guardrail_payload["id"]
     assert export_record["guardrail_simulation"]["summary"]["state"] == "blocked"
+    simulations = export_record.get("guardrail_simulations", [])
+    assert simulations, "Expected guardrail simulation history to be returned"
+    assert simulations[0]["id"] == guardrail_payload["id"]
+    assert simulations[0]["summary"]["state"] == "blocked"
 
 
 def test_narrative_export_packaging_blocked_until_final_stage(client):

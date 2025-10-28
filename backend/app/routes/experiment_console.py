@@ -114,6 +114,7 @@ def _build_export_payload(
     # outputs: ExecutionNarrativeExport schema enriched with guardrail_simulation
     # status: pilot
     approval_ladders.attach_guardrail_forecast(db, export)
+    approval_ladders.attach_guardrail_history(db, export)
     return schemas.ExecutionNarrativeExport.model_validate(export)
 
 

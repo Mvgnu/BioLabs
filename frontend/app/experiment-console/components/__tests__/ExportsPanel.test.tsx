@@ -77,6 +77,7 @@ const exportRecord: ExecutionNarrativeExportRecord = {
   attachments: [],
   metadata: {},
   guardrail_simulation: guardrailSimulation,
+  guardrail_simulations: [guardrailSimulation],
   artifact_status: 'queued',
   artifact_checksum: null,
   artifact_error: null,
@@ -129,6 +130,8 @@ describe('ExportsPanel guardrail integration', () => {
     expect(guardrailBadges.length).toBeGreaterThan(0)
     expect(screen.getByText(/Forecast blocked/)).toBeDefined()
     expect(screen.getAllByText(/qa awaiting-evidence/).length).toBeGreaterThan(0)
+    expect(screen.getByText('Guardrail forecast history')).toBeDefined()
+    expect(screen.getByText('Blocked forecast')).toBeDefined()
 
     const approveButton = screen.getByRole('button', { name: /Approve stage/i })
     expect((approveButton as HTMLButtonElement).disabled).toBe(true)
