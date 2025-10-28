@@ -40,6 +40,34 @@ class RestrictionDigestConfig(BaseModel):
     reaction_buffer: Optional[str] = None
 
 
+class ReactionBuffer(BaseModel):
+    """Reaction buffer metadata for restriction digests and assemblies."""
+
+    # purpose: document buffer compositions and compatibility
+    name: str
+    ionic_strength_mM: float
+    ph: float
+    stabilizers: List[str] = Field(default_factory=list)
+    compatible_strategies: List[str] = Field(default_factory=list)
+    notes: Optional[str] = None
+
+
+class AssemblyStrategyProfile(BaseModel):
+    """Assembly strategy descriptor loaded from catalog data."""
+
+    # purpose: provide reusable heuristics for simulation scoring
+    name: str
+    base_success: float = Field(ge=0.0, le=1.0)
+    tm_penalty_factor: float = Field(ge=0.0)
+    minimal_site_count: int = Field(ge=0)
+    low_site_penalty: float = Field(ge=0.0, le=1.0)
+    ligation_efficiency: float = Field(default=0.85, ge=0.0, le=1.0)
+    kinetics_model: str = "unspecified"
+    overlap_optimum: Optional[int] = Field(default=None, ge=0)
+    overlap_tolerance: Optional[int] = Field(default=None, ge=0)
+    overhang_diversity_factor: Optional[float] = Field(default=None, ge=0.0)
+
+
 class AssemblySimulationConfig(BaseModel):
     """Assembly simulation parameters."""
 
@@ -49,6 +77,11 @@ class AssemblySimulationConfig(BaseModel):
     tm_penalty_factor: float = Field(default=0.1, ge=0.0)
     minimal_site_count: int = Field(default=2, ge=0)
     low_site_penalty: float = Field(default=0.4, ge=0.0, le=1.0)
+    ligation_efficiency: float = Field(default=0.85, ge=0.0, le=1.0)
+    kinetics_model: str = "unspecified"
+    overlap_optimum: Optional[int] = Field(default=None, ge=0)
+    overlap_tolerance: Optional[int] = Field(default=None, ge=0)
+    overhang_diversity_factor: Optional[float] = Field(default=None, ge=0.0)
 
 
 class QCConfig(BaseModel):
@@ -73,10 +106,10 @@ class SequenceToolkitProfile(BaseModel):
 
         # purpose: allow quick derivation of per-strategy assembly heuristics
         return SequenceToolkitProfile(
-            primer=self.primer.copy(),
-            restriction=self.restriction.copy(),
-            assembly=self.assembly.copy(update={"strategy": strategy}),
-            qc=self.qc.copy(),
+            primer=self.primer.model_copy(),
+            restriction=self.restriction.model_copy(),
+            assembly=self.assembly.model_copy(update={"strategy": strategy}),
+            qc=self.qc.model_copy(),
         )
 
 
@@ -114,6 +147,7 @@ class RestrictionDigestResult(BaseModel):
     compatible: bool
     buffer_alerts: List[str] = Field(default_factory=list)
     notes: List[str] = Field(default_factory=list)
+    buffer: Optional[ReactionBuffer] = None
 
 
 class RestrictionDigestResponse(BaseModel):
@@ -185,6 +219,9 @@ class AssemblyStepMetrics(BaseModel):
     strategy: str
     expected_fragment_count: int
     junction_success: float = Field(ge=0.0, le=1.0)
+    ligation_efficiency: float = Field(default=0.85, ge=0.0, le=1.0)
+    kinetics_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    heuristics: Dict[str, Any] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
 
 

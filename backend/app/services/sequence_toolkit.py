@@ -7,22 +7,26 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 from statistics import mean
 from typing import Any
 
 import primer3
 
 from .. import sequence as sequence_utils
+from ..data.loaders import (
+    get_assembly_strategy_catalog,
+    get_buffer_catalog,
+    get_enzyme_catalog as load_enzyme_catalog,
+)
 from ..schemas.sequence_toolkit import (
     AssemblySimulationConfig,
     AssemblySimulationResult,
     AssemblyStepMetrics,
+    AssemblyStrategyProfile,
     EnzymeMetadata,
     PrimerCandidate,
     PrimerDesignConfig,
@@ -33,6 +37,7 @@ from ..schemas.sequence_toolkit import (
     QCConfig,
     QCReport,
     QCReportResponse,
+    ReactionBuffer,
     RestrictionDigestConfig,
     RestrictionDigestResponse,
     RestrictionDigestResult,
@@ -69,9 +74,6 @@ class PrimerSet:
 
 
 _GAS_CONSTANT = 1.987
-_BASE_DIR = Path(__file__).resolve().parent.parent
-_ENZYME_CATALOG_PATH = _BASE_DIR / "data" / "enzymes.json"
-
 _NEAREST_NEIGHBOR_PARAMS: dict[str, tuple[float, float]] = {
     "AA": (-7.9, -22.2),
     "TT": (-7.9, -22.2),
@@ -207,11 +209,26 @@ def get_enzyme_catalog() -> list[EnzymeMetadata]:
     """Load and cache curated enzyme metadata records."""
 
     # purpose: surface curated restriction enzyme metadata for repeated lookups
-    if not _ENZYME_CATALOG_PATH.exists():
-        return []
-    with _ENZYME_CATALOG_PATH.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    return [EnzymeMetadata(**entry) for entry in payload]
+    return [EnzymeMetadata(**entry) for entry in load_enzyme_catalog()]
+
+
+@lru_cache(maxsize=1)
+def get_reaction_buffers() -> list[ReactionBuffer]:
+    """Return curated reaction buffer metadata records."""
+
+    # purpose: provide buffer context for restriction digests and assembly heuristics
+    return [ReactionBuffer(**entry) for entry in get_buffer_catalog()]
+
+
+@lru_cache(maxsize=1)
+def get_assembly_strategies() -> list[AssemblyStrategyProfile]:
+    """Return catalogued assembly strategy descriptors."""
+
+    # purpose: expose reusable assembly heuristics for planners and governance tooling
+    return [
+        AssemblyStrategyProfile(**entry)
+        for entry in get_assembly_strategy_catalog()
+    ]
 
 
 def _enzyme_index() -> dict[str, EnzymeMetadata]:
@@ -219,6 +236,47 @@ def _enzyme_index() -> dict[str, EnzymeMetadata]:
 
     # purpose: accelerate metadata lookups during digest analysis
     return {record.name.lower(): record for record in get_enzyme_catalog()}
+
+
+def _buffer_index() -> dict[str, ReactionBuffer]:
+    """Return buffer metadata keyed by normalized buffer name."""
+
+    # purpose: support quick lookup of buffer compatibility heuristics
+    return {record.name.lower(): record for record in get_reaction_buffers()}
+
+
+def _assembly_strategy_index() -> dict[str, AssemblyStrategyProfile]:
+    """Return assembly strategy descriptors keyed by normalized name."""
+
+    # purpose: accelerate strategy lookups during simulation scoring
+    return {record.name.lower(): record for record in get_assembly_strategies()}
+
+
+def _kinetics_modifier(
+    kinetics_model: str, tm_delta: float, site_count: int, heuristics: dict[str, Any]
+) -> float:
+    """Return modifier scaling based on strategy kinetics assumptions."""
+
+    # purpose: translate kinetics heuristics into normalized modifiers for simulations
+    base = 1.0
+    model = (kinetics_model or "unspecified").lower()
+    overlap_delta = heuristics.get("overlap_delta", 0.0)
+    if model == "type_iis_pulsed":
+        diversity = heuristics.get("overhang_diversity", site_count)
+        base -= min(0.35, max(0.0, 4 - diversity) * 0.05)
+        base -= min(0.1, max(0.0, tm_delta - 3.0) * 0.02)
+    elif model == "isothermal_exonuclease":
+        base -= min(0.3, overlap_delta * 0.01)
+        base -= min(0.2, max(0.0, tm_delta - 2.5) * 0.02)
+    elif model == "high_fidelity":
+        base -= min(0.15, max(0.0, tm_delta - 1.5) * 0.015)
+        base -= min(0.1, max(0.0, heuristics.get("buffer_penalty", 0.0)) * 0.5)
+    elif model == "recombinase_mediated":
+        base -= min(0.4, max(0, 2 - site_count) * 0.12)
+        base -= min(0.2, overlap_delta * 0.008)
+    else:
+        base -= min(0.2, max(0.0, tm_delta - 2.0) * 0.02)
+    return max(0.1, min(1.0, base))
 
 
 def _primer_candidate_from_result(result: PrimerDesignResult) -> PrimerCandidate:
@@ -305,7 +363,7 @@ def _resolve_restriction_config(
     else:
         base = RestrictionDigestConfig()
     if enzymes:
-        base = base.copy(update={"enzymes": list(enzymes)})
+        base = base.model_copy(update={"enzymes": list(enzymes)})
     return base
 
 
@@ -321,7 +379,21 @@ def _resolve_assembly_config(
     else:
         base = AssemblySimulationConfig()
     if strategy:
-        base = base.copy(update={"strategy": strategy})
+        base = base.model_copy(update={"strategy": strategy})
+    strategy_entry = _assembly_strategy_index().get(base.strategy.lower())
+    if strategy_entry:
+        update_payload = {
+            "base_success": strategy_entry.base_success,
+            "tm_penalty_factor": strategy_entry.tm_penalty_factor,
+            "minimal_site_count": strategy_entry.minimal_site_count,
+            "low_site_penalty": strategy_entry.low_site_penalty,
+            "ligation_efficiency": strategy_entry.ligation_efficiency,
+            "kinetics_model": strategy_entry.kinetics_model,
+            "overlap_optimum": strategy_entry.overlap_optimum,
+            "overlap_tolerance": strategy_entry.overlap_tolerance,
+            "overhang_diversity_factor": strategy_entry.overhang_diversity_factor,
+        }
+        base = base.model_copy(update=update_payload)
     return base
 
 
@@ -516,10 +588,20 @@ def analyze_restriction_digest(
     digest_config = _resolve_restriction_config(config, enzymes=enzymes)
     enzyme_list = list(digest_config.enzymes)
     catalog_index = _enzyme_index()
+    buffer_catalog = _buffer_index()
     enzyme_catalog: list[EnzymeMetadata] = []
     digest_results: list[RestrictionDigestResult] = []
     compatibility_alerts: list[str] = []
     metadata_alerts: list[str] = []
+    selected_buffer = None
+    if digest_config.reaction_buffer:
+        selected_buffer = buffer_catalog.get(
+            digest_config.reaction_buffer.lower()
+        )
+        if not selected_buffer:
+            metadata_alerts.append(
+                f"Reaction buffer {digest_config.reaction_buffer} not found in catalog"
+            )
     for enzyme_name in enzyme_list:
         meta = catalog_index.get(enzyme_name.lower())
         if meta:
@@ -560,6 +642,10 @@ def analyze_restriction_digest(
         for enzyme_name, meta in ((entry.name, entry) for entry in enzyme_catalog):
             if meta.star_activity_notes:
                 digest_notes.append(f"{enzyme_name}: {meta.star_activity_notes}")
+        if selected_buffer:
+            digest_notes.append(
+                f"Buffer {selected_buffer.name}: {selected_buffer.notes or 'no notes recorded.'}"
+            )
         digest_results.append(
             RestrictionDigestResult(
                 name=name,
@@ -567,6 +653,7 @@ def analyze_restriction_digest(
                 compatible=compatible,
                 buffer_alerts=buffer_alerts,
                 notes=digest_notes,
+                buffer=selected_buffer,
             )
         )
         absent_enzymes = [enz for enz, positions in site_map.items() if not positions]
@@ -610,24 +697,83 @@ def simulate_assembly(
             reverse_tm = entry["reverse"]["thermodynamics"]["tm"]
             tm_delta = abs(forward_tm - reverse_tm)
         site_count = 0
+        overhang_signatures: set[str] = set()
         for site in digest.get("sites", {}).values():
             if isinstance(site, dict):
                 site_positions = site.get("positions", [])
             else:
                 site_positions = site
             site_count += len(site_positions)
-        score = assembly_config.base_success - (tm_delta * assembly_config.tm_penalty_factor)
+            if isinstance(site, dict):
+                site_meta = site.get("metadata") or {}
+                overhang = site_meta.get("overhang") or site_meta.get("recognition_site")
+                if overhang:
+                    overhang_signatures.add(str(overhang))
+        overhang_diversity = len(overhang_signatures) or site_count
+        buffer_penalty = 0.0
+        if digest.get("buffer_alerts"):
+            buffer_penalty += min(0.3, 0.05 * len(digest["buffer_alerts"]))
+        buffer_meta = digest.get("buffer") or {}
+        compatible_strategies = buffer_meta.get("compatible_strategies", [])
+        if (
+            compatible_strategies
+            and assembly_config.strategy not in compatible_strategies
+        ):
+            buffer_penalty += 0.1
+        product_size = entry.get("product_size") or 0
+        forward_len = (entry.get("forward") or {}).get("length") or 0
+        reverse_len = (entry.get("reverse") or {}).get("length") or 0
+        overlap_estimate = max(0, product_size - (forward_len + reverse_len))
+        overlap_delta = 0.0
+        if assembly_config.overlap_optimum is not None:
+            overlap_delta = abs(
+                overlap_estimate - assembly_config.overlap_optimum
+            )
+        heuristics = {
+            "tm_delta": tm_delta,
+            "site_count": float(site_count),
+            "buffer_penalty": buffer_penalty,
+            "overlap_estimate": overlap_estimate,
+            "overhang_diversity": float(overhang_diversity),
+        }
+        if assembly_config.overlap_tolerance:
+            heuristics["overlap_tolerance"] = assembly_config.overlap_tolerance
+        if overlap_delta:
+            heuristics["overlap_delta"] = overlap_delta
+        score = (
+            assembly_config.base_success
+            - (tm_delta * assembly_config.tm_penalty_factor)
+            - buffer_penalty
+        )
         if site_count < assembly_config.minimal_site_count:
             score *= assembly_config.low_site_penalty
+        ligation_efficiency = assembly_config.ligation_efficiency
+        score *= ligation_efficiency
+        kinetics_score = _kinetics_modifier(
+            assembly_config.kinetics_model,
+            tm_delta,
+            site_count,
+            heuristics,
+        )
+        heuristics["kinetics_modifier"] = kinetics_score
+        score *= kinetics_score
         score = max(0.0, min(1.0, score))
         success_scores.append(score)
+        warnings = list(entry.get("warnings", []))
+        if kinetics_score < 0.6:
+            warnings.append(
+                "Kinetics model predicts suboptimal junction progression"
+            )
         steps.append(
             AssemblyStepMetrics(
                 template=name,
                 strategy=assembly_config.strategy,
                 expected_fragment_count=max(1, site_count),
                 junction_success=score,
-                warnings=entry.get("warnings", []),
+                ligation_efficiency=ligation_efficiency,
+                kinetics_score=kinetics_score,
+                heuristics=heuristics,
+                warnings=warnings,
             )
         )
     return AssemblySimulationResult(
