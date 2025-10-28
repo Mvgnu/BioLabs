@@ -1335,6 +1335,35 @@ class SequenceAnalysisJob(Base):
     updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
 
 
+class CloningPlannerSession(Base):
+    """cloning planner orchestration session state"""
+
+    # purpose: persist resumable cloning planner workflows across primer, restriction, assembly, and qc stages
+    # status: experimental
+    # depends_on: backend.app.models.User
+    __tablename__ = "cloning_planner_sessions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    status = Column(String, default="draft", nullable=False)
+    assembly_strategy = Column(String, nullable=False)
+    input_sequences = Column(JSON, default=list, nullable=False)
+    primer_set = Column(JSON, default=dict, nullable=False)
+    restriction_digest = Column(JSON, default=dict, nullable=False)
+    assembly_plan = Column(JSON, default=dict, nullable=False)
+    qc_reports = Column(JSON, default=list, nullable=False)
+    inventory_reservations = Column(JSON, default=list, nullable=False)
+    guardrail_state = Column(JSON, default=dict, nullable=False)
+    stage_timings = Column(JSON, default=dict, nullable=False)
+    current_step = Column(String)
+    celery_task_id = Column(String)
+    last_error = Column(Text)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
+    completed_at = Column(DateTime)
+
+    created_by = relationship("User")
+
+
 class Project(Base):
     __tablename__ = "projects"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

@@ -760,6 +760,45 @@ class GovernanceGuardrailSimulationRecord(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class GovernanceGuardrailQueueEntry(BaseModel):
+    # purpose: surface sanitized packaging queue telemetry for guardrail dashboards
+    export_id: UUID
+    execution_id: UUID
+    version: int | None = None
+    state: str = "unknown"
+    event: str | None = None
+    approval_status: str
+    artifact_status: str
+    packaging_attempts: int = 0
+    guardrail_state: Literal["clear", "blocked"] | None = None
+    projected_delay_minutes: int | None = None
+    pending_stage_id: UUID | None = None
+    pending_stage_index: int | None = None
+    pending_stage_status: str | None = None
+    pending_stage_due_at: datetime | None = None
+    updated_at: datetime | None = None
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+
+class GovernanceGuardrailHealthTotals(BaseModel):
+    # purpose: summarize guardrail queue state counts for operator dashboards
+    total_exports: int = 0
+    blocked: int = 0
+    awaiting_approval: int = 0
+    queued: int = 0
+    ready: int = 0
+    failed: int = 0
+
+
+class GovernanceGuardrailHealthReport(BaseModel):
+    # purpose: deliver guardrail queue health payloads for governance workspaces
+    totals: GovernanceGuardrailHealthTotals = Field(
+        default_factory=GovernanceGuardrailHealthTotals
+    )
+    state_breakdown: Dict[str, int] = Field(default_factory=dict)
+    queue: list[GovernanceGuardrailQueueEntry] = Field(default_factory=list)
+
+
 class GovernanceReviewerCadenceReport(BaseModel):
     # purpose: expose lean reviewer cadence analytics payloads for staffing dashboards
     # inputs: reviewer cadence summaries and aggregate guardrails filtered via RBAC
@@ -2624,6 +2663,67 @@ class ItemTypeOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+
+class CloningPlannerSequenceIn(BaseModel):
+    """Cloning planner intake sequence descriptor."""
+
+    # purpose: capture individual sequence uploads for planner intake requests
+    name: str
+    sequence: str
+    metadata: dict[str, Any] | None = None
+
+
+class CloningPlannerSessionCreate(BaseModel):
+    """Payload for creating a cloning planner session."""
+
+    # purpose: represent planner session creation inputs across API and tests
+    assembly_strategy: str
+    input_sequences: list[CloningPlannerSequenceIn]
+    metadata: dict[str, Any] | None = None
+
+
+class CloningPlannerStageRequest(BaseModel):
+    """Payload for submitting stage outputs to the cloning planner."""
+
+    # purpose: standardise stage updates including guardrail and task context
+    payload: dict[str, Any]
+    next_step: str | None = None
+    status: str | None = None
+    guardrail_state: dict[str, Any] | None = None
+    task_id: str | None = None
+    error: str | None = None
+
+
+class CloningPlannerFinalizeRequest(BaseModel):
+    """Finalize payload for cloning planner sessions."""
+
+    # purpose: capture optional guardrail payload when concluding planner workflows
+    guardrail_state: dict[str, Any] | None = None
+
+
+class CloningPlannerSessionOut(BaseModel):
+    """Response schema for cloning planner sessions."""
+
+    # purpose: expose planner session state to API consumers and frontend wizard
+    id: UUID
+    created_by_id: UUID | None = None
+    status: str
+    assembly_strategy: str
+    input_sequences: list[dict[str, Any]]
+    primer_set: dict[str, Any]
+    restriction_digest: dict[str, Any]
+    assembly_plan: dict[str, Any]
+    qc_reports: list[Any]
+    inventory_reservations: list[dict[str, Any]]
+    guardrail_state: dict[str, Any]
+    stage_timings: dict[str, Any]
+    current_step: str | None = None
+    celery_task_id: str | None = None
+    last_error: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    completed_at: datetime | None = None
 
 
 EquipmentTelemetryChannel.model_rebuild()

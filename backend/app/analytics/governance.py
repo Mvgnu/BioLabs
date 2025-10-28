@@ -518,6 +518,168 @@ def _apply_reassign_override_effect(
             accumulator.pending -= 1
 
     baseline_assignments[baseline_uuid] = desired_set
+
+
+def compute_guardrail_health(
+    db: Session,
+    user: models.User,
+    *,
+    team_ids: Set[UUID] | None = None,
+    execution_ids: Sequence[UUID] | None = None,
+    limit: int | None = 50,
+) -> schemas.GovernanceGuardrailHealthReport:
+    """Aggregate sanitized packaging queue states for guardrail dashboards."""
+
+    membership_ids = set(team_ids or set())
+    query = (
+        db.query(models.ExecutionNarrativeExport)
+        .join(
+            models.ProtocolExecution,
+            models.ExecutionNarrativeExport.execution_id == models.ProtocolExecution.id,
+        )
+        .join(
+            models.ProtocolTemplate,
+            models.ProtocolExecution.template_id == models.ProtocolTemplate.id,
+        )
+    )
+
+    if execution_ids:
+        query = query.filter(
+            models.ExecutionNarrativeExport.execution_id.in_(list(execution_ids))
+        )
+
+    if not user.is_admin:
+        access_filters = [models.ProtocolExecution.run_by == user.id]
+        access_filters.append(models.ProtocolTemplate.team_id.is_(None))
+        if membership_ids:
+            access_filters.append(models.ProtocolTemplate.team_id.in_(membership_ids))
+        query = query.filter(or_(*access_filters))
+
+    exports = (
+        query.options(joinedload(models.ExecutionNarrativeExport.execution))
+        .order_by(models.ExecutionNarrativeExport.updated_at.desc())
+        .all()
+    )
+
+    state_counts: Counter[str] = Counter()
+    queue_entries: list[schemas.GovernanceGuardrailQueueEntry] = []
+
+    from ..services import approval_ladders as _approval_ladders
+
+    fallback_timestamp = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+    for export in exports:
+        meta_payload = export.meta if isinstance(export.meta, dict) else {}
+        queue_meta = (
+            meta_payload.get("packaging_queue_state")
+            if isinstance(meta_payload, dict)
+            else {}
+        )
+        state = "unknown"
+        event = None
+        raw_context: dict[str, Any] = {}
+        if isinstance(queue_meta, dict):
+            state = str(queue_meta.get("state") or "unknown")
+            event = queue_meta.get("event")
+            context_value = queue_meta.get("context")
+            if isinstance(context_value, dict):
+                raw_context = dict(context_value)
+
+        sanitized_context: dict[str, Any] = {}
+        if event:
+            payload = {
+                "export_id": str(export.id),
+                "state": state,
+            }
+            if raw_context:
+                payload["context"] = raw_context
+            sanitized_payload = _approval_ladders.sanitize_packaging_event_payload(
+                str(event), payload
+            )
+            sanitized_context = (
+                sanitized_payload.get("context")
+                if isinstance(sanitized_payload.get("context"), dict)
+                else {}
+            )
+        state_counts[state] += 1
+
+        guardrail_state = sanitized_context.get("guardrail_state")
+        projected_delay_minutes = sanitized_context.get("projected_delay_minutes")
+        pending_stage_id = _coerce_uuid(sanitized_context.get("pending_stage_id"))
+        pending_stage_index = sanitized_context.get("pending_stage_index")
+        pending_stage_status = sanitized_context.get("pending_stage_status")
+        pending_due_at = _parse_iso_timestamp(
+            sanitized_context.get("pending_stage_due_at")
+        )
+
+        entry = schemas.GovernanceGuardrailQueueEntry(
+            export_id=export.id,
+            execution_id=export.execution_id,
+            version=export.version,
+            state=state,
+            event=str(event) if event else None,
+            approval_status=export.approval_status,
+            artifact_status=export.artifact_status,
+            packaging_attempts=export.packaging_attempts,
+            guardrail_state=guardrail_state
+            if guardrail_state in {"clear", "blocked"}
+            else None,
+            projected_delay_minutes=(
+                int(projected_delay_minutes)
+                if isinstance(projected_delay_minutes, (int, float))
+                else None
+            ),
+            pending_stage_id=pending_stage_id,
+            pending_stage_index=(
+                int(pending_stage_index)
+                if isinstance(pending_stage_index, (int, float))
+                else None
+            ),
+            pending_stage_status=(
+                str(pending_stage_status)
+                if pending_stage_status is not None
+                else None
+            ),
+            pending_stage_due_at=pending_due_at,
+            updated_at=export.updated_at,
+            context=sanitized_context,
+        )
+        queue_entries.append(entry)
+
+    totals = schemas.GovernanceGuardrailHealthTotals(
+        total_exports=len(exports),
+        blocked=state_counts.get("guardrail_blocked", 0),
+        awaiting_approval=state_counts.get("awaiting_approval", 0),
+        queued=state_counts.get("queued", 0),
+        ready=state_counts.get("ready", 0),
+        failed=state_counts.get("failed", 0),
+    )
+
+    state_priority = {
+        "guardrail_blocked": 0,
+        "failed": 1,
+        "retrying": 2,
+        "awaiting_approval": 3,
+        "queued": 4,
+        "processing": 5,
+        "ready": 6,
+        "unknown": 7,
+    }
+
+    def _sort_key(entry: schemas.GovernanceGuardrailQueueEntry) -> tuple[int, float]:
+        priority = state_priority.get(entry.state, 7)
+        updated = entry.updated_at or fallback_timestamp
+        return priority, -updated.timestamp()
+
+    sorted_entries = sorted(queue_entries, key=_sort_key)
+    if limit is not None and limit > 0:
+        sorted_entries = sorted_entries[: int(limit)]
+
+    return schemas.GovernanceGuardrailHealthReport(
+        totals=totals,
+        state_breakdown=dict(sorted(state_counts.items())),
+        queue=sorted_entries,
+    )
     return float(len(additions) - len(removals))
 
 

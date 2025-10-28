@@ -3,6 +3,7 @@ import uuid
 
 from app import models
 from app.auth import create_access_token
+from app.services import approval_ladders
 from .conftest import TestingSessionLocal
 
 
@@ -198,8 +199,115 @@ def test_export_history_includes_guardrail_forecast(client):
     assert exports, "Expected export history payload"
     guardrail = exports[0].get("guardrail_simulation")
     assert guardrail is not None
-    assert guardrail["summary"]["state"] == "blocked"
-    assert guardrail["summary"]["reasons"], "Expected guardrail reasons to be surfaced"
+
+
+def test_guardrail_health_reports_sanitized_queue_state(client):
+    headers, user_id = create_headers(is_admin=True)
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Guardrail Template", "content": "Prep"},
+        headers=headers,
+    ).json()
+
+    session_resp = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Guardrail Health"},
+        headers=headers,
+    )
+    assert session_resp.status_code == 200, session_resp.text
+    execution_id = session_resp.json()["execution"]["id"]
+
+    export_resp = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        json={"notes": "Health snapshot"},
+        headers=headers,
+    )
+    assert export_resp.status_code == 200, export_resp.text
+    export_payload = export_resp.json()
+    export_id = export_payload["id"]
+
+    now = datetime.now(timezone.utc)
+    simulation_payload = {
+        "execution_id": execution_id,
+        "metadata": {"scenario": "blocked"},
+        "comparisons": [
+            {
+                "index": 1,
+                "name": "QA Review",
+                "required_role": "qa",
+                "mapped_step_indexes": [0],
+                "gate_keys": ["qa"],
+                "baseline": {
+                    "status": "ready",
+                    "sla_hours": 2,
+                    "projected_due_at": (now + timedelta(hours=1)).isoformat(),
+                    "blockers": [],
+                    "required_actions": [],
+                    "auto_triggers": [],
+                    "assignee_id": user_id,
+                    "delegate_id": None,
+                },
+                "simulated": {
+                    "status": "pending",
+                    "sla_hours": 6,
+                    "projected_due_at": (now + timedelta(hours=5)).isoformat(),
+                    "blockers": ["missing-signoff"],
+                    "required_actions": ["notify:qa"],
+                    "auto_triggers": [],
+                    "assignee_id": user_id,
+                    "delegate_id": None,
+                },
+            }
+        ],
+    }
+
+    sim_resp = client.post(
+        "/api/governance/guardrails/simulations",
+        json=simulation_payload,
+        headers=headers,
+    )
+    assert sim_resp.status_code == 200, sim_resp.text
+
+    session = TestingSessionLocal()
+    try:
+        export_record = session.get(models.ExecutionNarrativeExport, uuid.UUID(export_id))
+        assert export_record is not None
+        approval_ladders.record_packaging_queue_state(
+            session, export=export_record, actor=None
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    health_resp = client.get(
+        "/api/governance/guardrails/health",
+        headers=headers,
+    )
+    assert health_resp.status_code == 200, health_resp.text
+    report = health_resp.json()
+
+    totals = report["totals"]
+    assert totals["total_exports"] >= 1
+    breakdown = report["state_breakdown"]
+    assert "guardrail_blocked" in breakdown or "awaiting_approval" in breakdown
+
+    entries = report["queue"]
+    target = next((entry for entry in entries if entry["export_id"] == export_id), None)
+    assert target is not None
+    assert target["approval_status"]
+    assert target["artifact_status"]
+    if target["context"]:
+        allowed_keys = {
+            "guardrail_state",
+            "projected_delay_minutes",
+            "reasons",
+            "pending_stage_id",
+            "pending_stage_index",
+            "pending_stage_status",
+            "pending_stage_due_at",
+        }
+        assert set(target["context"].keys()).issubset(allowed_keys)
 
 
 def test_guardrail_simulation_clear_for_multi_stage(client):

@@ -1,8 +1,9 @@
 'use client'
 
 import React, { useMemo } from 'react'
+import GuardrailHealthDashboard from '../../components/governance/GuardrailHealthDashboard'
 import OverdueDashboard from '../../components/governance/OverdueDashboard'
-import { useGovernanceAnalytics } from '../../hooks/useExperimentConsole'
+import { useGovernanceAnalytics, useGuardrailHealth } from '../../hooks/useExperimentConsole'
 import type { GovernanceStageMetrics } from '../../types'
 
 // purpose: governance operator dashboard surfacing overdue ladder analytics and guardrail breaches
@@ -11,6 +12,7 @@ import type { GovernanceStageMetrics } from '../../types'
 // status: pilot
 export default function GovernanceOverdueDashboardPage() {
   const analyticsQuery = useGovernanceAnalytics(null)
+  const guardrailHealthQuery = useGuardrailHealth({ limit: 25 })
 
   const summary = analyticsQuery.data?.meta.overdue_stage_summary
   const stageMetrics = useMemo<Record<string, GovernanceStageMetrics> | undefined>(() => {
@@ -20,11 +22,18 @@ export default function GovernanceOverdueDashboardPage() {
   }, [analyticsQuery.data?.meta.approval_stage_metrics])
 
   return (
-    <OverdueDashboard
-      summary={summary}
-      stageMetrics={stageMetrics}
-      isLoading={analyticsQuery.isLoading}
-      error={analyticsQuery.error as Error | null}
-    />
+    <div className="space-y-10">
+      <GuardrailHealthDashboard
+        report={guardrailHealthQuery.data}
+        isLoading={guardrailHealthQuery.isLoading}
+        error={guardrailHealthQuery.error as Error | null}
+      />
+      <OverdueDashboard
+        summary={summary}
+        stageMetrics={stageMetrics}
+        isLoading={analyticsQuery.isLoading}
+        error={analyticsQuery.error as Error | null}
+      />
+    </div>
   )
 }

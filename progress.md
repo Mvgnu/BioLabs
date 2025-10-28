@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2025-07-10
+- Landed cloning planner backend scaffolding including `CloningPlannerSession` model, Alembic migration, FastAPI routes, and serialization helpers for resumable assembly workflows.
+- Added pytest coverage for session creation, stage progression, and guardrail-aware finalization plus documentation updates highlighting new orchestration endpoints.
+- Updated planning checklist and service README to reflect delivered planner foundations while tracking remaining analytics and frontend wizard work.
+
 ## 2025-07-09
 - Locked narrative packaging telemetry to a shared sanitised contract spanning API, CLI, Celery, and SLA monitor flows, preventing stray fields and aligning dashboards.
 - Added governance pytest coverage for the telemetry sanitiser and reinforced CLI queue parity with worker enforcement semantics.

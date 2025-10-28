@@ -26,6 +26,19 @@ Experiment console and governance export routes now embed the latest guardrail f
 
 `services.approval_ladders.record_packaging_queue_state` now rehydrates the latest guardrail snapshot before dispatching packaging jobs. When simulations report a `blocked` state the helper records a `narrative_export.packaging.guardrail_blocked` event and prevents queueing, ensuring risky dossiers remain paused until the forecast clears. All queue events pass through a shared sanitiser that trims payloads to the approved `{export_id,state,context?}` schema so CLI, worker, and dashboard consumers observe identical telemetry.
 
+The `/api/governance/guardrails/health` endpoint now aggregates those sanitised queue states, returning a `GovernanceGuardrailHealthReport` consumed by the Next.js guardrail health dashboard. The report surfaces blocked exports, pending stage metadata, and state breakdown counts without emitting new telemetry streams—only the persisted `packaging_queue_state` blob is read. React Query hooks (`useGuardrailHealth`) keep the dashboard and CLI parity checks in sync.
+
+## Cloning Planner Orchestrator
+
+The cloning planner stack introduces a resumable orchestration surface for multi-stage cloning projects. Sessions persist to `cloning_planner_sessions` with intake context, guardrail state, and step outputs so long-running primer design, restriction analysis, assembly simulation, and QC review can progress asynchronously. Service helpers in `services/cloning_planner.py` centralise state transitions, guardrail updates, and Celery task metadata, while the FastAPI router (`routes/cloning_planner.py`) exposes REST endpoints:
+
+- `POST /api/cloning-planner/sessions` seeds a session with uploaded sequences and the requested assembly strategy.
+- `POST /api/cloning-planner/sessions/{session_id}/steps/{step}` records stage payloads (primers, restriction digests, assembly plans, or QC findings) and advances the workflow pointer.
+- `POST /api/cloning-planner/sessions/{session_id}/finalize` locks the plan after guardrail checks, capturing final summaries for downstream exports and inventory reservations.
+- `GET /api/cloning-planner/sessions/{session_id}` returns the aggregated session document so the frontend wizard can resume or display guardrail context.
+
+Each handler enforces owner/admin access checks and reuses the shared serialization helper so API consumers receive consistent payloads. Tests under `tests/test_cloning_planner.py` cover session creation, stage progression, and finalization timestamps to keep the orchestration contract stable.
+
 Multi-stage approvals are orchestrated by the experiment console routes: `POST /api/experiment-console/sessions/{execution_id}/exports/narrative/{export_id}/approve` advances the active stage with signature capture and emits timeline events (`narrative_export.approval.stage_started`, `.stage_completed`, `.finalized`, `.rejected`). Delegations (`POST .../stages/{stage_id}/delegate`) and remediation resets (`POST .../stages/{stage_id}/reset`) update assignees, SLA due dates, and action history while keeping React Query caches synchronized. Celery now escalates overdue stages via `monitor_narrative_approval_slas`, marking stage metadata with `overdue` flags, appending `escalated` actions, notifying assigned reviewers, and emitting both `narrative_export.approval.stage_overdue` and `narrative_export.approval.stage_escalated` events. Evidence discovery routes (`GET /api/notebook/entries/evidence` and `GET /api/data/evidence`) provide paginated descriptors for console attachment pickers, while `/api/experiment-console/exports/narrative/jobs` continues to surface queue telemetry for operations teams. Reusable service helpers in `services/approval_ladders.py` now encapsulate ladder initialisation, approvals, delegation, resets, and analytics invalidation so both console and governance APIs share identical state transitions. Governance operators can administer exports through `/api/governance/exports/*` endpoints for read, approve, delegate, and reset operations, keeping RBAC enforcement centralized while still triggering asynchronous packaging when the final stage completes.
 
 The governance collaboration surface exposes threaded coaching notes through `/api/governance/overrides/{override_id}/coaching-notes` and `/api/governance/coaching-notes/{note_id}`. Moderation-focused PATCH routes (`/flag`, `/resolve`, `/remove`) append structured history entries (`state`, `actor_id`, `occurred_at`, optional `reason`) to each note's metadata while preserving conversational context. Timeline serialization now returns both sanitized metadata and the complete moderation history so the experiment console can render guardrails, escalation badges, and stewardship audits without additional queries.
@@ -50,7 +63,7 @@ Baseline submissions are now catalogued via `/api/governance/baselines`. Scienti
 
 - Run `python -m backend.app.cli migrate-exports` to backfill historical narrative exports with published snapshot identifiers. Use `--dry-run` to preview impact without applying updates.
 - Run `python -m backend.app.cli queue-narrative-export <export-id>` to enforce guardrails and queue packaging from operations tooling. Pass `--actor-email` to attribute dispatch actions to a specific operator.
-- Migration anomalies are appended to `problems/governance_migration.log` for triage alongside broader Problem Tracker workflows.
+- Migration anomalies are appended to `problems/governance_migration.log` for triage alongside broader Problem Tracker workflows. CLI regression coverage now exercises the `migrate-exports` dry-run path to guarantee snapshot bindings remain untouched until operators opt into the mutating run.
 
 ## Testing
 

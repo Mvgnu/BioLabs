@@ -15,6 +15,7 @@ modules = [
     'notifications',
     'schedule',
     'sequence',
+    'cloning_planner',
     'projects',
     'assistant',
     'calendar',

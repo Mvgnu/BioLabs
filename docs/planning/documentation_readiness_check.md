@@ -12,10 +12,10 @@
 - New SOP under `docs/governance/` describing operator workflows for approving exports via CLI, API, and worker tooling.
 
 ## Cloning Planner Launch
-- `backend/app/services/README.md` – add planner service entry referencing orchestration helpers.【F:backend/app/services/README.md†L1-L160】
+- ✅ `backend/app/services/README.md` – planner service entry now references orchestration helpers.【F:backend/app/services/README.md†L1-L200】
 - `backend/app/analytics/README.md` – mention planner metrics feeding governance dashboards once implemented.【F:backend/app/analytics/README.md†L1-L160】
 - `frontend/README.md` & `frontend/app/sequence/README.md` (create if missing) – outline planner wizard, hooks, and visualization tie-ins.【F:frontend/README.md†L1-L200】
-- `docs/planning/README.md` – mark checklist items as delivered when planner ships.【F:docs/planning/README.md†L1-L120】
+- ✅ `docs/planning/README.md` – checklist updated as backend scaffolding lands; wizard work remains.【F:docs/planning/README.md†L1-L120】
 - New assembly playbook under `docs/` (e.g., `docs/assembly_workflows.md`) capturing supported strategies, QC prerequisites, and guardrails.
 
 ## DNA Asset Management

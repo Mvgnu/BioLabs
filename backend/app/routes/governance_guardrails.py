@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas, simulation
-from ..analytics.governance import invalidate_governance_analytics_cache
+from ..analytics.governance import (
+    compute_guardrail_health,
+    invalidate_governance_analytics_cache,
+)
 from ..auth import get_current_user
 from ..database import get_db
+from .experiment_console import _get_user_team_ids
 
 router = APIRouter(prefix="/api/governance/guardrails", tags=["governance"])
 
@@ -67,6 +71,34 @@ def _serialise_guardrail_record(
         created_at=record.created_at,
         state=record.state,
         projected_delay_minutes=record.projected_delay_minutes,
+    )
+
+
+@router.get(
+    "/health",
+    response_model=schemas.GovernanceGuardrailHealthReport,
+)
+def read_guardrail_health(
+    execution_id: UUID | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> schemas.GovernanceGuardrailHealthReport:
+    """Return sanitized guardrail queue state summaries for operators."""
+
+    team_ids = _get_user_team_ids(db, user)
+    execution_scope: list[UUID] | None = None
+    if execution_id:
+        execution = db.get(models.ProtocolExecution, execution_id)
+        execution = _require_execution_access(execution, user)
+        execution_scope = [execution.id]
+
+    return compute_guardrail_health(
+        db,
+        user,
+        team_ids=team_ids,
+        execution_ids=execution_scope,
+        limit=limit,
     )
 
 
