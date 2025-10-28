@@ -705,6 +705,7 @@ class GovernanceAnalyticsReport(BaseModel):
     lineage_summary: GovernanceOverrideLineageAggregates = Field(
         default_factory=GovernanceOverrideLineageAggregates
     )
+    meta: Dict[str, Any] = Field(default_factory=dict)
 
 
 class GovernanceReviewerCadenceReport(BaseModel):

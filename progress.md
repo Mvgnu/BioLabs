@@ -4,6 +4,11 @@
 - Authored `docs/approval_workflow_design.md` capturing staged approval models, APIs, worker hooks, frontend ladder UX, and test matrix.
 - Updated documentation index to reference the new design and logged follow-on compliance considerations.
 
+## 2025-07-04
+- Refactored narrative approval state transitions into `backend/app/services/approval_ladders.py` so console and governance APIs reuse the same logic, analytics invalidation, and packaging triggers.
+- Introduced governance approval endpoints under `/api/governance/exports/*` with pytest coverage plus cached stage metrics feeding governance analytics reports.
+- Documented the shared ladder services and governance endpoints in `backend/app/README.md` to keep operator playbooks current.
+
 ## 2025-07-02
 - Initialized progress log.
 

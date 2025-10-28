@@ -111,3 +111,117 @@ def test_build_stage_simulation_groups_steps_and_applies_overrides() -> None:
     )
     assert second_stage.simulated.projected_due_at > second_stage.baseline.projected_due_at
 
+
+def test_evaluate_reversal_guardrails_detects_regressions() -> None:
+    """Guardrail evaluation should flag regressions introduced by reversal payloads."""
+
+    generated_at = datetime(2024, 1, 2, 10, 0, tzinfo=timezone.utc)
+    baseline_due = generated_at + timedelta(hours=6)
+    simulated_due = baseline_due + timedelta(hours=2)
+
+    comparison_items = [
+        simulation.StageSimulationComparison(
+            index=0,
+            name="Draft",
+            required_role="scientist",
+            mapped_step_indexes=[0],
+            gate_keys=[],
+            baseline=simulation.StageSimulationSnapshot(
+                status="ready",
+                sla_hours=6,
+                projected_due_at=baseline_due,
+                blockers=[],
+                required_actions=[],
+                auto_triggers=[],
+                assignee_id=None,
+                delegate_id=None,
+            ),
+            simulated=simulation.StageSimulationSnapshot(
+                status="blocked",
+                sla_hours=8,
+                projected_due_at=simulated_due,
+                blockers=["Inventory missing"],
+                required_actions=["inventory:link"],
+                auto_triggers=[],
+                assignee_id=None,
+                delegate_id=None,
+            ),
+        ),
+        simulation.StageSimulationComparison(
+            index=1,
+            name="QC",
+            required_role="quality",
+            mapped_step_indexes=[1],
+            gate_keys=[],
+            baseline=simulation.StageSimulationSnapshot(
+                status="blocked",
+                sla_hours=12,
+                projected_due_at=None,
+                blockers=["Awaiting QC"],
+                required_actions=[],
+                auto_triggers=[],
+                assignee_id=None,
+                delegate_id=None,
+            ),
+            simulated=simulation.StageSimulationSnapshot(
+                status="blocked",
+                sla_hours=12,
+                projected_due_at=None,
+                blockers=["Awaiting QC"],
+                required_actions=[],
+                auto_triggers=[],
+                assignee_id=None,
+                delegate_id=None,
+            ),
+        ),
+    ]
+
+    summary = simulation.evaluate_reversal_guardrails(comparison_items)
+    assert summary.state == "blocked"
+    assert 0 in summary.regressed_stage_indexes
+    assert summary.projected_delay_minutes == 120
+    assert any(reason.startswith("stage_0:status_regression") for reason in summary.reasons)
+    assert any(reason.startswith("stage_0:sla_increase_hours") for reason in summary.reasons)
+    assert any(reason.startswith("stage_0:due_delay_minutes") for reason in summary.reasons)
+
+
+def test_evaluate_reversal_guardrails_clear_when_no_regressions() -> None:
+    """Guardrail evaluation should return clear when simulated stages improve."""
+
+    generated_at = datetime(2024, 2, 1, 8, 30, tzinfo=timezone.utc)
+    comparison_items = [
+        simulation.StageSimulationComparison(
+            index=0,
+            name="Draft",
+            required_role="scientist",
+            mapped_step_indexes=[0],
+            gate_keys=[],
+            baseline=simulation.StageSimulationSnapshot(
+                status="blocked",
+                sla_hours=10,
+                projected_due_at=generated_at + timedelta(hours=10),
+                blockers=["Needs attachments"],
+                required_actions=[],
+                auto_triggers=[],
+                assignee_id=None,
+                delegate_id=None,
+            ),
+            simulated=simulation.StageSimulationSnapshot(
+                status="ready",
+                sla_hours=8,
+                projected_due_at=generated_at + timedelta(hours=8),
+                blockers=[],
+                required_actions=[],
+                auto_triggers=[],
+                assignee_id=None,
+                delegate_id=None,
+            ),
+        )
+    ]
+
+    summary = simulation.evaluate_reversal_guardrails(comparison_items)
+    assert summary.state == "clear"
+    assert summary.reasons == []
+    assert summary.regressed_stage_indexes == []
+    assert summary.projected_delay_minutes == 0
+

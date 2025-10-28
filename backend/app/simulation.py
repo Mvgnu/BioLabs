@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Sequence, Literal
 from uuid import UUID
 
 
@@ -45,6 +45,20 @@ class StageSimulationComparison:
     gate_keys: list[str]
     baseline: StageSimulationSnapshot
     simulated: StageSimulationSnapshot
+
+
+@dataclass(slots=True)
+class ReversalForecastGuardrail:
+    """Aggregate guardrail outcome for reversal simulations."""
+
+    # purpose: summarize guardrail evaluation for reversal preview scenarios
+    # inputs: evaluated stage comparison set containing baseline vs simulated states
+    # outputs: aggregate status, triggers, and aggregate delay metadata for guardrail enforcement
+    # status: pilot
+    state: Literal["clear", "blocked"]
+    reasons: list[str]
+    regressed_stage_indexes: list[int]
+    projected_delay_minutes: int
 
 
 def _aggregate_step_signals(
@@ -370,4 +384,78 @@ def normalize_stage_overrides(
             "sla_hours": getattr(override, "sla_hours", None),
         }
     return normalized
+
+
+def evaluate_reversal_guardrails(
+    comparisons: Sequence[StageSimulationComparison],
+) -> ReversalForecastGuardrail:
+    """Determine whether simulated reversal changes breach guardrails."""
+
+    # purpose: detect guardrail regressions introduced by reversal simulations
+    # inputs: ordered stage comparisons containing baseline and simulated snapshots
+    # outputs: consolidated guardrail state with supporting reasons and delay totals
+    # status: pilot
+    reasons: list[str] = []
+    regressed_stage_indexes: list[int] = []
+    total_delay_minutes = 0
+    seen_reasons: set[str] = set()
+
+    for comparison in comparisons:
+        baseline = comparison.baseline
+        simulated = comparison.simulated
+        stage_reasons: list[str] = []
+
+        baseline_blockers = set(baseline.blockers)
+        simulated_blockers = [
+            blocker for blocker in simulated.blockers if blocker not in baseline_blockers
+        ]
+
+        if baseline.status == "ready" and simulated.status != "ready":
+            stage_reasons.append(
+                f"stage_{comparison.index}:status_regression:{simulated.status}"
+            )
+        elif simulated_blockers:
+            joined = ", ".join(simulated_blockers)
+            stage_reasons.append(
+                f"stage_{comparison.index}:new_blockers:{joined}"
+            )
+
+        if (
+            baseline.projected_due_at is not None
+            and simulated.projected_due_at is not None
+        ):
+            delta_seconds = (
+                simulated.projected_due_at - baseline.projected_due_at
+            ).total_seconds()
+            delay_minutes = int(delta_seconds // 60)
+            if delay_minutes > 0:
+                total_delay_minutes += delay_minutes
+                stage_reasons.append(
+                    f"stage_{comparison.index}:due_delay_minutes:{delay_minutes}"
+                )
+
+        if (
+            baseline.sla_hours is not None
+            and simulated.sla_hours is not None
+            and simulated.sla_hours > baseline.sla_hours
+        ):
+            delta_hours = simulated.sla_hours - baseline.sla_hours
+            stage_reasons.append(
+                f"stage_{comparison.index}:sla_increase_hours:{delta_hours}"
+            )
+
+        if stage_reasons:
+            regressed_stage_indexes.append(comparison.index)
+            for reason in stage_reasons:
+                if reason not in seen_reasons:
+                    seen_reasons.add(reason)
+                    reasons.append(reason)
+
+    state: Literal["clear", "blocked"] = "blocked" if reasons else "clear"
+    return ReversalForecastGuardrail(
+        state=state,
+        reasons=reasons,
+        regressed_stage_indexes=regressed_stage_indexes,
+        projected_delay_minutes=total_delay_minutes,
+    )
 
