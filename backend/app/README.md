@@ -22,7 +22,7 @@ The `simulation.py` helper set now includes `evaluate_reversal_guardrails`, whic
 
 Guardrail simulations are accessible through `/api/governance/guardrails/simulations`. The endpoint evaluates posted stage comparisons, persists the payload to `governance_guardrail_simulations`, and returns a guardrail summary while invalidating cached governance analytics whenever the outcome is `blocked`. Historical simulations can be listed by execution or fetched by identifier for audit trails.
 
-Experiment console and governance export routes now embed the latest guardrail forecast alongside ladder payloads. `guardrail_simulation` on each `ExecutionNarrativeExport` response surfaces the most recent persisted summary (state, reasons, projected delay) so clients can annotate approval ladders and disable actions that would breach a blocked forecast.
+Experiment console and governance export routes now embed the latest guardrail forecast alongside ladder payloads. `guardrail_simulation` on each `ExecutionNarrativeExport` response surfaces the most recent persisted summary (state, reasons, projected delay) so clients can annotate approval ladders and disable actions that would breach a blocked forecast. Additionally, `guardrail_simulations` returns the recent simulation history for that execution, enabling inline forensic review of forecast swings without issuing separate listing calls.
 
 `services.approval_ladders.record_packaging_queue_state` now rehydrates the latest guardrail snapshot before dispatching packaging jobs. When simulations report a `blocked` state the helper records a `narrative_export.packaging.guardrail_blocked` event and prevents queueing, ensuring risky dossiers remain paused until the forecast clears.
 

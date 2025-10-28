@@ -988,6 +988,7 @@ export interface ExecutionNarrativeExportRecord {
   attachments: ExecutionNarrativeAttachment[]
   metadata: Record<string, any>
   guardrail_simulation?: GovernanceGuardrailSimulationRecord | null
+  guardrail_simulations?: GovernanceGuardrailSimulationRecord[]
   artifact_status: 'queued' | 'processing' | 'ready' | 'retrying' | 'failed' | 'expired'
   artifact_checksum?: string | null
   artifact_error?: string | null

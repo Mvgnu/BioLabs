@@ -368,6 +368,7 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
             )
             const guardrailProjectedDelay = guardrailSummary?.projected_delay_minutes ?? 0
             const guardrailReasonText = guardrailReasons.join(' • ')
+            const guardrailHistory = record.guardrail_simulations ?? []
             return (
               <article
                 key={record.id}
@@ -430,6 +431,52 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                     {guardrailProjectedDelay > 0 && (
                       <p className="mt-1">Projected delay: {guardrailProjectedDelay} minutes</p>
                     )}
+                  </div>
+                )}
+
+                {guardrailHistory.length > 0 && (
+                  <div className="rounded-md border border-neutral-200 bg-white px-3 py-2 text-xs text-neutral-600">
+                    <p className="font-medium text-neutral-700">Guardrail forecast history</p>
+                    <ul className="mt-2 space-y-1">
+                      {guardrailHistory.map((simulation) => {
+                        const state = simulation.summary?.state ?? 'clear'
+                        const reasons = simulation.summary?.reasons ?? []
+                        const createdAt = formatDateTime(simulation.created_at)
+                        const reasonText = reasons.join(' • ')
+                        const isLatest = guardrail?.id === simulation.id
+                        return (
+                          <li
+                            key={simulation.id}
+                            className={`rounded-md border px-2 py-1 ${
+                              state === 'blocked'
+                                ? 'border-rose-200 bg-rose-50 text-rose-700'
+                                : 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            }`}
+                          >
+                            <div className="flex flex-col gap-0.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-semibold">
+                                  {state === 'blocked' ? 'Blocked' : 'Clear'} forecast
+                                </span>
+                                <span className="text-[10px] uppercase tracking-wide text-neutral-500">
+                                  {createdAt}
+                                  {isLatest ? ' • Latest' : ''}
+                                </span>
+                              </div>
+                              {reasonText ? (
+                                <p className="text-[11px] leading-snug text-neutral-700">
+                                  {reasonText}
+                                </p>
+                              ) : (
+                                <p className="text-[11px] leading-snug text-neutral-600">
+                                  No additional guardrail context provided.
+                                </p>
+                              )}
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
                   </div>
                 )}
 

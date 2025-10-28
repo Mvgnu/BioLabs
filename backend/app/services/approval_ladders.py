@@ -56,6 +56,29 @@ def _serialise_guardrail_record(
     )
 
 
+def load_guardrail_simulations(
+    db: Session,
+    *,
+    execution_id: UUID,
+    limit: int = 10,
+) -> list[schemas.GovernanceGuardrailSimulationRecord]:
+    """Return persisted guardrail simulations for an execution."""
+
+    # purpose: fetch ordered guardrail simulations for export annotation
+    # inputs: SQLAlchemy session, execution identifier, optional limit
+    # outputs: list of serialised guardrail simulation records
+    # status: pilot
+    query = (
+        db.query(models.GovernanceGuardrailSimulation)
+        .options(joinedload(models.GovernanceGuardrailSimulation.actor))
+        .filter(models.GovernanceGuardrailSimulation.execution_id == execution_id)
+        .order_by(models.GovernanceGuardrailSimulation.created_at.desc())
+    )
+    if limit is not None and limit > 0:
+        query = query.limit(limit)
+    return [_serialise_guardrail_record(record) for record in query.all()]
+
+
 def attach_guardrail_forecast(
     db: Session, export: models.ExecutionNarrativeExport
 ) -> schemas.GovernanceGuardrailSimulationRecord | None:
@@ -78,6 +101,31 @@ def attach_guardrail_forecast(
     record = _serialise_guardrail_record(forecast)
     export.guardrail_simulation = record
     return record
+
+
+def attach_guardrail_history(
+    db: Session,
+    export: models.ExecutionNarrativeExport,
+    *,
+    limit: int = 10,
+) -> list[schemas.GovernanceGuardrailSimulationRecord]:
+    """Attach recent guardrail simulations to an export instance."""
+
+    # purpose: decorate exports with guardrail simulation history for governance surfaces
+    # inputs: db session, export ORM model, optional limit for history size
+    # outputs: list of guardrail simulation records assigned to export.guardrail_simulations
+    # status: pilot
+    history = (
+        load_guardrail_simulations(
+            db,
+            execution_id=export.execution_id,
+            limit=limit,
+        )
+        if export.execution_id is not None
+        else []
+    )
+    export.guardrail_simulations = history
+    return history
 
 
 def load_export_with_ladder(
@@ -123,6 +171,9 @@ def load_export_with_ladder(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Narrative export not found")
     if include_guardrails:
         attach_guardrail_forecast(db, export)
+        attach_guardrail_history(db, export)
+    else:
+        export.guardrail_simulations = []
     return export
 
 

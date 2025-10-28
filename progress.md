@@ -1,6 +1,7 @@
 # Progress Log
 
 ## 2025-07-05
+- Added guardrail simulation history to narrative export payloads and console UI, ensuring governance routes, experiment console, and tests surface blocked vs clear forecasts with inline audit trails.
 - Routed narrative export scheduling through `record_packaging_queue_state`, logging queue vs awaiting events consistently and preventing Celery dispatch until ladders finalize across experiment console and governance surfaces.
 - Hardened narrative packaging gating by reusing ladder loaders in the worker, logging `narrative_export.packaging.awaiting_approval`, and asserting the behavior with a new end-to-end test.
 - Enhanced SLA monitoring to mark overdue stages, record escalation actions/events, send reviewer notifications, and surface mean resolution timing + breach counts in governance analytics meta.

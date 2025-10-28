@@ -465,6 +465,9 @@ export const useExecutionNarrativeExports = (executionId: string | null) => {
           guardrail_simulation: exportRecord.guardrail_simulation
             ? mapGuardrailSimulationRecord(exportRecord.guardrail_simulation)
             : null,
+          guardrail_simulations: (exportRecord.guardrail_simulations ?? []).map((
+            simulation,
+          ) => mapGuardrailSimulationRecord(simulation)),
         })),
       }
     },

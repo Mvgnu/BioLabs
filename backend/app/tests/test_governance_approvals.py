@@ -103,6 +103,7 @@ def test_governance_ladder_endpoints_flow(client):
     assert ladder_payload["approval_stages"][0]["status"] == "in_progress"
     assert ladder_payload["guardrail_simulation"]["id"] == simulation_data["id"]
     assert ladder_payload["guardrail_simulation"]["summary"]["state"] == "blocked"
+    assert ladder_payload["guardrail_simulations"][0]["id"] == simulation_data["id"]
 
     delegate_response = client.post(
         f"/api/governance/exports/{export_id}/stages/{second_stage_id}/delegate",

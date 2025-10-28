@@ -1801,6 +1801,9 @@ class ExecutionNarrativeExport(BaseModel):
     attachments: list[ExecutionNarrativeExportAttachmentOut] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict, validation_alias='meta')
     guardrail_simulation: GovernanceGuardrailSimulationRecord | None = None
+    guardrail_simulations: list[GovernanceGuardrailSimulationRecord] = Field(
+        default_factory=list
+    )
     artifact_status: Literal[
         "queued",
         "processing",
