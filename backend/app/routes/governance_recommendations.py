@@ -142,6 +142,7 @@ def accept_governance_override(
             target_reviewer_id=payload.target_reviewer_id,
             notes=payload.notes,
             metadata=payload.metadata,
+            lineage=payload.lineage,
         )
         db.commit()
         db.refresh(record)
@@ -211,6 +212,7 @@ def decline_governance_override(
             baseline=baseline,
             notes=payload.notes,
             metadata=payload.metadata,
+            lineage=payload.lineage,
         )
         db.commit()
         db.refresh(record)
@@ -247,6 +249,7 @@ def execute_governance_override(
             target_reviewer_id=getattr(target, "id", None),
             notes=payload.notes,
             metadata=payload.metadata,
+            lineage=payload.lineage,
         )
         db.commit()
         db.refresh(record)

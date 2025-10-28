@@ -9,7 +9,7 @@ from uuid import UUID
 
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, schemas
 from ..eventlog import (
     record_baseline_event,
     record_governance_override_action_event,
@@ -66,6 +66,10 @@ def _get_action_by_hash(
 
 def _ensure_dict(payload: Dict[str, Any] | None) -> Dict[str, Any]:
     return {key: value for key, value in (payload or {}).items() if value is not None}
+
+
+def _compact_snapshot(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {key: value for key, value in payload.items() if value is not None}
 
 
 def _parse_rule_key(recommendation_id: str, fallback: str | None = None) -> str:
@@ -127,6 +131,97 @@ def _persist_action(
     record.detail_snapshot = detail
     record.updated_at = datetime.now(timezone.utc)
     db.flush()
+
+
+def _persist_override_lineage(
+    db: Session,
+    record: models.GovernanceOverrideAction,
+    *,
+    actor: models.User,
+    payload: schemas.GovernanceOverrideLineagePayload | None,
+) -> models.GovernanceOverrideLineage | None:
+    if payload is None:
+        return record.lineage
+
+    lineage = record.lineage or models.GovernanceOverrideLineage(override=record)
+    if lineage.id is None:
+        db.add(lineage)
+
+    lineage.scenario_id = payload.scenario_id
+    lineage.notebook_entry_id = payload.notebook_entry_id
+
+    scenario_snapshot: Dict[str, Any] = {}
+    if payload.scenario_id is not None:
+        scenario = db.get(models.ExperimentScenario, payload.scenario_id)
+        if scenario is not None:
+            folder_name = None
+            folder_id = getattr(scenario, "folder_id", None)
+            if getattr(scenario, "folder", None) is not None:
+                folder_name = scenario.folder.name
+            scenario_snapshot = _compact_snapshot(
+                {
+                    "id": str(scenario.id),
+                    "name": scenario.name,
+                    "folder_id": str(folder_id) if folder_id else None,
+                    "folder_name": folder_name,
+                    "owner_id": str(scenario.owner_id) if scenario.owner_id else None,
+                }
+            )
+    lineage.scenario_snapshot = scenario_snapshot
+
+    notebook_snapshot: Dict[str, Any] = {}
+    if payload.notebook_entry_id is not None:
+        notebook = db.get(models.NotebookEntry, payload.notebook_entry_id)
+        if notebook is not None:
+            notebook_snapshot = _compact_snapshot(
+                {
+                    "id": str(notebook.id),
+                    "title": notebook.title,
+                    "execution_id": str(notebook.execution_id)
+                    if notebook.execution_id
+                    else None,
+                }
+            )
+    lineage.notebook_snapshot = notebook_snapshot
+
+    metadata = _ensure_dict(payload.metadata)
+    if payload.notebook_entry_version_id is not None:
+        metadata.setdefault(
+            "notebook_entry_version_id",
+            str(payload.notebook_entry_version_id),
+        )
+    lineage.meta = metadata
+    lineage.captured_by_id = actor.id
+    lineage.captured_at = datetime.now(timezone.utc)
+    db.flush()
+    return lineage
+
+
+def _serialize_lineage(
+    lineage: models.GovernanceOverrideLineage | None,
+) -> Dict[str, Any]:
+    if lineage is None:
+        return {}
+
+    scenario_snapshot = dict(lineage.scenario_snapshot or {})
+    if lineage.scenario_id and "id" not in scenario_snapshot:
+        scenario_snapshot["id"] = str(lineage.scenario_id)
+    notebook_snapshot = dict(lineage.notebook_snapshot or {})
+    if lineage.notebook_entry_id and "id" not in notebook_snapshot:
+        notebook_snapshot["id"] = str(lineage.notebook_entry_id)
+
+    payload: Dict[str, Any] = {
+        "captured_at": lineage.captured_at.isoformat()
+        if lineage.captured_at
+        else None,
+        "captured_by_id": str(lineage.captured_by_id) if lineage.captured_by_id else None,
+        "metadata": dict(lineage.meta or {}),
+    }
+    if scenario_snapshot:
+        payload["scenario"] = scenario_snapshot
+    if notebook_snapshot:
+        payload["notebook_entry"] = notebook_snapshot
+    return _compact_snapshot(payload)
 
 
 def _apply_reassign(
@@ -300,6 +395,7 @@ def accept_override(
     target_reviewer_id: UUID | None,
     notes: str | None,
     metadata: Dict[str, Any] | None = None,
+    lineage: schemas.GovernanceOverrideLineagePayload | None = None,
 ) -> ActionResult:
     sanitized_metadata = _ensure_dict(metadata)
     execution_hash = _compute_execution_hash(
@@ -329,6 +425,14 @@ def accept_override(
         "notes": notes,
         "execution_hash": execution_hash,
     }
+    lineage_record = _persist_override_lineage(
+        db,
+        record,
+        actor=actor,
+        payload=lineage,
+    )
+    if lineage_record is not None:
+        detail["lineage"] = _serialize_lineage(lineage_record)
     _persist_action(
         db,
         record,
@@ -360,6 +464,7 @@ def decline_override(
     baseline: models.GovernanceBaselineVersion | None,
     notes: str | None,
     metadata: Dict[str, Any] | None = None,
+    lineage: schemas.GovernanceOverrideLineagePayload | None = None,
 ) -> ActionResult:
     sanitized_metadata = _ensure_dict(metadata)
     execution_hash = _compute_execution_hash(
@@ -387,6 +492,14 @@ def decline_override(
         "notes": notes,
         "execution_hash": execution_hash,
     }
+    lineage_record = _persist_override_lineage(
+        db,
+        record,
+        actor=actor,
+        payload=lineage,
+    )
+    if lineage_record is not None:
+        detail["lineage"] = _serialize_lineage(lineage_record)
     _persist_action(
         db,
         record,
@@ -419,6 +532,7 @@ def execute_override(
     target_reviewer_id: UUID | None,
     notes: str | None,
     metadata: Dict[str, Any] | None = None,
+    lineage: schemas.GovernanceOverrideLineagePayload | None = None,
 ) -> ActionResult:
     sanitized_metadata = _ensure_dict(metadata)
     execution_hash = _compute_execution_hash(
@@ -489,6 +603,14 @@ def execute_override(
             "reversible": record.reversible,
         }
     )
+    lineage_record = _persist_override_lineage(
+        db,
+        record,
+        actor=actor,
+        payload=lineage,
+    )
+    if lineage_record is not None:
+        detail["lineage"] = _serialize_lineage(lineage_record)
     _persist_action(
         db,
         record,
@@ -605,6 +727,8 @@ def reverse_override(
             "reversal_notes": notes,
         }
     )
+    if record.lineage is not None:
+        detail["lineage"] = _serialize_lineage(record.lineage)
     if sanitized_metadata:
         detail["reversal_metadata"] = sanitized_metadata
 

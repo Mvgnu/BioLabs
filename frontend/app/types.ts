@@ -588,6 +588,34 @@ export interface GovernanceOverrideRecommendationReport {
 
 export type GovernanceOverrideActionStatus = 'accepted' | 'declined' | 'executed' | 'reversed'
 
+export interface GovernanceScenarioLineage {
+  // purpose: convey scenario provenance linked to governance overrides
+  // status: pilot
+  id: string
+  name?: string | null
+  folder_id?: string | null
+  folder_name?: string | null
+  owner_id?: string | null
+}
+
+export interface GovernanceNotebookLineage {
+  // purpose: surface notebook provenance when overrides originate from lab notes
+  // status: pilot
+  id: string
+  title?: string | null
+  execution_id?: string | null
+}
+
+export interface GovernanceOverrideLineageContext {
+  // purpose: aggregate structured scenario/notebook lineage metadata for overrides
+  // status: pilot
+  scenario?: GovernanceScenarioLineage | null
+  notebook_entry?: GovernanceNotebookLineage | null
+  captured_at?: string | null
+  captured_by?: GovernanceActorSummary | null
+  metadata?: Record<string, any>
+}
+
 export interface GovernanceOverrideActionRecord {
   id: string
   recommendation_id: string
@@ -602,6 +630,7 @@ export interface GovernanceOverrideActionRecord {
   metadata: Record<string, any>
   created_at: string
   updated_at: string
+  lineage?: GovernanceOverrideLineageContext | null
 }
 
 export interface GovernanceOverrideActionRequest {
@@ -611,6 +640,12 @@ export interface GovernanceOverrideActionRequest {
   target_reviewer_id?: string | null
   notes?: string | null
   metadata?: Record<string, any>
+  lineage?: {
+    scenario_id?: string | null
+    notebook_entry_id?: string | null
+    notebook_entry_version_id?: string | null
+    metadata?: Record<string, any>
+  } | null
 }
 
 export interface BaselineLifecycleLabel {
@@ -981,6 +1016,7 @@ export interface GovernanceDecisionTimelineEntry {
   summary?: string | null
   detail: Record<string, any>
   actor?: GovernanceActorSummary | null
+  lineage?: GovernanceOverrideLineageContext | null
 }
 
 export interface GovernanceDecisionTimelinePage {
