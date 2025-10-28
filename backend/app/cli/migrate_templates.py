@@ -153,6 +153,7 @@ def queue_narrative_export(
     export_id: UUID | str,
     *,
     actor_email: str | None = None,
+    dry_run: bool = False,
 ) -> dict[str, object]:
     """Enforce guardrails before queuing a narrative export for packaging."""
 
@@ -182,6 +183,7 @@ def queue_narrative_export(
             export_id=export_uuid,
             actor=actor,
             enqueue=enqueue_narrative_export_packaging,
+            dry_run=dry_run,
         )
         session.commit()
 
@@ -211,6 +213,7 @@ def queue_narrative_export(
             "pending_stage_id": str(pending_stage.id) if pending_stage else None,
             "pending_stage_status": pending_stage.status if pending_stage else None,
             "guardrail_state": guardrail_summary,
+            "dry_run": dry_run,
         }
     finally:
         session.close()
@@ -223,11 +226,19 @@ def queue_narrative_export_command(
         None,
         help="Optional actor email for attribution",
     ),
+    dry_run: bool = typer.Option(
+        False,
+        help="Perform guardrail checks without enqueuing packaging",
+    ),
 ) -> None:
     """CLI wrapper for :func:`queue_narrative_export`."""
 
     try:
-        summary = queue_narrative_export(export_id, actor_email=actor_email)
+        summary = queue_narrative_export(
+            export_id,
+            actor_email=actor_email,
+            dry_run=dry_run,
+        )
     except ValueError as exc:
         raise typer.BadParameter(str(exc))
     typer.echo(json.dumps(summary))

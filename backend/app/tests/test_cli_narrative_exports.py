@@ -74,6 +74,7 @@ def test_queue_narrative_export_blocks_until_stage_completed(monkeypatch):
     first_summary = queue_narrative_export(export_id)
     assert first_summary["queued"] is False
     assert first_summary["pending_stage_status"] in {"in_progress", "delegated", "pending"}
+    assert first_summary["dry_run"] is False
 
     session = TestingSessionLocal()
     try:
@@ -93,6 +94,7 @@ def test_queue_narrative_export_blocks_until_stage_completed(monkeypatch):
 
     second_summary = queue_narrative_export(export_id)
     assert second_summary["queued"] is True
+    assert second_summary["dry_run"] is False
     assert enqueued == [str(export_id)]
 
     session = TestingSessionLocal()
@@ -102,3 +104,38 @@ def test_queue_narrative_export_blocks_until_stage_completed(monkeypatch):
         assert refreshed.artifact_status in {"processing", "ready", "retrying", "queued"}
     finally:
         session.close()
+
+
+def test_queue_narrative_export_dry_run_skips_enqueue(monkeypatch):
+    enqueued: list[str] = []
+    monkeypatch.setattr(
+        "app.cli.migrate_templates.enqueue_narrative_export_packaging",
+        lambda export_id: enqueued.append(str(export_id)),
+    )
+    session = TestingSessionLocal()
+    try:
+        export_id = _build_export_fixture(session)
+    finally:
+        session.close()
+
+    # mark stage approved so dispatch would normally enqueue
+    session = TestingSessionLocal()
+    try:
+        export = session.get(models.ExecutionNarrativeExport, export_id)
+        assert export is not None
+        stage = export.approval_stages[0]
+        stage.status = "completed"
+        stage.completed_at = datetime.now(timezone.utc)
+        export.approval_status = "approved"
+        export.current_stage = None
+        export.current_stage_id = None
+        session.add(stage)
+        session.add(export)
+        session.commit()
+    finally:
+        session.close()
+
+    summary = queue_narrative_export(export_id, dry_run=True)
+    assert summary["queued"] is True
+    assert summary["dry_run"] is True
+    assert enqueued == []
