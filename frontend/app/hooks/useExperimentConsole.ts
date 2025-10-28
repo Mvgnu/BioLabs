@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-query'
 import type { QueryClient } from '@tanstack/react-query'
 import api from '../api/client'
-import { governanceApi } from '../api/governance'
+import { governanceApi, mapGuardrailSimulationRecord } from '../api/governance'
 import type {
   ExperimentExecutionSession,
   ExperimentExecutionSessionCreate,
@@ -457,7 +457,16 @@ export const useExecutionNarrativeExports = (executionId: string | null) => {
       const resp = await api.get(
         `/api/experiment-console/sessions/${executionId}/exports/narrative`,
       )
-      return resp.data as ExecutionNarrativeExportHistory
+      const history = resp.data as ExecutionNarrativeExportHistory
+      return {
+        ...history,
+        exports: history.exports.map((exportRecord) => ({
+          ...exportRecord,
+          guardrail_simulation: exportRecord.guardrail_simulation
+            ? mapGuardrailSimulationRecord(exportRecord.guardrail_simulation)
+            : null,
+        })),
+      }
     },
   })
 }

@@ -123,6 +123,85 @@ def test_guardrail_simulation_flow(client):
         db.close()
 
 
+def test_export_history_includes_guardrail_forecast(client):
+    headers, user_id = create_headers()
+
+    template = client.post(
+        "/api/protocols/templates",
+        json={"name": "Guardrail Template", "content": "Prep"},
+        headers=headers,
+    ).json()
+
+    session = client.post(
+        "/api/experiment-console/sessions",
+        json={"template_id": template["id"], "title": "Guardrail Run"},
+        headers=headers,
+    ).json()
+
+    execution_id = session["execution"]["id"]
+
+    create_export = client.post(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        json={"notes": "Forecast binding"},
+        headers=headers,
+    )
+    assert create_export.status_code == 200, create_export.text
+
+    now = datetime.now(timezone.utc)
+    guardrail_payload = {
+        "execution_id": execution_id,
+        "metadata": {"scenario": "blocked"},
+        "comparisons": [
+            {
+                "index": 1,
+                "name": "QA Review",
+                "required_role": "qa",
+                "mapped_step_indexes": [0],
+                "gate_keys": ["qa"],
+                "baseline": {
+                    "status": "ready",
+                    "sla_hours": 2,
+                    "projected_due_at": (now + timedelta(hours=1)).isoformat(),
+                    "blockers": [],
+                    "required_actions": [],
+                    "auto_triggers": [],
+                    "assignee_id": user_id,
+                    "delegate_id": None,
+                },
+                "simulated": {
+                    "status": "pending",
+                    "sla_hours": 6,
+                    "projected_due_at": (now + timedelta(hours=5)).isoformat(),
+                    "blockers": ["missing-signoff"],
+                    "required_actions": ["notify:qa"],
+                    "auto_triggers": [],
+                    "assignee_id": user_id,
+                    "delegate_id": None,
+                },
+            }
+        ],
+    }
+
+    forecast_response = client.post(
+        "/api/governance/guardrails/simulations",
+        json=guardrail_payload,
+        headers=headers,
+    )
+    assert forecast_response.status_code == 200, forecast_response.text
+
+    history = client.get(
+        f"/api/experiment-console/sessions/{execution_id}/exports/narrative",
+        headers=headers,
+    )
+    assert history.status_code == 200, history.text
+    exports = history.json()["exports"]
+    assert exports, "Expected export history payload"
+    guardrail = exports[0].get("guardrail_simulation")
+    assert guardrail is not None
+    assert guardrail["summary"]["state"] == "blocked"
+    assert guardrail["summary"]["reasons"], "Expected guardrail reasons to be surfaced"
+
+
 def test_guardrail_simulation_clear_for_multi_stage(client):
     headers, user_id = create_headers()
 

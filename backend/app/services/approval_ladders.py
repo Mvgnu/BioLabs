@@ -58,7 +58,7 @@ def _serialise_guardrail_record(
 
 def attach_guardrail_forecast(
     db: Session, export: models.ExecutionNarrativeExport
-) -> None:
+) -> schemas.GovernanceGuardrailSimulationRecord | None:
     """Annotate export with the latest guardrail forecast snapshot for its execution."""
 
     # purpose: decorate exports with guardrail simulation summaries for UI consumers
@@ -74,8 +74,10 @@ def attach_guardrail_forecast(
     )
     if forecast is None:
         export.guardrail_simulation = None
-        return
-    export.guardrail_simulation = _serialise_guardrail_record(forecast)
+        return None
+    record = _serialise_guardrail_record(forecast)
+    export.guardrail_simulation = record
+    return record
 
 
 def load_export_with_ladder(
@@ -189,6 +191,24 @@ def record_packaging_queue_state(
     # inputs: db session, export with ladder relationships, optional actor for audit trail
     # outputs: bool indicating whether packaging may be enqueued immediately
     # status: pilot
+    guardrail = getattr(export, "guardrail_simulation", None)
+    if guardrail is None:
+        guardrail = attach_guardrail_forecast(db, export)
+    if guardrail and guardrail.summary.state == "blocked":
+        if export.execution is not None:
+            record_execution_event(
+                db,
+                export.execution,
+                "narrative_export.packaging.guardrail_blocked",
+                {
+                    "export_id": str(export.id),
+                    "guardrail_state": guardrail.summary.state,
+                    "projected_delay_minutes": guardrail.summary.projected_delay_minutes,
+                    "reasons": guardrail.summary.reasons,
+                },
+                actor=actor,
+            )
+        return False
     if export.approval_status == "approved" and export.current_stage is None:
         if export.execution is not None:
             record_execution_event(

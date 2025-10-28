@@ -89,6 +89,7 @@ def admin_approve_execution_export(
             enqueue_narrative_export_packaging(export_record.id)
         db.refresh(export_record)
 
+    approval_ladders.attach_guardrail_forecast(db, export_record)
     return schemas.ExecutionNarrativeExport.model_validate(export_record)
 
 
@@ -127,6 +128,7 @@ def admin_delegate_export_stage(
     )
     db.commit()
     db.refresh(export_record)
+    approval_ladders.attach_guardrail_forecast(db, export_record)
     return schemas.ExecutionNarrativeExport.model_validate(export_record)
 
 
@@ -165,4 +167,5 @@ def admin_reset_export_stage(
     )
     db.commit()
     db.refresh(export_record)
+    approval_ladders.attach_guardrail_forecast(db, export_record)
     return schemas.ExecutionNarrativeExport.model_validate(export_record)

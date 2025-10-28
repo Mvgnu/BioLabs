@@ -367,6 +367,7 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
               guardrailSummary?.regressed_stage_indexes ?? [],
             )
             const guardrailProjectedDelay = guardrailSummary?.projected_delay_minutes ?? 0
+            const guardrailReasonText = guardrailReasons.join(' • ')
             return (
               <article
                 key={record.id}
@@ -393,8 +394,8 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                               : 'border-emerald-200 bg-emerald-50 text-emerald-700'
                           }`}
                           title={
-                            guardrailReasons.length
-                              ? guardrailReasons.join(' • ')
+                            guardrailReasonText
+                              ? guardrailReasonText
                               : guardrailState === 'blocked'
                               ? 'Guardrail forecast blocking approvals'
                               : 'Guardrail forecast clear'
@@ -475,6 +476,11 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                       const stageIndexZero = stage.sequence_index - 1
                       const stageBlocked =
                         guardrailState === 'blocked' && guardrailBlockedStages.has(stageIndexZero)
+                      const blockedTitle = stageBlocked
+                        ? guardrailReasonText
+                          ? `Guardrail forecast: ${guardrailReasonText}`
+                          : 'Guardrail forecast blocking this stage'
+                        : undefined
                       return (
                         <div
                           key={stage.id}
@@ -485,6 +491,7 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                               ? 'border-blue-200 shadow-sm'
                               : 'border-neutral-200'
                           }`}
+                          title={blockedTitle}
                         >
                           <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
                             <div className="space-y-1">
@@ -514,6 +521,7 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                                 className={`text-xs font-medium px-2 py-1 rounded-full border ${
                                   stageStatusBadge[stage.status] ?? stageStatusBadge.pending
                                 }`}
+                                title={blockedTitle}
                               >
                                 {stageStatusLabel[stage.status] ?? stage.status}
                               </span>
@@ -526,7 +534,15 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                           </div>
                           {stageBlocked && (
                             <div className="mt-2 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-                              Guardrail forecast blocks progressing this stage. Resolve flagged risks before approving.
+                              <p className="font-medium">Guardrail blocked</p>
+                              {guardrailReasonText ? (
+                                <p>{guardrailReasonText}</p>
+                              ) : (
+                                <p>Resolve forecasted risks before progressing this stage.</p>
+                              )}
+                              {guardrailProjectedDelay > 0 && (
+                                <p className="mt-1">Projected delay: {guardrailProjectedDelay} minutes</p>
+                              )}
                             </div>
                           )}
                           {actionHistory.length > 0 && (
@@ -582,14 +598,19 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                                 <p className="text-xs text-rose-600">{stageError}</p>
                               )}
                               <div className="flex flex-wrap gap-2">
-                                <button
-                                  type="button"
-                                  className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:bg-neutral-300"
-                                  onClick={() => handleApproval(record, stage.id, 'approved')}
-                                  disabled={approveMutation.isLoading || stageBlocked}
-                                >
-                                  Approve stage
-                                </button>
+                              <button
+                                type="button"
+                                className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700 disabled:bg-neutral-300"
+                                onClick={() => handleApproval(record, stage.id, 'approved')}
+                                disabled={approveMutation.isLoading || stageBlocked}
+                                title={
+                                  stageBlocked
+                                    ? blockedTitle ?? 'Guardrail forecast blocking approvals'
+                                    : undefined
+                                }
+                              >
+                                Approve stage
+                              </button>
                                 <button
                                   type="button"
                                   className="inline-flex items-center rounded-md bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-700 disabled:bg-neutral-300"
@@ -630,14 +651,19 @@ export default function ExportsPanel({ executionId, timelineEvents }: ExportsPan
                                     }))
                                   }
                                 />
-                                <button
-                                  type="button"
-                                  className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:bg-neutral-300"
-                                  onClick={() => handleDelegation(record, stage.id)}
-                                  disabled={delegateMutation.isLoading || stageBlocked}
-                                >
-                                  Delegate stage
-                                </button>
+                              <button
+                                type="button"
+                                className="inline-flex items-center rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:bg-neutral-300"
+                                onClick={() => handleDelegation(record, stage.id)}
+                                disabled={delegateMutation.isLoading || stageBlocked}
+                                title={
+                                  stageBlocked
+                                    ? blockedTitle ?? 'Guardrail forecast blocking delegation'
+                                    : undefined
+                                }
+                              >
+                                Delegate stage
+                              </button>
                               </div>
                             </div>
                           )}
