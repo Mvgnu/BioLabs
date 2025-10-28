@@ -1,5 +1,9 @@
 # Progress Log
 
+## 2025-07-07
+- Consolidated narrative packaging telemetry by deduplicating queue events, persisting `packaging_queue_state` metadata, and updating SOP/audit docs to document the minimal `state` payload contract.
+- Added governance pytest coverage ensuring guardrail events deduplicate when approval status remains unchanged.
+
 ## 2025-07-06
 - Hardened narrative export guardrails by adding `verify_export_packaging_guardrails`, wiring packaging workers and SLA monitors to revalidate ladders, and covering the flow with new governance pytest cases plus SOP documentation and an overdue analytics dashboard in `/governance/dashboard`.
 - Completed governance export enforcement audit documenting API/worker coverage and gaps for notebook/inventory exports.

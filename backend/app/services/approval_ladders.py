@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Dict, Iterable, Mapping, Sequence
+from typing import Any, Callable, Dict, Iterable, Mapping, Sequence
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -242,38 +242,50 @@ def record_packaging_queue_state(
     # inputs: db session, export with ladder relationships, optional actor for audit trail
     # outputs: bool indicating whether packaging may be enqueued immediately
     # status: pilot
+    meta_payload: dict[str, Any] = dict(export.meta or {})
+    previous_state: dict[str, Any] = {}
+    if isinstance(meta_payload.get("packaging_queue_state"), dict):
+        previous_state = dict(meta_payload["packaging_queue_state"])
+
+    def _emit(event_type: str, state_payload: dict[str, Any]) -> None:
+        nonlocal previous_state, meta_payload
+        if export.execution is None:
+            return
+        next_state = {"event": event_type, **state_payload}
+        if previous_state == next_state:
+            return
+        record_execution_event(
+            db,
+            export.execution,
+            event_type,
+            {"export_id": str(export.id), **state_payload},
+            actor=actor,
+        )
+        previous_state = next_state
+        meta_payload["packaging_queue_state"] = next_state
+        export.meta = meta_payload
+
     guardrail = getattr(export, "guardrail_simulation", None)
     if guardrail is None:
         guardrail = attach_guardrail_forecast(db, export)
     if guardrail and guardrail.summary.state == "blocked":
-        if export.execution is not None:
-            record_execution_event(
-                db,
-                export.execution,
-                "narrative_export.packaging.guardrail_blocked",
-                {
-                    "export_id": str(export.id),
-                    "guardrail_state": guardrail.summary.state,
-                    "projected_delay_minutes": guardrail.summary.projected_delay_minutes,
-                    "reasons": guardrail.summary.reasons,
-                },
-                actor=actor,
-            )
+        payload: dict[str, Any] = {
+            "state": "guardrail_blocked",
+            "guardrail_state": guardrail.summary.state,
+        }
+        if guardrail.summary.projected_delay_minutes is not None:
+            payload["projected_delay_minutes"] = guardrail.summary.projected_delay_minutes
+        if guardrail.summary.reasons:
+            payload["reasons"] = guardrail.summary.reasons
+        _emit("narrative_export.packaging.guardrail_blocked", payload)
         return False
     if export.approval_status == "approved" and export.current_stage is None:
-        if export.execution is not None:
-            record_execution_event(
-                db,
-                export.execution,
-                "narrative_export.packaging.queued",
-                {
-                    "export_id": str(export.id),
-                    "version": export.version,
-                    "event_count": export.event_count,
-                },
-                actor=actor,
-            )
-            db.flush()
+        payload = {
+            "state": "queued",
+            "version": export.version,
+            "event_count": export.event_count,
+        }
+        _emit("narrative_export.packaging.queued", payload)
         return True
 
     pending_stage = export.current_stage
@@ -283,24 +295,15 @@ def record_packaging_queue_state(
                 pending_stage = stage
                 break
 
-    if export.execution is not None:
-        record_execution_event(
-            db,
-            export.execution,
-            "narrative_export.packaging.awaiting_approval",
-            {
-                "export_id": str(export.id),
-                "approval_status": export.approval_status,
-                "pending_stage_id": str(pending_stage.id) if pending_stage else None,
-                "pending_stage_index": pending_stage.sequence_index if pending_stage else None,
-                "pending_stage_status": pending_stage.status if pending_stage else None,
-                "pending_stage_due_at": pending_stage.due_at.isoformat()
-                if pending_stage and pending_stage.due_at
-                else None,
-            },
-            actor=actor,
-        )
-        db.flush()
+    payload = {
+        "state": "awaiting_approval",
+        "pending_stage_id": str(pending_stage.id) if pending_stage else None,
+        "pending_stage_index": pending_stage.sequence_index if pending_stage else None,
+        "pending_stage_status": pending_stage.status if pending_stage else None,
+    }
+    if pending_stage and pending_stage.due_at:
+        payload["pending_stage_due_at"] = pending_stage.due_at.isoformat()
+    _emit("narrative_export.packaging.awaiting_approval", payload)
 
     return False
 
@@ -346,6 +349,12 @@ def verify_export_packaging_guardrails(
     # status: pilot
     ready = export.approval_status == "approved" and export.current_stage is None
     if ready:
+        meta_payload: dict[str, Any] = dict(export.meta or {})
+        meta_payload["packaging_queue_state"] = {
+            "event": "narrative_export.packaging.ready",
+            "state": "ready",
+        }
+        export.meta = meta_payload
         return True
 
     record_packaging_queue_state(db, export=export, actor=actor)
