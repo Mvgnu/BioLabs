@@ -339,6 +339,40 @@ def test_coaching_notes_api_crud(client):
     assert updated["metadata"]["focus"] == "cadence"
     assert updated["reply_count"] == 1
     assert updated["moderation_state"] == "published"
+    assert len(updated["moderation_history"]) == 1
+
+    flag_response = client.patch(
+        f"/api/governance/coaching-notes/{note_id}/flag",
+        json={"reason": "off-topic", "metadata": {"severity": "high"}},
+        headers=headers,
+    )
+    assert flag_response.status_code == 200
+    flagged = flag_response.json()
+    assert flagged["moderation_state"] == "flagged"
+    assert flagged["metadata"]["focus"] == "cadence"
+    assert flagged["metadata"]["severity"] == "high"
+    assert any(entry["state"] == "flagged" for entry in flagged["moderation_history"])
+
+    resolve_response = client.patch(
+        f"/api/governance/coaching-notes/{note_id}/resolve",
+        json={},
+        headers=headers,
+    )
+    assert resolve_response.status_code == 200
+    resolved = resolve_response.json()
+    assert resolved["moderation_state"] == "resolved"
+    assert len(resolved["moderation_history"]) >= 3
+
+    remove_response = client.patch(
+        f"/api/governance/coaching-notes/{note_id}/remove",
+        json={"metadata": {"visibility": "hidden"}},
+        headers=headers,
+    )
+    assert remove_response.status_code == 200
+    removed = remove_response.json()
+    assert removed["moderation_state"] == "removed"
+    assert removed["metadata"]["visibility"] == "hidden"
+    assert len(removed["moderation_history"]) >= 4
 
 
 @pytest.mark.usefixtures("client")
@@ -372,6 +406,11 @@ def test_timeline_includes_coaching_notes(client):
     assert any(entry.entry_type == "coaching_note" for entry in page.entries)
     assert any(
         entry.detail.get("body") == "Timeline visibility"
+        for entry in page.entries
+        if entry.entry_type == "coaching_note"
+    )
+    assert all(
+        isinstance(entry.detail.get("moderation_history"), list)
         for entry in page.entries
         if entry.entry_type == "coaching_note"
     )

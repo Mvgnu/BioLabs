@@ -11,9 +11,17 @@ The governance decision timeline now surfaces override lineage data alongside an
 - **Reversal Storage**: `governance_override_reversal_events` retains reversal actor attribution, baseline linkage, cooldown expiry, the configured cooldown window minutes, and a JSON diff between the original override detail snapshot and the reversal output. The ORM exposes this payload via `GovernanceOverrideAction.reversal_event_payload` for API serialization.
 - **Response Fields**: Timeline API consumers receive `detail.cooldown_window_minutes` whenever a reversal sets a cooldown duration. This mirrors `reversal_event.cooldown_window_minutes` and should be surfaced in UI copy where operators expect to see the enforced window length.
 - **Analytics**: `compute_governance_analytics` aggregates lineage activity into scenario and notebook buckets. These aggregates are embedded in timeline analytics entries under `detail.lineage_summary`.
-- **Coaching Notes**: `governance_coaching_notes` persists threaded reviewer context with `thread_root_id`, `parent_id`, and `moderation_state` columns. API responses expose `metadata`, `reply_count`, and actor summaries to support optimistic UI updates and inline moderation cues.
-- **Coaching Endpoints**: `/api/governance/overrides/{override_id}/coaching-notes` (GET/POST) and `/api/governance/coaching-notes/{note_id}` (PATCH) provide CRUD access with RBAC enforcement derived from override actors, execution owners, or baseline/template team membership.
-- **Timeline Serialization**: Coaching notes appear in the decision timeline with `entry_type="coaching_note"`, carrying `detail` payloads that include the note body, moderation state, thread identifiers, and reply counts for progress indicators.
+- **Coaching Notes**: `governance_coaching_notes` persists threaded reviewer context with `thread_root_id`, `parent_id`, and `moderation_state` columns. API responses now expose `metadata`, `reply_count`, actor summaries, and a chronological `moderation_history` list so console clients can render collaboration outcomes alongside moderation actions.
+- **Coaching Endpoints**: `/api/governance/overrides/{override_id}/coaching-notes` (GET/POST) and `/api/governance/coaching-notes/{note_id}` (PATCH) provide CRUD access with RBAC enforcement derived from override actors, execution owners, or baseline/template team membership. Moderation-specific PATCH routes (`/flag`, `/resolve`, `/remove`) append structured entries to the history log while optionally enriching metadata with operator rationale.
+- **Timeline Serialization**: Coaching notes appear in the decision timeline with `entry_type="coaching_note"`, carrying `detail` payloads that include the note body, moderation state, thread identifiers, reply counts, sanitized metadata, and full moderation history for replayable context.
+
+## Collaboration Etiquette
+
+- **Moderation States**: Notes transition between `published`, `flagged`, `resolved`, and `removed`. Every transition records a `{state, actor_id, occurred_at, reason}` entry in `moderation_history` so teams can audit stewardship decisions.
+- **Flagging Guidance**: Use the `/flag` endpoint with a short `reason` string describing the moderation concern (e.g., "off-topic", "escalate to compliance"). Reasons appear in history entries but are not automatically surfaced to scientists without reviewer privileges.
+- **Resolution Workflow**: Resolving a note signals consensus. Include clarifying metadata (e.g., `{ "resolution": "follow-up scheduled" }`) to help downstream readers understand how blockers were handled.
+- **Removal Expectations**: Removal hides the message from collaborative views while preserving the audit trail. Provide `metadata.visibility = "hidden"` or similar cues so analytics can differentiate soft-removals from finalized conclusions.
+- **Timeline Consumption**: UI clients should treat `moderation_history` as append-only. The most recent entry reflects the current state and timestamp that should drive badge states and escalation indicators.
 
 ## Backfill Limitations
 
