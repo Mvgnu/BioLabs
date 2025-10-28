@@ -7,6 +7,8 @@
   - Presents actor/timestamp metadata and renders up to six detail fields using a compact definition list to highlight critical payload attributes without overwhelming the UI.
   - Supports incremental pagination by exposing a "Load more" control wired to the feed hook so future realtime invalidation can reuse the same component contract.
   - Surfaces override lineage context via `Lineage/ScenarioContextWidget` to expose scenario/notebook provenance alongside raw detail payloads.
+- Renders aggregated lineage analytics via `Lineage/AnalyticsLineageWidget` when timeline entries include a `lineage_summary` payload.
+- Provides inline override reversal controls that open a confirmation form, post to the governance reversal API via `useReverseGovernanceOverride`, and surface cooldown messaging with structured diffs rendered by `ReversalDiffViewer.tsx`.
 - **Status**: pilot
 
 Update this document if you introduce new entry types, alter badge styling, or add interactive affordances (e.g., inline reversals or notebook linking) so downstream agents understand the rendering contract.

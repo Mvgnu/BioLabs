@@ -605,6 +605,42 @@ class GovernanceReviewerCadenceTotals(BaseModel):
     load_band_counts: GovernanceReviewerLoadBandCounts = Field(default_factory=GovernanceReviewerLoadBandCounts)
 
 
+class GovernanceScenarioOverrideAggregate(BaseModel):
+    # purpose: summarise override lineage counts for a scenario anchor
+    # status: pilot
+
+    scenario_id: UUID | None = None
+    scenario_name: str | None = None
+    folder_name: str | None = None
+    executed_count: int = 0
+    reversed_count: int = 0
+    net_count: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GovernanceNotebookOverrideAggregate(BaseModel):
+    # purpose: track notebook-linked override lineage deltas for analytics heatmaps
+    # status: pilot
+
+    notebook_entry_id: UUID | None = None
+    notebook_title: str | None = None
+    execution_id: UUID | None = None
+    executed_count: int = 0
+    reversed_count: int = 0
+    net_count: int = 0
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class GovernanceOverrideLineageAggregates(BaseModel):
+    # purpose: bundle aggregated override lineage buckets for analytics surfaces
+    # status: pilot
+
+    scenarios: list[GovernanceScenarioOverrideAggregate] = Field(default_factory=list)
+    notebooks: list[GovernanceNotebookOverrideAggregate] = Field(default_factory=list)
+
+
 class GovernanceAnalyticsPreviewSummary(BaseModel):
     # purpose: summarise governance preview telemetry blended with execution history and baseline lifecycle metrics
     # inputs: aggregated metrics produced by compute_governance_analytics
@@ -666,6 +702,9 @@ class GovernanceAnalyticsReport(BaseModel):
     results: list[GovernanceAnalyticsPreviewSummary] = Field(default_factory=list)
     reviewer_cadence: list[GovernanceReviewerCadenceSummary] = Field(default_factory=list)
     totals: GovernanceAnalyticsTotals
+    lineage_summary: GovernanceOverrideLineageAggregates = Field(
+        default_factory=GovernanceOverrideLineageAggregates
+    )
 
 
 class GovernanceReviewerCadenceReport(BaseModel):
@@ -872,6 +911,33 @@ class GovernanceOverrideLineageContext(BaseModel):
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
+class GovernanceOverrideReversalDiff(BaseModel):
+    # purpose: express before/after delta for override reversal attributes
+    # status: pilot
+
+    key: str
+    before: Any | None = None
+    after: Any | None = None
+
+
+class GovernanceOverrideReversalDetail(BaseModel):
+    # purpose: serialize structured override reversal events for clients
+    # status: pilot
+
+    id: UUID
+    override_id: UUID
+    baseline_id: UUID | None = None
+    actor: GovernanceActorSummary | None = None
+    created_at: datetime
+    cooldown_expires_at: datetime | None = None
+    diffs: list[GovernanceOverrideReversalDiff] = Field(default_factory=list)
+    previous_detail: Dict[str, Any] = Field(default_factory=dict)
+    current_detail: Dict[str, Any] = Field(default_factory=dict)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
 class GovernanceOverrideLineagePayload(BaseModel):
     # purpose: validate lineage payload supplied during override actions
     # status: pilot
@@ -880,6 +946,14 @@ class GovernanceOverrideLineagePayload(BaseModel):
     notebook_entry_id: UUID | None = None
     notebook_entry_version_id: UUID | None = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> "GovernanceOverrideLineagePayload":
+        if self.scenario_id is None and self.notebook_entry_id is None:
+            raise ValueError(
+                "Override lineage payload requires scenario or notebook provenance"
+            )
+        return self
 
 
 class GovernanceOverrideActionRequest(BaseModel):
@@ -902,6 +976,8 @@ class GovernanceOverrideActionRequest(BaseModel):
                 raise ValueError("Reassign overrides require a baseline identifier")
             if self.target_reviewer_id is None:
                 raise ValueError("Reassign overrides require a target reviewer")
+        if self.lineage is None:
+            raise ValueError("Override actions require a lineage payload")
         return self
 
 
@@ -935,6 +1011,13 @@ class GovernanceOverrideActionOutcome(BaseModel):
     created_at: datetime
     updated_at: datetime
     lineage: GovernanceOverrideLineageContext | None = None
+    reversal_event: GovernanceOverrideReversalDetail | None = Field(
+        default=None,
+        alias="reversal_event_payload",
+        validation_alias="reversal_event_payload",
+        serialization_alias="reversal_event",
+    )
+    cooldown_expires_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

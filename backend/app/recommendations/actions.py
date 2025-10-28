@@ -1,10 +1,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hashlib
 import json
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Iterable
 from uuid import UUID
 
 from sqlalchemy.orm import Session
@@ -141,7 +141,7 @@ def _persist_override_lineage(
     payload: schemas.GovernanceOverrideLineagePayload | None,
 ) -> models.GovernanceOverrideLineage | None:
     if payload is None:
-        return record.lineage
+        raise ValueError("Override lineage payload is required for persistence")
 
     lineage = record.lineage or models.GovernanceOverrideLineage(override=record)
     if lineage.id is None:
@@ -195,6 +195,91 @@ def _persist_override_lineage(
     lineage.captured_at = datetime.now(timezone.utc)
     db.flush()
     return lineage
+
+
+def _compute_reversal_diffs(
+    previous_detail: Dict[str, Any],
+    current_detail: Dict[str, Any],
+) -> list[Dict[str, Any]]:
+    changed: list[Dict[str, Any]] = []
+    keys: Iterable[str] = sorted({*previous_detail.keys(), *current_detail.keys()})
+    for key in keys:
+        before = previous_detail.get(key)
+        after = current_detail.get(key)
+        if before != after:
+            changed.append({"key": key, "before": before, "after": after})
+    return changed
+
+
+def _serialize_reversal_event(
+    event: models.GovernanceOverrideReversalEvent | None,
+) -> Dict[str, Any] | None:
+    if event is None:
+        return None
+    actor_payload = None
+    if getattr(event, "actor", None) is not None:
+        actor_payload = {
+            "id": str(event.actor.id),
+            "name": event.actor.full_name,
+            "email": event.actor.email,
+        }
+    payload = {
+        "id": str(event.id),
+        "override_id": str(event.override_id),
+        "baseline_id": str(event.baseline_id) if event.baseline_id else None,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
+        "cooldown_expires_at": event.cooldown_expires_at.isoformat()
+        if event.cooldown_expires_at
+        else None,
+        "previous_detail": dict(event.detail or {}).get("previous_detail", {}),
+        "current_detail": dict(event.detail or {}).get("current_detail", {}),
+        "metadata": dict(event.meta or {}),
+    }
+    diffs_payload = dict(event.detail or {}).get("diffs")
+    if isinstance(diffs_payload, list):
+        payload["diffs"] = diffs_payload
+    else:
+        payload["diffs"] = _compute_reversal_diffs(
+            payload["previous_detail"], payload["current_detail"]
+        )
+    if actor_payload is not None:
+        payload["actor"] = actor_payload
+    return payload
+
+
+def _persist_reversal_event(
+    db: Session,
+    record: models.GovernanceOverrideAction,
+    *,
+    actor: models.User,
+    baseline: models.GovernanceBaselineVersion | None,
+    previous_detail: Dict[str, Any],
+    current_detail: Dict[str, Any],
+    metadata: Dict[str, Any],
+    cooldown_minutes: int | None,
+) -> models.GovernanceOverrideReversalEvent:
+    event = record.reversal_event or models.GovernanceOverrideReversalEvent(override=record)
+    if event.id is None:
+        db.add(event)
+
+    diffs = _compute_reversal_diffs(previous_detail, current_detail)
+    event.detail = {
+        "previous_detail": previous_detail,
+        "current_detail": current_detail,
+        "diffs": diffs,
+    }
+    event.meta = metadata
+    event.baseline_id = getattr(baseline, "id", None)
+    event.reversed_by_id = actor.id
+    event.created_at = event.created_at or datetime.now(timezone.utc)
+    if cooldown_minutes is not None:
+        event.cooldown_expires_at = datetime.now(timezone.utc) + timedelta(
+            minutes=cooldown_minutes
+        )
+    else:
+        event.cooldown_expires_at = None
+    db.flush()
+    return event
 
 
 def _serialize_lineage(
@@ -412,6 +497,9 @@ def accept_override(
     if existing is not None:
         return existing, dict(existing.detail_snapshot or {})
 
+    if lineage is None:
+        raise ValueError("Override acceptance requires lineage context")
+
     record = _get_or_initialize_action(db, actor=actor, recommendation_id=recommendation_id)
     record.action = action
     record.execution_id = execution.id
@@ -481,6 +569,9 @@ def decline_override(
     if existing is not None:
         return existing, dict(existing.detail_snapshot or {})
 
+    if lineage is None:
+        raise ValueError("Override declines require lineage context")
+
     record = _get_or_initialize_action(db, actor=actor, recommendation_id=recommendation_id)
     record.action = action
     record.execution_id = execution.id
@@ -548,6 +639,9 @@ def execute_override(
     existing = _get_action_by_hash(db, execution_hash=execution_hash)
     if existing is not None:
         return existing, dict(existing.detail_snapshot or {})
+
+    if lineage is None:
+        raise ValueError("Override execution requires lineage context")
 
     record = _get_or_initialize_action(db, actor=actor, recommendation_id=recommendation_id)
     target_reviewer = _load_target_reviewer(db, target_reviewer_id)
@@ -642,6 +736,15 @@ def reverse_override(
     metadata: Dict[str, Any] | None = None,
 ) -> ActionResult:
     sanitized_metadata = _ensure_dict(metadata)
+    cooldown_minutes_raw = sanitized_metadata.get("cooldown_minutes")
+    cooldown_minutes: int | None = None
+    if cooldown_minutes_raw is not None:
+        try:
+            cooldown_minutes = int(cooldown_minutes_raw)
+        except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+            raise ValueError("cooldown_minutes metadata must be an integer") from exc
+        if cooldown_minutes < 0:
+            raise ValueError("cooldown_minutes metadata must be non-negative")
     execution_hash = _compute_execution_hash(
         recommendation_id=recommendation_id,
         actor_id=actor.id,
@@ -668,11 +771,25 @@ def reverse_override(
     if record is None:
         raise ValueError("No override execution found to reverse")
     if record.status == "reversed":
-        return record, dict(record.detail_snapshot or {})
+        detail_snapshot = dict(record.detail_snapshot or {})
+        reversal_payload = _serialize_reversal_event(record.reversal_event)
+        if reversal_payload is not None:
+            detail_snapshot.setdefault("reversal_event", reversal_payload)
+        cooldown_value = None
+        if reversal_payload and reversal_payload.get("cooldown_expires_at"):
+            cooldown_value = reversal_payload["cooldown_expires_at"]
+        detail_snapshot.setdefault("cooldown_expires_at", cooldown_value)
+        return record, detail_snapshot
     if record.status != "executed":
         raise ValueError("Only executed overrides can be reversed")
     if not record.reversible:
         raise ValueError("Override execution is not marked as reversible")
+    if (
+        record.reversal_event is not None
+        and record.reversal_event.cooldown_expires_at is not None
+        and record.reversal_event.cooldown_expires_at > datetime.now(timezone.utc)
+    ):
+        raise ValueError("Override reversal is cooling down and cannot be retried yet")
 
     baseline_context = baseline
     if baseline_context is None and record.baseline_id is not None:
@@ -684,6 +801,7 @@ def reverse_override(
         stored_metadata.setdefault("_reversal", {}).update(sanitized_metadata)
     record.meta = stored_metadata
 
+    previous_detail = dict(record.detail_snapshot or {})
     detail: Dict[str, Any]
     if record.action == "reassign":
         if baseline_context is None:
@@ -739,6 +857,21 @@ def reverse_override(
         detail=detail,
         execution_hash=execution_hash,
     )
+    reversal_event = _persist_reversal_event(
+        db,
+        record,
+        actor=actor,
+        baseline=baseline_context,
+        previous_detail=previous_detail,
+        current_detail=detail,
+        metadata=sanitized_metadata,
+        cooldown_minutes=cooldown_minutes,
+    )
+    reversal_payload = _serialize_reversal_event(reversal_event)
+    if reversal_payload is not None:
+        detail["reversal_event"] = reversal_payload
+        if reversal_payload.get("cooldown_expires_at"):
+            detail["cooldown_expires_at"] = reversal_payload["cooldown_expires_at"]
 
     rule_key = _parse_rule_key(recommendation_id, fallback=record.recommendation_id)
     record_governance_override_action_event(

@@ -390,9 +390,16 @@ def _load_analytics_snapshots(
         if generated_at_candidates
         else datetime.now(timezone.utc)
     )
+    lineage_summary_payload = (
+        analytics.lineage_summary.model_dump(mode="json")
+        if getattr(analytics, "lineage_summary", None) is not None
+        else None
+    )
     for reviewer in analytics.reviewer_cadence:
         occurred_at = report_timestamp
         detail = reviewer.model_dump(mode="json")
+        if lineage_summary_payload:
+            detail["lineage_summary"] = lineage_summary_payload
         entries.append(
             schemas.GovernanceDecisionTimelineEntry(
                 entry_id=f"analytics:{reviewer.reviewer_id or 'global'}:{occurred_at.isoformat()}",

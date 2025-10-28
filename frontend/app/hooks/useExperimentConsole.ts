@@ -19,6 +19,10 @@ import type {
   ExperimentStepStatusUpdate,
   ExperimentTimelinePage,
   GovernanceDecisionTimelinePage,
+  GovernanceOverrideLineageAggregates,
+  GovernanceOverrideReversalDetail,
+  GovernanceOverrideReversalDiff,
+  GovernanceOverrideReverseRequest,
   ExperimentScenario,
   ExperimentScenarioCloneRequest,
   ExperimentScenarioCreateRequest,
@@ -154,6 +158,112 @@ const invalidateBaselineQueries = (qc: QueryClient) => {
   })
 }
 
+const coerceCount = (value: unknown) => {
+  if (value === null || value === undefined) return 0
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 0
+}
+
+const normaliseReversalDiffs = (
+  diffs: any,
+): GovernanceOverrideReversalDiff[] => {
+  if (!Array.isArray(diffs)) return []
+  return diffs
+    .map((item) => ({
+      key: String(item?.key ?? ''),
+      before: item?.before,
+      after: item?.after,
+    }))
+    .filter((item) => item.key.length > 0)
+}
+
+const normaliseReversalDetail = (
+  detail: any,
+): GovernanceOverrideReversalDetail | null => {
+  if (!detail || typeof detail !== 'object') {
+    return null
+  }
+  const diffs = normaliseReversalDiffs(detail.diffs)
+  return {
+    id: String(detail.id ?? ''),
+    override_id: String(detail.override_id ?? ''),
+    baseline_id: detail.baseline_id ?? null,
+    actor: detail.actor ?? null,
+    created_at: detail.created_at ?? null,
+    cooldown_expires_at: detail.cooldown_expires_at ?? null,
+    diffs,
+    previous_detail: detail.previous_detail ?? {},
+    current_detail: detail.current_detail ?? {},
+    metadata: detail.metadata ?? {},
+  }
+}
+
+// purpose: normalise lineage summary aggregates returned from governance timeline analytics
+// inputs: raw lineage summary payload attached to timeline entry detail
+// outputs: GovernanceOverrideLineageAggregates with numeric counts
+// status: pilot
+const normaliseLineageSummary = (
+  summary: any,
+): GovernanceOverrideLineageAggregates | null => {
+  if (!summary || typeof summary !== 'object') {
+    return null
+  }
+  const scenarios = Array.isArray(summary.scenarios)
+    ? summary.scenarios.map((item: any) => ({
+        scenario_id: item?.scenario_id ?? null,
+        scenario_name: item?.scenario_name ?? null,
+        folder_name: item?.folder_name ?? null,
+        executed_count: coerceCount(item?.executed_count),
+        reversed_count: coerceCount(item?.reversed_count),
+        net_count: coerceCount(item?.net_count),
+      }))
+    : []
+  const notebooks = Array.isArray(summary.notebooks)
+    ? summary.notebooks.map((item: any) => ({
+        notebook_entry_id: item?.notebook_entry_id ?? null,
+        notebook_title: item?.notebook_title ?? null,
+        execution_id: item?.execution_id ?? null,
+        executed_count: coerceCount(item?.executed_count),
+        reversed_count: coerceCount(item?.reversed_count),
+        net_count: coerceCount(item?.net_count),
+      }))
+    : []
+  return { scenarios, notebooks }
+}
+
+const mapGovernanceTimelineEntry = (entry: GovernanceDecisionTimelineEntry) => {
+  const detail = { ...(entry.detail ?? {}) }
+  const nestedDetail =
+    detail.detail && typeof detail.detail === 'object'
+      ? { ...detail.detail }
+      : {}
+  const reversalDetail =
+    normaliseReversalDetail(detail.reversal_event) ||
+    normaliseReversalDetail(nestedDetail.reversal_event)
+  if (reversalDetail) {
+    detail.reversal_event = reversalDetail
+    nestedDetail.reversal_event = reversalDetail
+  }
+  if (nestedDetail.cooldown_expires_at) {
+    nestedDetail.cooldown_expires_at = String(nestedDetail.cooldown_expires_at)
+  }
+  if (detail.cooldown_expires_at) {
+    detail.cooldown_expires_at = String(detail.cooldown_expires_at)
+  }
+  if (detail.lineage_summary) {
+    const summary = normaliseLineageSummary(detail.lineage_summary)
+    if (summary) {
+      detail.lineage_summary = summary
+    } else {
+      delete detail.lineage_summary
+    }
+  }
+  if (Object.keys(nestedDetail).length > 0) {
+    detail.detail = nestedDetail
+  }
+  return { ...entry, detail }
+}
+
 export const useExperimentSession = (executionId: string | null) => {
   return useQuery({
     queryKey: sessionKey(executionId),
@@ -286,9 +396,33 @@ export const useGovernanceDecisionTimeline = (
       const resp = await api.get('/api/experiment-console/governance/timeline', {
         params,
       })
-      return resp.data as GovernanceDecisionTimelinePage
+      const page = resp.data as GovernanceDecisionTimelinePage
+      return {
+        ...page,
+        entries: page.entries.map((entry) => mapGovernanceTimelineEntry(entry)),
+      }
     },
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+  })
+}
+
+export const useReverseGovernanceOverride = (executionId: string | null) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (vars: {
+      recommendationId: string
+      payload: GovernanceOverrideReverseRequest
+    }) => {
+      const response = await governanceApi.reverseOverride(
+        vars.recommendationId,
+        vars.payload,
+      )
+      return response
+    },
+    onSuccess: () => {
+      invalidateGovernanceTimelineQueries(qc, executionId)
+      invalidateGovernanceAnalyticsQueries(qc, executionId)
+    },
   })
 }
 

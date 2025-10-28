@@ -216,7 +216,7 @@ def test_override_reversal_flow(client):
         "execution_id": str(execution_id),
         "baseline_id": str(baseline.id),
         "notes": "Undo override",
-        "metadata": {"reason": "operator_request"},
+        "metadata": {"reason": "operator_request", "cooldown_minutes": 30},
     }
     reverse_response = client.post(
         f"/api/governance/recommendations/override/{recommendation_id}/reverse",
@@ -228,16 +228,16 @@ def test_override_reversal_flow(client):
     assert reverse_body["status"] == "reversed"
     assert reverse_body["baseline_id"] == str(baseline.id)
     assert reverse_body["target_reviewer_id"] == str(reviewer.id)
+    assert reverse_body.get("cooldown_expires_at") is not None
+    assert reverse_body.get("reversal_event", {}).get("diffs"), "Reversal diff should be populated"
 
     repeat_reverse = client.post(
         f"/api/governance/recommendations/override/{recommendation_id}/reverse",
         headers=headers,
         json=reversal_payload,
     )
-    assert repeat_reverse.status_code == 200
-    repeat_body = repeat_reverse.json()
-    assert repeat_body["status"] == "reversed"
-    assert repeat_body["id"] == reverse_body["id"]
+    assert repeat_reverse.status_code == 400
+    assert "cooling down" in repeat_reverse.json()["detail"]
 
     db = TestingSessionLocal()
     try:

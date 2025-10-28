@@ -54,6 +54,9 @@ type OverrideFormState = {
   baselineId: string
   reviewerId: string
   notes: string
+  scenarioId: string
+  notebookEntryId: string
+  notebookVersionId: string
 }
 
 // purpose: expose governance preview scenario workspace with persistence-aware UI
@@ -195,7 +198,14 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
 
   const getOverrideForm = useCallback(
     (recommendationId: string): OverrideFormState =>
-      overrideForms[recommendationId] ?? { baselineId: '', reviewerId: '', notes: '' },
+      overrideForms[recommendationId] ?? {
+        baselineId: '',
+        reviewerId: '',
+        notes: '',
+        scenarioId: '',
+        notebookEntryId: '',
+        notebookVersionId: '',
+      },
     [overrideForms],
   )
 
@@ -206,6 +216,9 @@ export default function PreviewModal({ executionId, open, onClose }: PreviewModa
           baselineId: '',
           reviewerId: '',
           notes: '',
+          scenarioId: '',
+          notebookEntryId: '',
+          notebookVersionId: '',
         }
         return {
           ...previous,
@@ -277,6 +290,19 @@ const handleOverrideAction = useCallback(
     }
     if (formState.reviewerId.trim()) {
       payload.target_reviewer_id = formState.reviewerId.trim()
+    }
+    const scenarioId = formState.scenarioId.trim()
+    const notebookEntryId = formState.notebookEntryId.trim()
+    const notebookVersionId = formState.notebookVersionId.trim()
+    payload.lineage = {
+      scenario_id: scenarioId || undefined,
+      notebook_entry_id: notebookEntryId || undefined,
+      notebook_entry_version_id: notebookVersionId || undefined,
+      metadata: { source: 'experiment-console' },
+    }
+    if (!payload.lineage.scenario_id && !payload.lineage.notebook_entry_id) {
+      setError('Scenario or notebook lineage is required for overrides.')
+      return
     }
     if (recommendation.action === 'reassign') {
       if (!payload.baseline_id) {
@@ -781,6 +807,51 @@ const handleOverrideAction = useCallback(
                               )
                             }
                             placeholder="Baseline UUID"
+                            size="sm"
+                          />
+                        </label>
+                        <label className="flex flex-col text-[11px] font-medium text-neutral-600">
+                          Scenario ID
+                          <Input
+                            value={formState.scenarioId}
+                            onChange={(event) =>
+                              updateOverrideForm(
+                                recommendation.recommendation_id,
+                                'scenarioId',
+                                event.target.value,
+                              )
+                            }
+                            placeholder="Scenario UUID"
+                            size="sm"
+                          />
+                        </label>
+                        <label className="flex flex-col text-[11px] font-medium text-neutral-600">
+                          Notebook entry ID
+                          <Input
+                            value={formState.notebookEntryId}
+                            onChange={(event) =>
+                              updateOverrideForm(
+                                recommendation.recommendation_id,
+                                'notebookEntryId',
+                                event.target.value,
+                              )
+                            }
+                            placeholder="Notebook entry UUID"
+                            size="sm"
+                          />
+                        </label>
+                        <label className="flex flex-col text-[11px] font-medium text-neutral-600">
+                          Notebook version ID (optional)
+                          <Input
+                            value={formState.notebookVersionId}
+                            onChange={(event) =>
+                              updateOverrideForm(
+                                recommendation.recommendation_id,
+                                'notebookVersionId',
+                                event.target.value,
+                              )
+                            }
+                            placeholder="Notebook version UUID"
                             size="sm"
                           />
                         </label>

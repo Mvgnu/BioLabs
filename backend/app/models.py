@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 import sqlalchemy as sa
 from sqlalchemy import (
     Column,
@@ -608,6 +609,57 @@ class GovernanceOverrideAction(Base):
         cascade="all, delete-orphan",
         uselist=False,
     )
+    reversal_event = relationship(
+        "GovernanceOverrideReversalEvent",
+        back_populates="override",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+
+    @property
+    def cooldown_expires_at(self) -> datetime | None:
+        if self.reversal_event is None:
+            return None
+        return self.reversal_event.cooldown_expires_at
+
+    @property
+    def reversal_event_payload(self) -> dict[str, Any] | None:
+        event = self.reversal_event
+        if event is None:
+            return None
+        detail = dict(event.detail or {})
+        diffs: list[dict[str, Any]] = []
+        for item in detail.get("diffs", []) or []:
+            key = str(item.get("key", ""))
+            if not key:
+                continue
+            diffs.append(
+                {
+                    "key": key,
+                    "before": item.get("before"),
+                    "after": item.get("after"),
+                }
+            )
+        payload: dict[str, Any] = {
+            "id": str(event.id),
+            "override_id": str(event.override_id),
+            "baseline_id": str(event.baseline_id) if event.baseline_id else None,
+            "created_at": event.created_at.isoformat() if event.created_at else None,
+            "cooldown_expires_at": event.cooldown_expires_at.isoformat()
+            if event.cooldown_expires_at
+            else None,
+            "diffs": diffs,
+            "previous_detail": detail.get("previous_detail", {}),
+            "current_detail": detail.get("current_detail", {}),
+            "metadata": dict(event.meta or {}),
+        }
+        if event.actor is not None:
+            payload["actor"] = {
+                "id": str(event.actor.id),
+                "name": event.actor.full_name,
+                "email": event.actor.email,
+            }
+        return payload
 
     __table_args__ = (
         sa.CheckConstraint(
@@ -659,6 +711,40 @@ class GovernanceOverrideLineage(Base):
     notebook_entry = relationship("NotebookEntry")
     captured_by = relationship("User")
 
+
+class GovernanceOverrideReversalEvent(Base):
+    __tablename__ = "governance_override_reversal_events"
+
+    # purpose: capture override reversal metadata, actor attribution, and cooldown policy
+    # status: pilot
+    # depends_on: governance_override_actions, governance_baseline_versions, users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    override_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_override_actions.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    baseline_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_baseline_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reversed_by_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    detail = Column(JSON, default=dict, nullable=False)
+    meta = Column("metadata", JSON, default=dict, nullable=False)
+    cooldown_expires_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    override = relationship("GovernanceOverrideAction", back_populates="reversal_event")
+    baseline = relationship("GovernanceBaselineVersion")
+    actor = relationship("User")
 
 class ExecutionNarrativeWorkflowTemplateAssignment(Base):
     __tablename__ = "execution_narrative_workflow_template_assignments"
