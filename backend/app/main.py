@@ -27,6 +27,7 @@ from .routes import (
     notifications,
     schedule,
     sequence,
+    sequence_toolkit,
     dna_assets,
     cloning_planner,
     projects,
@@ -57,6 +58,8 @@ from .routes import (
     sample_governance,
     knowledge,
     workflows,
+    sharing,
+    lifecycle,
 )
 
 
@@ -114,6 +117,7 @@ app.include_router(comments.router)
 app.include_router(notifications.router)
 app.include_router(schedule.router)
 app.include_router(sequence.router)
+app.include_router(sequence_toolkit.router)
 app.include_router(dna_assets.router)
 app.include_router(cloning_planner.router)
 app.include_router(projects.router)
@@ -145,6 +149,8 @@ app.include_router(data_analysis.router)
 app.include_router(sample_governance.router)
 app.include_router(knowledge.router)
 app.include_router(workflows.router)
+app.include_router(sharing.router)
+app.include_router(lifecycle.router)
 
 
 def audit_routes():

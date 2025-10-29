@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, notify, schemas
+from ..services import cloning_planner
 
 # purpose: orchestrate freezer custody governance analytics and lifecycle actions
 # status: pilot
@@ -110,8 +111,8 @@ def record_custody_event(
     payload: schemas.SampleCustodyLogCreate,
     *,
     actor_id: UUID,
-) -> models.GovernanceSampleCustodyLog:
-    """Persist a custody log and evaluate guardrail heuristics."""
+) -> tuple[models.GovernanceSampleCustodyLog, models.InventoryItem | None]:
+    """Persist a custody log, update inventory state, and return related entities."""
 
     now = datetime.now(timezone.utc)
     log = models.GovernanceSampleCustodyLog(
@@ -120,6 +121,7 @@ def record_custody_event(
         protocol_execution_id=payload.protocol_execution_id,
         execution_event_id=payload.execution_event_id,
         compartment_id=payload.compartment_id,
+        inventory_item_id=payload.inventory_item_id,
         custody_action=payload.custody_action,
         quantity=payload.quantity,
         quantity_units=payload.quantity_units,
@@ -137,7 +139,12 @@ def record_custody_event(
     db.refresh(log)
     _attach_log_to_protocol(db, log)
     _synchronize_custody_escalations(db, log)
-    return log
+    inventory_item = None
+    if log.inventory_item_id:
+        inventory_item = db.get(models.InventoryItem, log.inventory_item_id)
+        if inventory_item:
+            _update_inventory_custody_state(db, inventory_item, log)
+    return log, inventory_item
 
 
 def fetch_custody_logs(
@@ -149,11 +156,14 @@ def fetch_custody_logs(
     protocol_execution_id: UUID | None = None,
     execution_event_id: UUID | None = None,
     compartment_id: UUID | None = None,
+    inventory_item_id: UUID | None = None,
     limit: int = 100,
 ) -> list[models.GovernanceSampleCustodyLog]:
     """Retrieve custody ledger entries with filtering helpers."""
 
-    query = db.query(models.GovernanceSampleCustodyLog)
+    query = db.query(models.GovernanceSampleCustodyLog).options(
+        joinedload(models.GovernanceSampleCustodyLog.inventory_item)
+    )
     if asset_version_id:
         query = query.filter(models.GovernanceSampleCustodyLog.asset_version_id == asset_version_id)
     elif asset_id:
@@ -174,11 +184,89 @@ def fetch_custody_logs(
         )
     if compartment_id:
         query = query.filter(models.GovernanceSampleCustodyLog.compartment_id == compartment_id)
+    if inventory_item_id:
+        query = query.filter(
+            models.GovernanceSampleCustodyLog.inventory_item_id == inventory_item_id
+        )
     return (
         query.order_by(models.GovernanceSampleCustodyLog.performed_at.desc())
         .limit(limit)
         .all()
     )
+
+
+def _update_inventory_custody_state(
+    db: Session,
+    inventory_item: models.InventoryItem,
+    log: models.GovernanceSampleCustodyLog,
+) -> None:
+    """Synchronise aggregated custody state metadata onto an inventory item."""
+
+    snapshot = dict(inventory_item.custody_snapshot or {})
+    snapshot["last_action"] = log.custody_action
+    snapshot["last_performed_at"] = log.performed_at.isoformat()
+    snapshot["last_quantity"] = log.quantity
+    snapshot["last_quantity_units"] = log.quantity_units
+    snapshot["notes"] = log.notes
+    snapshot["guardrail_flags"] = list(log.guardrail_flags or [])
+    snapshot["performed_by_id"] = str(log.performed_by_id) if log.performed_by_id else None
+    snapshot["performed_for_team_id"] = (
+        str(log.performed_for_team_id) if log.performed_for_team_id else None
+    )
+    snapshot["compartment_id"] = str(log.compartment_id) if log.compartment_id else None
+    _snapshot_append_unique(snapshot, "planner_session_ids", log.planner_session_id)
+    _snapshot_append_unique(snapshot, "asset_version_ids", log.asset_version_id)
+    snapshot["open_escalations"] = _count_open_escalations_for_item(db, inventory_item.id)
+    inventory_item.custody_state = _resolve_inventory_custody_state(
+        log.custody_action, inventory_item.custody_state
+    )
+    inventory_item.custody_snapshot = snapshot
+    inventory_item.updated_at = datetime.now(timezone.utc)
+    db.add(inventory_item)
+
+
+def _resolve_inventory_custody_state(
+    action: str | None, existing_state: str | None
+) -> str:
+    """Derive the high-level custody state label for an inventory item."""
+
+    if not action:
+        return existing_state or "idle"
+    lowered = action.lower()
+    if lowered in _DEPOSIT_ACTIONS:
+        return "stored"
+    if lowered in _WITHDRAW_ACTIONS:
+        return "in_transit"
+    return existing_state or "idle"
+
+
+def _snapshot_append_unique(
+    snapshot: dict[str, Any], key: str, value: UUID | None
+) -> None:
+    if not value:
+        return
+    current = snapshot.get(key) or []
+    if not isinstance(current, list):
+        current = []
+    value_str = str(value)
+    if value_str not in current:
+        current.append(value_str)
+        current.sort()
+    snapshot[key] = current
+
+
+def _count_open_escalations_for_item(db: Session, item_id: UUID) -> int:
+    """Count active custody escalations referencing the inventory item."""
+
+    query = (
+        db.query(sa.func.count(models.GovernanceCustodyEscalation.id))
+        .join(models.GovernanceSampleCustodyLog)
+        .filter(models.GovernanceSampleCustodyLog.inventory_item_id == item_id)
+        .filter(
+            models.GovernanceCustodyEscalation.status.in_(_ACTIVE_ESCALATION_STATUSES)
+        )
+    )
+    return int(query.scalar() or 0)
 
 
 def _serialize_compartment(
@@ -238,6 +326,7 @@ def _attach_log_to_protocol(
     custody_payload["last_log_at"] = log.performed_at.isoformat()
     _apply_execution_custody_snapshot(execution, governance_result, custody_payload)
     db.add(execution)
+    cloning_planner.propagate_custody_recovery(db, execution)
 
 
 def _resolve_quantity_delta(log: models.GovernanceSampleCustodyLog) -> int:
@@ -280,6 +369,8 @@ def list_custody_escalations(
     statuses: Sequence[str] | None = None,
     protocol_execution_id: UUID | None = None,
     execution_event_id: UUID | None = None,
+    inventory_item_id: UUID | None = None,
+    team_scope: Sequence[UUID] | None = None,
 ) -> list[models.GovernanceCustodyEscalation]:
     """Return custody escalations filtered by team and status."""
 
@@ -306,6 +397,13 @@ def list_custody_escalations(
                 models.GovernanceSampleCustodyLog.performed_for_team_id == team_id,
             )
         )
+    elif team_scope:
+        query = query.filter(
+            sa.or_(
+                models.GovernanceFreezerUnit.team_id.in_(team_scope),
+                models.GovernanceSampleCustodyLog.performed_for_team_id.in_(team_scope),
+            )
+        )
     if protocol_execution_id:
         query = query.filter(
             models.GovernanceCustodyEscalation.protocol_execution_id
@@ -314,6 +412,10 @@ def list_custody_escalations(
     if execution_event_id:
         query = query.filter(
             models.GovernanceCustodyEscalation.execution_event_id == execution_event_id
+        )
+    if inventory_item_id:
+        query = query.filter(
+            models.GovernanceSampleCustodyLog.inventory_item_id == inventory_item_id
         )
     return (
         query.order_by(models.GovernanceCustodyEscalation.due_at.asc()).all()

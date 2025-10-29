@@ -11,6 +11,7 @@ import hashlib
 import json
 from contextlib import suppress
 from datetime import datetime, timezone
+from copy import deepcopy
 from typing import Any, Callable, Sequence
 from uuid import UUID, uuid4
 
@@ -40,11 +41,16 @@ def _json_default(value: Any) -> Any:
 
 
 def _toolkit_snapshot_from_profile(
-    profile: dict[str, Any] | None, fallback: dict[str, Any] | None = None
+    profile: dict[str, Any] | None,
+    fallback: dict[str, Any] | None = None,
+    *,
+    recommendations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Normalize toolkit profile metadata for guardrail state."""
 
     # purpose: centralize preset metadata persistence across planner stages
+    # inputs: profile dicts, optional fallback profile, optional recommendations summary
+    # outputs: normalized guardrail snapshot with scoring context
     effective_profile: dict[str, Any] = {}
     if fallback:
         effective_profile.update(fallback)
@@ -55,8 +61,8 @@ def _toolkit_snapshot_from_profile(
             elif key not in effective_profile:
                 effective_profile[key] = value
     if not effective_profile:
-        return {}
-    return {
+        effective_profile = {}
+    snapshot = {
         "preset_id": effective_profile.get("preset_id"),
         "preset_name": effective_profile.get("preset_name"),
         "preset_description": effective_profile.get("preset_description"),
@@ -65,6 +71,18 @@ def _toolkit_snapshot_from_profile(
         "notes": effective_profile.get("notes", []),
         "profile": effective_profile,
     }
+    if recommendations:
+        scorecard = recommendations.get("scorecard") or {}
+        snapshot.update(
+            {
+                "scorecard": scorecard,
+                "strategy_scores": recommendations.get("strategy_scores", []),
+                "recommended_buffers": scorecard.get("recommended_buffers", []),
+                "primer_window": scorecard.get("primer_window"),
+                "compatibility_index": scorecard.get("compatibility_index"),
+            }
+        )
+    return snapshot
 
 
 def _resolve_toolkit_preset(
@@ -96,6 +114,29 @@ def _resolve_toolkit_preset(
         if metrics.get("gc_content", 0.0) >= 65.0:
             return "high_gc"
     return None
+
+
+def _compose_toolkit_recommendations(
+    planner: models.CloningPlannerSession,
+    *,
+    preset_id: str | None = None,
+    primer_payload: dict[str, Any] | None = None,
+    restriction_payload: dict[str, Any] | None = None,
+    assembly_payload: dict[str, Any] | None = None,
+    qc_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build a consolidated toolkit recommendation bundle for a planner."""
+
+    # purpose: expose preset scoring to guardrail snapshots and API serialization
+    resolved = _resolve_toolkit_preset(planner, override=preset_id)
+    return sequence_toolkit.build_strategy_recommendations(
+        planner.input_sequences,
+        preset_id=resolved,
+        primer_payload=primer_payload or planner.primer_set,
+        restriction_payload=restriction_payload or planner.restriction_digest,
+        assembly_payload=assembly_payload or planner.assembly_plan,
+        qc_payload=qc_payload or planner.qc_reports,
+    )
 
 
 def _persist_stage_payload(
@@ -175,6 +216,399 @@ def _parse_stage_timestamp(entry: dict[str, Any], key: str) -> datetime | None:
         return None
 
 
+def _build_resume_token(
+    planner: models.CloningPlannerSession,
+    checkpoint_key: str,
+    branch_id: UUID | None,
+    timeline_position: str | None,
+) -> dict[str, Any]:
+    """Construct deterministic resume tokens for halted planner checkpoints."""
+
+    # purpose: enable replay consumers to resume execution deterministically
+    # inputs: planner ORM instance, checkpoint identifier, optional branch id, timeline cursor
+    # outputs: structured resume token payload for SSE and history records
+    branch_ref = str(branch_id) if branch_id else None
+    return {
+        "session_id": str(planner.id),
+        "checkpoint": checkpoint_key,
+        "branch_id": branch_ref,
+        "timeline_cursor": timeline_position or planner.timeline_cursor,
+        "generated_at": _utcnow().isoformat(),
+    }
+
+
+def _compose_branch_lineage_delta(
+    planner: models.CloningPlannerSession,
+    branch_id: UUID | None,
+    stage: str,
+) -> dict[str, Any]:
+    """Summarise branch lineage context relevant to a stage checkpoint."""
+
+    # purpose: provide UI timelines with quick lineage differentials for branch-aware scrubbing
+    # inputs: planner ORM instance, branch identifier, stage name
+    # outputs: dictionary summarising lineage differentials and ancestry context
+    branch_key = str(branch_id) if branch_id else None
+    branch_state = dict(planner.branch_state or {})
+    branches = branch_state.get("branches") or {}
+    branch_entry = branches.get(branch_key) if branch_key else None
+    history = [
+        record
+        for record in sorted(
+            planner.stage_history or [],
+            key=lambda item: item.created_at or datetime.min,
+        )
+        if branch_key is None or str(record.branch_id or "") == branch_key
+    ]
+    last_record = history[-1] if history else None
+    predicted_length = len(history)
+    newest_stage = stage
+    newest_checkpoint = stage
+    newest_cursor = planner.timeline_cursor
+    if last_record and last_record.stage == stage:
+        newest_stage = last_record.stage
+        newest_checkpoint = last_record.checkpoint_key
+        newest_cursor = last_record.timeline_position
+    else:
+        predicted_length += 1 if stage else 0
+        if not newest_cursor and last_record:
+            newest_cursor = last_record.timeline_position
+    ancestry = []
+    current = branch_entry or {}
+    while current:
+        ancestry.append(
+            {
+                "id": current.get("id"),
+                "label": current.get("label"),
+                "status": current.get("status"),
+            }
+        )
+        parent_id = current.get("parent_id")
+        if not parent_id:
+            break
+        parent_key = str(parent_id)
+        parent_entry = branches.get(parent_key)
+        if not parent_entry or parent_entry == current:
+            break
+        current = parent_entry
+    return {
+        "branch_id": branch_key,
+        "branch_label": (branch_entry or {}).get("label"),
+        "stage": stage,
+        "history_length": predicted_length,
+        "latest_stage": newest_stage or (last_record.stage if last_record else None),
+        "latest_checkpoint": newest_checkpoint or (last_record.checkpoint_key if last_record else None),
+        "latest_cursor": newest_cursor,
+        "ancestry": ancestry,
+    }
+
+
+def _derive_guardrail_hints(
+    guardrail_snapshot: dict[str, Any] | None,
+    guardrail_transition: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Compute mitigation hints aligned with guardrail transitions."""
+
+    # purpose: surface actionable mitigation steps for custody/guardrail holds
+    # inputs: guardrail snapshot dictionary and transition gate diff
+    # outputs: list of mitigation hint dictionaries for replay/resume flows
+    snapshot = guardrail_snapshot or {}
+    transition = guardrail_transition or {}
+    hints: list[dict[str, Any]] = []
+    custody_state = snapshot.get("custody") if isinstance(snapshot.get("custody"), dict) else {}
+    qc_state = snapshot.get("qc") if isinstance(snapshot.get("qc"), dict) else {}
+    primers_state = snapshot.get("primers") if isinstance(snapshot.get("primers"), dict) else {}
+    gate_state = (transition.get("current") or {}).get("state")
+    if custody_state.get("open_escalations"):
+        hints.append(
+            {
+                "category": "custody",
+                "action": "resolve_escalations",
+                "pending": custody_state.get("open_escalations"),
+                "notes": custody_state.get("event_overlays"),
+            }
+        )
+    if qc_state.get("qc_backpressure"):
+        hints.append(
+            {
+                "category": "qc",
+                "action": "clear_backpressure",
+                "pending": qc_state.get("breach_count") or qc_state.get("qc_checks"),
+                "notes": qc_state.get("breaches"),
+            }
+        )
+    multiplex_risk = primers_state.get("multiplex_risk")
+    if multiplex_risk in {"review", "blocked"}:
+        hints.append(
+            {
+                "category": "primers",
+                "action": "review_multiplex",
+                "risk_level": multiplex_risk,
+                "notes": primers_state.get("notes"),
+            }
+        )
+    if gate_state == "halted" and not hints:
+        hints.append(
+            {
+                "category": "guardrail",
+                "action": "review_transition",
+                "notes": transition,
+            }
+        )
+    return hints
+
+
+def _derive_recovery_context(
+    planner: models.CloningPlannerSession,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Summarise custody recovery lifecycle across planner guardrail holds."""
+
+    # purpose: expose recovery lifecycle for planner guardrail automation and auditing
+    # inputs: planner ORM instance, aggregated guardrail snapshot dictionary
+    # outputs: structured recovery context used by SSE, resume automation, and history records
+    custody_state = snapshot.get("custody") if isinstance(snapshot.get("custody"), dict) else {}
+    stage_timings = planner.stage_timings or {}
+    holds: list[dict[str, Any]] = []
+    active_stage: str | None = None
+    last_resumed_at: str | None = None
+    for stage, timing in stage_timings.items():
+        if not isinstance(timing, dict):
+            continue
+        status = str(timing.get("status") or "")
+        hold_started = timing.get("hold_started_at") or timing.get("queued_at")
+        hold_released = timing.get("hold_released_at")
+        resumed_at = timing.get("resumed_at") or hold_released
+        hold_reason = timing.get("hold_reason")
+        if status.endswith("_guardrail_hold"):
+            active_stage = stage
+        if hold_reason or hold_started or hold_released:
+            entry = {
+                "stage": stage,
+                "status": status,
+                "hold_started_at": hold_started,
+                "hold_released_at": hold_released,
+                "resumed_at": resumed_at,
+                "hold_reason": hold_reason,
+            }
+            if resumed_at and (
+                last_resumed_at is None or str(resumed_at) > str(last_resumed_at)
+            ):
+                last_resumed_at = resumed_at
+            holds.append(entry)
+    holds.sort(key=lambda item: item.get("hold_started_at") or "")
+    overlays = custody_state.get("event_overlays")
+    pending_events: list[dict[str, Any]] = []
+    drill_summaries: list[dict[str, Any]] = []
+    if isinstance(overlays, dict):
+        for overlay_id, overlay in overlays.items():
+            if not isinstance(overlay, dict):
+                continue
+            raw_open_ids = overlay.get("open_escalation_ids") or []
+            open_ids = [entry for entry in raw_open_ids if isinstance(entry, str)]
+            raw_all_ids = overlay.get("escalation_ids") or []
+            escalation_ids = [entry for entry in raw_all_ids if isinstance(entry, str)]
+            checklist_raw = overlay.get("mitigation_checklist") or []
+            mitigation_checklist = [
+                str(item)
+                for item in checklist_raw
+                if isinstance(item, (str, int, float))
+            ]
+            try:
+                open_drill_count = int(overlay.get("open_drill_count"))
+            except (TypeError, ValueError):
+                open_drill_count = 0
+            max_severity = overlay.get("max_severity")
+            if not isinstance(max_severity, str):
+                max_severity = None
+            status = "open" if open_ids or open_drill_count else "resolved"
+            checklist_completed = bool(mitigation_checklist) and status == "resolved"
+            last_updated_at = overlay.get("updated_at") or overlay.get("last_synced_at")
+            if not isinstance(last_updated_at, str):
+                last_updated_at = None
+            drill_summaries.append(
+                {
+                    "event_id": overlay_id,
+                    "status": status,
+                    "max_severity": max_severity,
+                    "open_drill_count": open_drill_count,
+                    "open_escalations": open_ids,
+                    "escalation_ids": escalation_ids,
+                    "mitigation_checklist": mitigation_checklist,
+                    "checklist_completed": checklist_completed,
+                    "resume_ready": status == "resolved",
+                    "last_updated_at": last_updated_at,
+                }
+            )
+            if open_ids:
+                pending_events.append(
+                    {
+                        "event_id": overlay_id,
+                        "open_escalations": list(open_ids),
+                        "max_severity": max_severity,
+                        "mitigation_checklist": mitigation_checklist,
+                    }
+                )
+    return {
+        "recovery_gate": bool(custody_state.get("recovery_gate")),
+        "open_drill_count": int(custody_state.get("open_drill_count") or 0),
+        "open_escalations": int(custody_state.get("open_escalations") or 0),
+        "active_stage": active_stage,
+        "active": bool(active_stage or custody_state.get("recovery_gate")),
+        "holds": holds,
+        "last_resumed_at": last_resumed_at,
+        "pending_events": pending_events,
+        "drill_summaries": drill_summaries,
+        "custody_status": snapshot.get("custody_status"),
+    }
+
+
+def _compose_recovery_bundle(
+    *,
+    stage: str | None,
+    guardrail_gate: dict[str, Any] | None,
+    resume_token: dict[str, Any] | None,
+    branch_lineage: dict[str, Any] | None,
+    mitigation_hints: list[dict[str, Any]] | None,
+    recovery_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Produce curated recovery guidance for downstream resume flows."""
+
+    # purpose: expose structured recovery guidance alongside checkpoint metadata
+    # inputs: guardrail gate evaluation, resume token, lineage delta, mitigation hints, recovery context
+    # outputs: recovery bundle dict used by SSE, history records, and UI resume affordances
+    context = recovery_context if isinstance(recovery_context, dict) else {}
+    gate = guardrail_gate if isinstance(guardrail_gate, dict) else {}
+    token = resume_token if isinstance(resume_token, dict) else {}
+    lineage = branch_lineage if isinstance(branch_lineage, dict) else {}
+
+    sanitized_hints: list[dict[str, Any]] = []
+    for hint in mitigation_hints or []:
+        if isinstance(hint, dict):
+            sanitized_hints.append(hint)
+    pending_events: list[dict[str, Any]] = []
+    for event in context.get("pending_events", []) or []:
+        if isinstance(event, dict):
+            pending_events.append(
+                {
+                    "event_id": event.get("event_id"),
+                    "open_escalations": list(event.get("open_escalations") or []),
+                    "max_severity": event.get("max_severity"),
+                    "mitigation_checklist": list(event.get("mitigation_checklist") or []),
+                }
+            )
+    holds: list[dict[str, Any]] = []
+    for hold in context.get("holds", []) or []:
+        if isinstance(hold, dict):
+            holds.append(
+                {
+                    "stage": hold.get("stage"),
+                    "status": hold.get("status"),
+                    "hold_started_at": hold.get("hold_started_at"),
+                    "hold_released_at": hold.get("hold_released_at"),
+                    "resumed_at": hold.get("resumed_at"),
+                }
+            )
+    drill_summaries: list[dict[str, Any]] = []
+    for summary in context.get("drill_summaries", []) or []:
+        if not isinstance(summary, dict):
+            continue
+        drill_summaries.append(
+            {
+                "event_id": summary.get("event_id"),
+                "status": summary.get("status"),
+                "max_severity": summary.get("max_severity"),
+                "open_drill_count": summary.get("open_drill_count"),
+                "open_escalations": list(summary.get("open_escalations") or []),
+                "escalation_ids": list(summary.get("escalation_ids") or []),
+                "mitigation_checklist": list(summary.get("mitigation_checklist") or []),
+                "checklist_completed": summary.get("checklist_completed"),
+                "resume_ready": summary.get("resume_ready"),
+                "last_updated_at": summary.get("last_updated_at"),
+            }
+        )
+    primary_hint = sanitized_hints[0] if sanitized_hints else None
+    open_drill_raw = gate.get("open_drill_count")
+    open_escalations_raw = gate.get("open_escalations")
+    guardrail_active = bool(gate.get("active"))
+    reasons_raw = gate.get("reasons")
+    if isinstance(reasons_raw, (list, tuple, set)):
+        guardrail_reasons = [reason for reason in reasons_raw if reason is not None]
+    else:
+        guardrail_reasons = []
+    try:
+        open_drill_count = int(open_drill_raw)
+    except (TypeError, ValueError):
+        open_drill_count = 0
+    try:
+        open_escalations = int(open_escalations_raw)
+    except (TypeError, ValueError):
+        open_escalations = 0
+    custody_status = gate.get("custody_status")
+    if not isinstance(custody_status, str):
+        custody_status = None
+    unresolved_drills = any(not bool(summary.get("resume_ready")) for summary in drill_summaries)
+    bundle = {
+        "stage": stage,
+        "recommended_stage": stage,
+        "resume_token": token,
+        "branch_lineage": lineage,
+        "primary_hint": primary_hint,
+        "mitigation_hints": sanitized_hints,
+        "pending_events": pending_events,
+        "holds": holds,
+        "drill_summaries": drill_summaries,
+        "active_stage": context.get("active_stage"),
+        "last_resumed_at": context.get("last_resumed_at"),
+        "recovery_gate": bool(context.get("recovery_gate")),
+        "open_drill_count": open_drill_count,
+        "open_escalations": open_escalations,
+        "custody_status": custody_status,
+        "guardrail_active": guardrail_active,
+        "guardrail_reasons": guardrail_reasons,
+        "resume_ready": bool(token) and not guardrail_active and not unresolved_drills,
+        "generated_at": _utcnow().isoformat(),
+    }
+    return bundle
+
+
+def _compose_checkpoint_envelope(
+    checkpoint_payload: dict[str, Any],
+    resume_token: dict[str, Any],
+    lineage_delta: dict[str, Any],
+    mitigation_hints: list[dict[str, Any]],
+    recovery_context: dict[str, Any] | None,
+    *,
+    stage: str | None,
+    guardrail_gate: dict[str, Any],
+) -> dict[str, Any]:
+    """Blend checkpoint payloads with replay metadata for downstream consumers."""
+
+    # purpose: standardise persisted checkpoint metadata with replay, mitigation, and recovery context
+    # inputs: raw checkpoint payload, resume token, lineage delta, guardrail mitigation hints, recovery context
+    # outputs: enriched checkpoint payload dictionary stored on the stage record
+    envelope = deepcopy(checkpoint_payload) if isinstance(checkpoint_payload, dict) else {}
+    envelope.setdefault("metadata", {})
+    recovery_bundle = _compose_recovery_bundle(
+        stage=stage,
+        guardrail_gate=guardrail_gate,
+        resume_token=resume_token,
+        branch_lineage=lineage_delta,
+        mitigation_hints=mitigation_hints,
+        recovery_context=recovery_context,
+    )
+    envelope["metadata"].update(
+        {
+            "resume_token": resume_token,
+            "branch_lineage": lineage_delta,
+            "mitigation_hints": mitigation_hints,
+            "recovery_context": recovery_context,
+            "recovery_bundle": recovery_bundle,
+            "drill_summaries": recovery_bundle.get("drill_summaries", []),
+        }
+    )
+    return envelope
+
+
 def _persist_stage_record(
     db: Session,
     planner: models.CloningPlannerSession,
@@ -207,6 +641,35 @@ def _persist_stage_record(
     retries = int(timing_entry.get("retries", 0) or 0)
     payload_path, payload_meta = _persist_stage_payload(planner, step, payload)
     metrics = _derive_stage_metrics(step, guardrail_snapshot, payload)
+    resume_token = _build_resume_token(
+        planner,
+        checkpoint_key or step,
+        branch_id,
+        timeline_position,
+    )
+    lineage_delta = _compose_branch_lineage_delta(planner, branch_id, step)
+    mitigation_hints = _derive_guardrail_hints(
+        guardrail_snapshot,
+        guardrail_transition,
+    )
+    recovery_context = (
+        (planner.guardrail_state or {}).get("recovery")
+        if isinstance(planner.guardrail_state, dict)
+        else None
+    )
+    checkpoint_stage = checkpoint_key or step
+    checkpoint_gate = _evaluate_guardrail_gate(
+        guardrail_snapshot if isinstance(guardrail_snapshot, dict) else {}
+    )
+    checkpoint_envelope = _compose_checkpoint_envelope(
+        checkpoint_payload or {},
+        resume_token,
+        lineage_delta,
+        mitigation_hints,
+        recovery_context if isinstance(recovery_context, dict) else None,
+        stage=checkpoint_stage,
+        guardrail_gate=checkpoint_gate,
+    )
     record = models.CloningPlannerStageRecord(
         session=planner,
         stage=step,
@@ -224,7 +687,7 @@ def _persist_stage_record(
         error=error,
         branch_id=branch_id,
         checkpoint_key=checkpoint_key,
-        checkpoint_payload=checkpoint_payload or {},
+        checkpoint_payload=checkpoint_envelope,
         guardrail_transition=guardrail_transition or {},
         timeline_position=timeline_position,
     )
@@ -256,6 +719,18 @@ def _dispatch_planner_event(
         "previous": previous_guardrail_gate,
         "current": guardrail_gate,
     }
+    stage_name = payload.get("stage") or (checkpoint or {}).get("key") or planner.current_step
+    resume_token = _build_resume_token(planner, stage_name or event_type, branch_ref, event_identifier)
+    lineage_delta = _compose_branch_lineage_delta(planner, branch_ref, stage_name or event_type)
+    mitigation_hints = _derive_guardrail_hints(guardrail_state, guardrail_transition)
+    recovery_bundle = _compose_recovery_bundle(
+        stage=stage_name,
+        guardrail_gate=guardrail_gate,
+        resume_token=resume_token,
+        branch_lineage=lineage_delta,
+        mitigation_hints=mitigation_hints,
+        recovery_context=guardrail_state.get("recovery"),
+    )
     message = {
         "id": event_identifier,
         "type": event_type,
@@ -272,6 +747,12 @@ def _dispatch_planner_event(
         },
         "checkpoint": checkpoint,
         "timeline_cursor": event_identifier,
+        "resume_token": resume_token,
+        "branch_lineage_delta": lineage_delta,
+        "mitigation_hints": mitigation_hints,
+        "recovery_context": guardrail_state.get("recovery"),
+        "recovery_bundle": recovery_bundle,
+        "drill_summaries": recovery_bundle.get("drill_summaries", []),
         "timestamp": _utcnow().isoformat(),
     }
     try:
@@ -556,6 +1037,8 @@ def compose_guardrail_state(
         qc_section["qc_backpressure"] = True
     snapshot["qc"] = qc_section
     snapshot["qc_backpressure"] = bool(qc_section.get("qc_backpressure"))
+    snapshot["mitigation_hints"] = _derive_guardrail_hints(snapshot, None)
+    snapshot["recovery"] = _derive_recovery_context(planner, snapshot)
     return snapshot
 
 
@@ -636,6 +1119,11 @@ def refresh_planner_guardrails(
         override_payload.setdefault("custody_status", protocol_snapshot.get("status"))
         if protocol_snapshot.get("qc_backpressure"):
             override_payload["qc_backpressure"] = True
+    previous_snapshot = (
+        json.loads(json.dumps(planner.guardrail_state, default=_json_default))
+        if isinstance(planner.guardrail_state, dict)
+        else {}
+    )
     aggregated = compose_guardrail_state(
         planner,
         override=override_payload or None,
@@ -647,6 +1135,7 @@ def refresh_planner_guardrails(
         models.CloningPlannerSession.id == planner.id
     ).update({"guardrail_state": normalised})
     db.flush()
+    _process_recovery_transition(db, planner, normalised, previous_snapshot)
     return normalised
 
 
@@ -700,6 +1189,9 @@ def _record_guardrail_hold(
             "task_id": task_id,
             "error": None,
             "branch_id": str(active_branch_id) if active_branch_id else None,
+            "hold_started_at": now.isoformat(),
+            "hold_released_at": None,
+            "resumed_at": None,
         }
     )
     timings[stage] = entry
@@ -721,6 +1213,101 @@ def _record_guardrail_hold(
         checkpoint={"key": stage, "payload": entry},
         event_id=event_id,
     )
+
+
+def _resume_guardrail_hold(
+    db: Session,
+    planner: models.CloningPlannerSession,
+    stage: str,
+    guardrail_snapshot: dict[str, Any],
+    *,
+    recovery_context: dict[str, Any] | None,
+) -> None:
+    """Resume a guardrail-held stage once custody recovery clears blocking conditions."""
+
+    # purpose: automatically requeue halted stages in response to resolved custody escalations
+    # inputs: db session, planner ORM instance, halted stage name, custody guardrail snapshot, recovery context dict
+    # outputs: none (planner state mutated, Celery pipeline re-enqueued)
+    active_branch_id, _ = _ensure_branch_state(planner)
+    previous_gate = _evaluate_guardrail_gate(planner.guardrail_state or {})
+    timings = dict(planner.stage_timings or {})
+    entry = dict(timings.get(stage) or {})
+    if entry.get("hold_released_at"):
+        return
+    now = _utcnow()
+    entry.update(
+        {
+            "status": f"{stage}_resuming",
+            "hold_released_at": now.isoformat(),
+            "resumed_at": now.isoformat(),
+            "recovery_context": recovery_context,
+            "task_id": None,
+            "error": None,
+            "branch_id": str(active_branch_id) if active_branch_id else None,
+        }
+    )
+    entry.setdefault("hold_reason", guardrail_snapshot)
+    timings[stage] = entry
+    planner.stage_timings = timings
+    planner.status = f"{stage}_resuming"
+    planner.current_step = stage
+    planner.celery_task_id = None
+    planner.updated_at = now
+    db.add(planner)
+    event_id = str(uuid4())
+    _dispatch_planner_event(
+        planner,
+        "guardrail_released",
+        {"stage": stage, "recovery": recovery_context},
+        previous_guardrail_gate=previous_gate,
+        branch_id=active_branch_id,
+        checkpoint={"key": stage, "payload": entry},
+        event_id=event_id,
+    )
+    db.flush()
+    task_id = enqueue_pipeline(planner.id, resume_from=stage)
+    if task_id:
+        timings = dict(planner.stage_timings or {})
+        stage_entry = dict(timings.get(stage) or {})
+        stage_entry["task_id"] = task_id
+        timings[stage] = stage_entry
+        planner.stage_timings = timings
+        planner.celery_task_id = task_id
+        db.add(planner)
+    db.refresh(planner)
+
+
+def _process_recovery_transition(
+    db: Session,
+    planner: models.CloningPlannerSession,
+    snapshot: dict[str, Any],
+    previous_snapshot: dict[str, Any] | None,
+) -> None:
+    """Detect recovery gate transitions and trigger guardrail resume automation."""
+
+    # purpose: close custody guardrail recovery loops by restarting held stages when gates clear
+    # inputs: db session, planner ORM instance, current guardrail snapshot, previous snapshot for diffing
+    # outputs: none (planner state mutated via resume helper when applicable)
+    current_recovery = snapshot.get("recovery") if isinstance(snapshot.get("recovery"), dict) else {}
+    previous_recovery = (
+        previous_snapshot.get("recovery")
+        if isinstance(previous_snapshot, dict) and isinstance(previous_snapshot.get("recovery"), dict)
+        else {}
+    )
+    previous_gate = bool(previous_recovery.get("recovery_gate"))
+    current_gate = bool(current_recovery.get("recovery_gate"))
+    if previous_gate and not current_gate:
+        status = planner.status or ""
+        stage = status[:-len("_guardrail_hold")] if status.endswith("_guardrail_hold") else None
+        if stage:
+            guardrail_snapshot = snapshot.get("custody") if isinstance(snapshot.get("custody"), dict) else {}
+            _resume_guardrail_hold(
+                db,
+                planner,
+                stage,
+                guardrail_snapshot,
+                recovery_context=current_recovery,
+            )
 
 
 def _utcnow() -> datetime:
@@ -756,15 +1343,15 @@ def create_session(
             with suppress(ValueError, TypeError):
                 execution_id = UUID(str(raw_execution))
     guardrail_state = dict(metadata.get("guardrail_state", {})) if metadata else {}
-    if toolkit_preset:
-        guardrail_state["toolkit"] = _toolkit_snapshot_from_profile(
-            {
-                "preset_id": toolkit_preset,
-                "metadata_tags": [f"preset:{toolkit_preset}"],
-                "recommended_use": [],
-                "notes": [],
-            }
-        )
+    recommendations = sequence_toolkit.build_strategy_recommendations(
+        list(input_sequences or []),
+        preset_id=toolkit_preset,
+    )
+    guardrail_state["toolkit"] = _toolkit_snapshot_from_profile(
+        recommendations.get("profile"),
+        fallback=guardrail_state.get("toolkit"),
+        recommendations=recommendations,
+    )
     branch_identifier = uuid4()
     record = models.CloningPlannerSession(
         created_by_id=getattr(created_by, "id", None),
@@ -841,8 +1428,23 @@ def run_primer_design(
         target_tm=target_tm or 60.0,
         preset_id=resolved_preset,
     )
+    recommendations = _compose_toolkit_recommendations(
+        planner,
+        preset_id=resolved_preset,
+        primer_payload=primer_payload,
+    )
+    if isinstance(primer_payload, dict):
+        primer_payload.setdefault("recommendations", {})
+        primer_payload["recommendations"].update(
+            {
+                "scorecard": recommendations.get("scorecard"),
+                "strategy_scores": recommendations.get("strategy_scores"),
+            }
+        )
     toolkit_snapshot = _toolkit_snapshot_from_profile(
-        primer_payload.get("profile")
+        primer_payload.get("profile"),
+        fallback=(planner.guardrail_state or {}).get("toolkit"),
+        recommendations=recommendations,
     )
     guardrail_state = _merge_guardrail_state(
         planner,
@@ -889,9 +1491,23 @@ def run_restriction_analysis(
         enzymes=enzymes,
         preset_id=resolved_preset,
     )
+    recommendations = _compose_toolkit_recommendations(
+        planner,
+        preset_id=resolved_preset,
+        restriction_payload=digest_payload,
+    )
+    if isinstance(digest_payload, dict):
+        digest_payload.setdefault("recommendations", {})
+        digest_payload["recommendations"].update(
+            {
+                "scorecard": recommendations.get("scorecard"),
+                "strategy_scores": recommendations.get("strategy_scores"),
+            }
+        )
     toolkit_snapshot = _toolkit_snapshot_from_profile(
         digest_payload.get("profile"),
         fallback=upstream_profile or None,
+        recommendations=recommendations,
     )
     guardrail_state = _merge_guardrail_state(
         planner,
@@ -939,9 +1555,23 @@ def run_assembly_planning(
         strategy=strategy or planner.assembly_strategy,
         preset_id=resolved_preset,
     )
+    recommendations = _compose_toolkit_recommendations(
+        planner,
+        preset_id=resolved_preset,
+        assembly_payload=plan_payload,
+    )
+    if isinstance(plan_payload, dict):
+        plan_payload.setdefault("recommendations", {})
+        plan_payload["recommendations"].update(
+            {
+                "scorecard": recommendations.get("scorecard"),
+                "strategy_scores": recommendations.get("strategy_scores"),
+            }
+        )
     toolkit_snapshot = _toolkit_snapshot_from_profile(
         plan_payload.get("profile"),
         fallback=upstream_profile or None,
+        recommendations=recommendations,
     )
     guardrail_state = _merge_guardrail_state(
         planner,
@@ -983,6 +1613,18 @@ def run_qc_checks(
         config=profile,
         chromatograms=ingestion["artifacts"],
     )
+    recommendations = _compose_toolkit_recommendations(
+        planner,
+        qc_payload=qc_payload,
+    )
+    if isinstance(qc_payload, dict):
+        qc_payload.setdefault("recommendations", {})
+        qc_payload["recommendations"].update(
+            {
+                "scorecard": recommendations.get("scorecard"),
+                "strategy_scores": recommendations.get("strategy_scores"),
+            }
+        )
     qc_summary = _qc_guardrail_summary(qc_payload)
     qc_summary["breaches"] = ingestion["breaches"]
     guardrail_state = _merge_guardrail_state(
@@ -992,6 +1634,7 @@ def run_qc_checks(
             "toolkit": _toolkit_snapshot_from_profile(
                 qc_payload.get("profile"),
                 fallback=upstream_profile or None,
+                recommendations=recommendations,
             ),
         },
     )
@@ -1737,6 +2380,25 @@ def _serialise_stage_record(record: models.CloningPlannerStageRecord) -> dict[st
     """Convert a stage record ORM instance into serialisable metadata."""
 
     # purpose: surface durable checkpoint lineage for UI consumers
+    checkpoint_payload = record.checkpoint_payload or {}
+    metadata = checkpoint_payload.get("metadata") if isinstance(checkpoint_payload, dict) else {}
+    metadata_dict = metadata if isinstance(metadata, dict) else {}
+    recovery_bundle = metadata_dict.get("recovery_bundle") if isinstance(metadata_dict, dict) else {}
+    if not isinstance(recovery_bundle, dict):
+        recovery_bundle = {}
+    drill_summaries = metadata_dict.get("drill_summaries") or []
+    entry_snapshot = {
+        "drill_summaries": drill_summaries,
+        "recovery_bundle": recovery_bundle,
+        "guardrail_transition": record.guardrail_transition,
+    }
+    severity = _resolve_entry_severity(entry_snapshot)
+    pending_events = recovery_bundle.get("pending_events") or []
+    pending_event_count = len([event for event in pending_events if isinstance(event, dict)])
+    open_drills = _safe_int(recovery_bundle.get("open_drill_count"))
+    open_escalations = _safe_int(recovery_bundle.get("open_escalations"))
+    resume_ready_value = recovery_bundle.get("resume_ready")
+    resume_ready = bool(resume_ready_value) if resume_ready_value is not None else None
     return {
         "id": record.id,
         "stage": record.stage,
@@ -1755,10 +2417,23 @@ def _serialise_stage_record(record: models.CloningPlannerStageRecord) -> dict[st
         "branch_id": record.branch_id,
         "checkpoint_key": record.checkpoint_key,
         "checkpoint_payload": record.checkpoint_payload,
+        "resume_token": metadata_dict.get("resume_token"),
+        "branch_lineage": metadata_dict.get("branch_lineage"),
+        "mitigation_hints": metadata_dict.get("mitigation_hints", []),
+        "recovery_context": metadata_dict.get("recovery_context"),
+        "recovery_bundle": recovery_bundle,
+        "drill_summaries": drill_summaries,
         "guardrail_transition": record.guardrail_transition,
         "timeline_position": record.timeline_position,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
+        "custody_summary": {
+            "max_severity": severity,
+            "open_drill_count": open_drills,
+            "open_escalations": open_escalations,
+            "pending_event_count": pending_event_count,
+            "resume_ready": resume_ready,
+        },
     }
 
 
@@ -1784,6 +2459,308 @@ def _serialise_qc_artifact(artifact: models.CloningPlannerQCArtifact) -> dict[st
     }
 
 
+def compose_replay_window(
+    planner: models.CloningPlannerSession,
+    *,
+    branch_id: str | None = None,
+    stage_filter: str | None = None,
+    guardrail_gate: str | None = None,
+) -> list[dict[str, Any]]:
+    """Render a branch-aware replay backlog for SSE consumers."""
+
+    # purpose: expose resumable checkpoints aligned with branch and guardrail filters
+    # inputs: planner ORM instance plus optional filters for branch, stage, guardrail gate
+    # outputs: ordered list of serialised stage checkpoints matching filters
+    branch_key = str(branch_id) if branch_id else None
+    serialised = [
+        _serialise_stage_record(record)
+        for record in sorted(
+            planner.stage_history or [],
+            key=lambda item: item.created_at or datetime.min,
+        )
+    ]
+    filtered: list[dict[str, Any]] = []
+    for entry in serialised:
+        if branch_key and (entry.get("branch_id") and str(entry["branch_id"]) != branch_key):
+            continue
+        if stage_filter and entry.get("stage") != stage_filter:
+            continue
+        if guardrail_gate:
+            transition = entry.get("guardrail_transition") or {}
+            current_gate = (transition.get("current") or {}).get("state")
+            if current_gate != guardrail_gate:
+                continue
+        filtered.append(entry)
+    return filtered
+
+
+_SEVERITY_WEIGHTS: dict[str, int] = {
+    "critical": 4,
+    "severe": 3,
+    "major": 3,
+    "high": 3,
+    "warning": 2,
+    "medium": 2,
+    "minor": 1,
+    "low": 1,
+    "info": 0,
+    "informational": 0,
+}
+
+_STATE_SEVERITY_MAP: dict[str, str] = {
+    "halted": "critical",
+    "blocked": "critical",
+    "alert": "warning",
+    "review": "warning",
+}
+
+
+def _normalise_severity(value: Any) -> str | None:
+    """Map arbitrary severity labels onto a canonical ordering."""
+
+    # purpose: convert disparate severity strings into known buckets for comparison
+    if not isinstance(value, str):
+        return None
+    label = value.strip().lower()
+    if not label:
+        return None
+    if label in _SEVERITY_WEIGHTS:
+        return label
+    return _STATE_SEVERITY_MAP.get(label)
+
+
+def _severity_weight(value: str | None) -> int:
+    """Return the ranking weight for a severity value."""
+
+    # purpose: allow max comparisons across severities using numeric ordering
+    if value is None:
+        return -1
+    return _SEVERITY_WEIGHTS.get(value, -1)
+
+
+def _safe_int(value: Any) -> int:
+    """Coerce arbitrary numeric inputs into integers without raising."""
+
+    # purpose: normalise open drill/escalation counters originating from metadata blobs
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_entry_severity(entry: dict[str, Any]) -> str | None:
+    """Determine the highest severity associated with a checkpoint entry."""
+
+    # purpose: surface max guardrail/custody severity for branch comparison overlays
+    severities: list[str] = []
+    drill_summaries = entry.get("drill_summaries") or []
+    for summary in drill_summaries:
+        if isinstance(summary, dict):
+            candidate = _normalise_severity(summary.get("max_severity"))
+            if candidate:
+                severities.append(candidate)
+    recovery_bundle = entry.get("recovery_bundle") or {}
+    for summary in recovery_bundle.get("drill_summaries", []) or []:
+        if isinstance(summary, dict):
+            candidate = _normalise_severity(summary.get("max_severity"))
+            if candidate:
+                severities.append(candidate)
+    for event in recovery_bundle.get("pending_events", []) or []:
+        if isinstance(event, dict):
+            candidate = _normalise_severity(event.get("max_severity"))
+            if candidate:
+                severities.append(candidate)
+    primary_hint = recovery_bundle.get("primary_hint")
+    if isinstance(primary_hint, dict):
+        candidate = _normalise_severity(primary_hint.get("severity") or primary_hint.get("risk_level"))
+        if candidate:
+            severities.append(candidate)
+    transition = entry.get("guardrail_transition") or {}
+    current_gate = transition.get("current") or {}
+    gate_state = current_gate.get("state")
+    if isinstance(gate_state, str):
+        mapped = _STATE_SEVERITY_MAP.get(gate_state.strip().lower())
+        if mapped:
+            severities.append(mapped)
+    best_value: str | None = None
+    best_weight = -1
+    for candidate in severities:
+        weight = _severity_weight(candidate)
+        if weight > best_weight:
+            best_value = candidate
+            best_weight = weight
+    return best_value
+
+
+def _summarise_checkpoint(entry: dict[str, Any], *, index: int) -> dict[str, Any]:
+    """Normalise checkpoint details for branch comparison overlays."""
+
+    # purpose: extract comparable checkpoint metadata from replay window entries
+    # inputs: stage history entry dictionary and index within the ordered window
+    # outputs: condensed checkpoint summary for UI diff visualisation
+    transition = entry.get("guardrail_transition") or {}
+    current_gate = transition.get("current") or {}
+    recovery_bundle = entry.get("recovery_bundle") or {}
+    pending_events = recovery_bundle.get("pending_events") or []
+    severity = _resolve_entry_severity(entry)
+    open_drills = _safe_int(recovery_bundle.get("open_drill_count"))
+    open_escalations = _safe_int(recovery_bundle.get("open_escalations"))
+    pending_event_count = len([event for event in pending_events if isinstance(event, dict)])
+    resume_ready_value = recovery_bundle.get("resume_ready") if isinstance(recovery_bundle, dict) else None
+    resume_ready = bool(resume_ready_value) if resume_ready_value is not None else None
+    return {
+        "index": index,
+        "stage": entry.get("stage"),
+        "checkpoint_key": entry.get("checkpoint_key"),
+        "status": entry.get("status"),
+        "timeline_position": entry.get("timeline_position"),
+        "guardrail_state": current_gate.get("state"),
+        "guardrail_active": bool(current_gate.get("active")),
+        "resume_ready": resume_ready,
+        "custody_summary": {
+            "max_severity": severity,
+            "open_drill_count": open_drills,
+            "open_escalations": open_escalations,
+            "pending_event_count": pending_event_count,
+            "resume_ready": resume_ready,
+        },
+    }
+
+
+def _aggregate_custody_metrics(
+    window: list[dict[str, Any]],
+    summaries: list[dict[str, Any]],
+) -> tuple[dict[str, Any], int]:
+    """Aggregate custody and severity metrics across a branch window."""
+
+    # purpose: provide branch-level custody differentials for comparison overlays
+    totals = {
+        "checkpoint_count": len(window),
+        "open_drill_total": 0,
+        "open_escalation_total": 0,
+        "pending_event_total": 0,
+        "resume_ready_count": 0,
+        "blocked_checkpoint_count": 0,
+        "max_severity": None,
+    }
+    best_weight = -1
+    for entry, summary in zip(window, summaries):
+        recovery_bundle = entry.get("recovery_bundle") or {}
+        totals["open_drill_total"] += _safe_int(recovery_bundle.get("open_drill_count"))
+        totals["open_escalation_total"] += _safe_int(recovery_bundle.get("open_escalations"))
+        pending_events = recovery_bundle.get("pending_events") or []
+        totals["pending_event_total"] += len([event for event in pending_events if isinstance(event, dict)])
+        severity = _resolve_entry_severity(entry)
+        weight = _severity_weight(severity)
+        if weight > best_weight:
+            best_weight = weight
+            totals["max_severity"] = severity
+        resume_ready = summary.get("resume_ready")
+        if resume_ready is True:
+            totals["resume_ready_count"] += 1
+        elif resume_ready is False:
+            totals["blocked_checkpoint_count"] += 1
+    return totals, best_weight
+
+
+def compose_branch_comparison(
+    planner: models.CloningPlannerSession,
+    *,
+    branch_id: str | None = None,
+    reference_branch_id: str | None = None,
+    stage_filter: str | None = None,
+    guardrail_gate: str | None = None,
+) -> dict[str, Any]:
+    """Summarise lineage differentials between two replay windows."""
+
+    # purpose: drive branch comparison overlays with ahead/missing checkpoint insight
+    # inputs: planner ORM instance, optional branch identifiers and stage/guardrail filters
+    # outputs: structured comparison dictionary containing checkpoint deltas
+    primary_window = compose_replay_window(
+        planner,
+        branch_id=branch_id,
+        stage_filter=stage_filter,
+        guardrail_gate=guardrail_gate,
+    )
+    reference_window = compose_replay_window(
+        planner,
+        branch_id=reference_branch_id,
+        stage_filter=stage_filter,
+        guardrail_gate=guardrail_gate,
+    )
+    primary_summaries = [
+        _summarise_checkpoint(entry, index=index) for index, entry in enumerate(primary_window)
+    ]
+    reference_summaries = [
+        _summarise_checkpoint(entry, index=index) for index, entry in enumerate(reference_window)
+    ]
+    primary_metrics, primary_severity_weight = _aggregate_custody_metrics(
+        primary_window, primary_summaries
+    )
+    reference_metrics, reference_severity_weight = _aggregate_custody_metrics(
+        reference_window, reference_summaries
+    )
+
+    def _identity(summary: dict[str, Any]) -> str:
+        candidate = summary.get("timeline_position")
+        if candidate:
+            return str(candidate)
+        stage = summary.get("stage") or ""
+        checkpoint = summary.get("checkpoint_key") or ""
+        return f"{stage}:{checkpoint}:{summary.get('index')}"
+
+    reference_keys = {_identity(summary): summary for summary in reference_summaries}
+    primary_keys = {_identity(summary): summary for summary in primary_summaries}
+
+    ahead = [summary for summary in primary_summaries if _identity(summary) not in reference_keys]
+    missing = [summary for summary in reference_summaries if _identity(summary) not in primary_keys]
+
+    divergent: list[dict[str, Any]] = []
+    max_index = min(len(primary_summaries), len(reference_summaries))
+    for index in range(max_index):
+        primary_entry = primary_window[index]
+        reference_entry = reference_window[index]
+        if primary_entry.get("stage") != reference_entry.get("stage") or (
+            (primary_entry.get("guardrail_transition") or {}).get("current")
+            != (reference_entry.get("guardrail_transition") or {}).get("current")
+        ):
+            divergent.append(
+                {
+                    "index": index,
+                    "primary": primary_summaries[index],
+                    "reference": reference_summaries[index],
+                }
+            )
+    effective_primary_weight = primary_severity_weight if primary_severity_weight >= 0 else 0
+    effective_reference_weight = (
+        reference_severity_weight if reference_severity_weight >= 0 else 0
+    )
+    custody_deltas = {
+        "severity_delta": effective_primary_weight - effective_reference_weight,
+        "open_drill_delta": primary_metrics["open_drill_total"]
+        - reference_metrics["open_drill_total"],
+        "open_escalation_delta": primary_metrics["open_escalation_total"]
+        - reference_metrics["open_escalation_total"],
+        "pending_event_delta": primary_metrics["pending_event_total"]
+        - reference_metrics["pending_event_total"],
+        "blocked_checkpoint_delta": primary_metrics["blocked_checkpoint_count"]
+        - reference_metrics["blocked_checkpoint_count"],
+        "resume_ready_delta": primary_metrics["resume_ready_count"]
+        - reference_metrics["resume_ready_count"],
+    }
+    return {
+        "reference_branch_id": reference_branch_id,
+        "reference_history_length": len(reference_window),
+        "history_delta": len(primary_window) - len(reference_window),
+        "ahead_checkpoints": ahead,
+        "missing_checkpoints": missing,
+        "divergent_stages": divergent,
+        "primary_custody_metrics": primary_metrics,
+        "reference_custody_metrics": reference_metrics,
+        "custody_deltas": custody_deltas,
+    }
+
+
 def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
     """Render a cloning planner session into a JSON-serialisable dict."""
 
@@ -1801,6 +2778,7 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
         for artifact in sorted(planner.qc_artifacts or [], key=lambda item: item.created_at or datetime.min)
     ]
     guardrail_state = compose_guardrail_state(planner)
+    guardrail_gate = _evaluate_guardrail_gate(guardrail_state)
     primer_payload = _merge_with_defaults(
         planner.primer_set,
         {
@@ -1830,6 +2808,46 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
         },
     )
     qc_payload = _merge_with_defaults(planner.qc_reports, {"reports": []})
+    toolkit_bundle = _compose_toolkit_recommendations(planner)
+    scorecard = toolkit_bundle.get("scorecard") if isinstance(toolkit_bundle, dict) else None
+    strategy_scores = toolkit_bundle.get("strategy_scores") if isinstance(toolkit_bundle, dict) else None
+    if scorecard or strategy_scores:
+        for target in (primer_payload, restriction_payload, assembly_payload, qc_payload):
+            if not isinstance(target, dict):
+                continue
+            recommendations = target.setdefault("recommendations", {})
+            if scorecard and "scorecard" not in recommendations:
+                recommendations["scorecard"] = scorecard
+            if strategy_scores and "strategy_scores" not in recommendations:
+                recommendations["strategy_scores"] = strategy_scores
+    latest_record = stage_history[-1] if stage_history else None
+    inferred_stage = (
+        planner.current_step
+        or (latest_record.get("stage") if isinstance(latest_record, dict) else None)
+        or "intake"
+    )
+    resume_token = (
+        (latest_record or {}).get("resume_token")
+        or _build_resume_token(
+            planner,
+            inferred_stage,
+            active_branch_id,
+            planner.timeline_cursor,
+        )
+    )
+    branch_lineage = (
+        (latest_record or {}).get("branch_lineage")
+        or _compose_branch_lineage_delta(planner, active_branch_id, inferred_stage)
+    )
+    mitigation_hints = guardrail_state.get("mitigation_hints") or []
+    recovery_bundle = _compose_recovery_bundle(
+        stage=inferred_stage,
+        guardrail_gate=guardrail_gate,
+        resume_token=resume_token,
+        branch_lineage=branch_lineage,
+        mitigation_hints=mitigation_hints,
+        recovery_context=guardrail_state.get("recovery"),
+    )
     return {
         "id": planner.id,
         "created_by_id": planner.created_by_id,
@@ -1844,6 +2862,7 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
         "inventory_reservations": planner.inventory_reservations,
         "guardrail_state": guardrail_state,
         "guardrail_gate": _evaluate_guardrail_gate(guardrail_state),
+        "recovery_context": guardrail_state.get("recovery"),
         "stage_timings": planner.stage_timings,
         "current_step": planner.current_step,
         "celery_task_id": planner.celery_task_id,
@@ -1856,6 +2875,10 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
         "completed_at": planner.completed_at,
         "stage_history": stage_history,
         "qc_artifacts": qc_artifacts,
+        "replay_window": compose_replay_window(planner),
+        "toolkit_recommendations": toolkit_bundle,
+        "recovery_bundle": recovery_bundle,
+        "drill_summaries": recovery_bundle.get("drill_summaries", []),
     }
 
 
@@ -1876,3 +2899,35 @@ def guardrail_status_snapshot(
         "qc_backpressure": state.get("qc_backpressure", False),
         "updated_at": planner.updated_at,
     }
+
+
+def propagate_custody_recovery(
+    db: Session,
+    execution: models.ProtocolExecution | None,
+) -> None:
+    """Synchronise custody mitigation outcomes back into linked planner sessions."""
+
+    # purpose: broadcast resolved custody escalations to planner sessions and SSE feeds
+    # inputs: db session, protocol execution ORM instance with updated guardrail state
+    # outputs: none (planner sessions refreshed and SSE events emitted)
+    if execution is None or execution.id is None:
+        return
+    sessions = (
+        db.query(models.CloningPlannerSession)
+        .filter(models.CloningPlannerSession.protocol_execution_id == execution.id)
+        .all()
+    )
+    for planner in sessions:
+        previous_gate = _evaluate_guardrail_gate(planner.guardrail_state or {})
+        snapshot = refresh_planner_guardrails(db, planner)
+        _dispatch_planner_event(
+            planner,
+            "guardrail_sync",
+            {
+                "stage": planner.current_step,
+                "execution_id": str(execution.id),
+                "recovery": snapshot.get("recovery"),
+            },
+            previous_guardrail_gate=previous_gate,
+            branch_id=planner.active_branch_id,
+        )

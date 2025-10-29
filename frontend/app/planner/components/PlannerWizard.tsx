@@ -3,14 +3,19 @@
 // purpose: cloning planner multi-stage wizard mirroring backend orchestration
 // status: experimental
 
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { GuardrailBadge } from '../../components/guardrails/GuardrailBadge'
 import { GuardrailEscalationPrompt } from '../../components/guardrails/GuardrailEscalationPrompt'
 import { GuardrailQCDecisionLoop } from '../../components/guardrails/GuardrailQCDecisionLoop'
 import { GuardrailReviewerHandoff } from '../../components/guardrails/GuardrailReviewerHandoff'
-import type { CloningPlannerSession, CloningPlannerStageTiming } from '../../types'
+import type {
+  CloningPlannerResumeToken,
+  CloningPlannerSession,
+  CloningPlannerStageTiming,
+} from '../../types'
 import { useCloningPlanner } from '../../hooks/useCloningPlanner'
+import { useSequenceToolkitPresets } from '../../hooks/useSequenceToolkitPresets'
 import { PlannerTimeline } from './PlannerTimeline'
 
 const STAGES: { key: string; label: string; description: string }[] = [
@@ -50,7 +55,22 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
   const [qcSampleId, setQcSampleId] = useState('sample-1')
   const [qcSignal, setQcSignal] = useState('12.5')
 
-  const { data: session, isLoading, events, runStage, resume, finalize, cancel, mutations } = useCloningPlanner(sessionId)
+  const {
+    data: session,
+    isLoading,
+    events,
+    replayWindow,
+    comparisonWindow,
+    latestResumeToken,
+    recoveryBundle,
+    mitigationHints,
+    runStage,
+    resume,
+    finalize,
+    cancel,
+    mutations,
+  } = useCloningPlanner(sessionId)
+  const { data: presetCatalog } = useSequenceToolkitPresets()
 
   const stageTimings = session?.stage_timings ?? {}
   const guardrailPrimer = resolveGuardrailState(session, 'primers')
@@ -67,6 +87,14 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
     ? `${custodyOverlay.open_escalations} escalation${custodyOverlay.open_escalations === 1 ? '' : 's'} open`
     : undefined
   const toolkitState = session?.guardrail_state?.toolkit as Record<string, any> | undefined
+  const toolkitPresets = useMemo(() => presetCatalog?.presets ?? [], [presetCatalog?.presets])
+  const presetOptions = useMemo(
+    () => [
+      { value: 'auto', label: 'Auto detect' },
+      ...toolkitPresets.map((preset) => ({ value: preset.preset_id, label: preset.name })),
+    ],
+    [toolkitPresets],
+  )
   const custodyTags = useMemo(() => {
     if (!custodyOverlay) return [] as string[]
     const tags: string[] = []
@@ -112,8 +140,28 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
   const resolvedPreset = primerPreset === 'auto' ? toolkitState?.preset_id ?? undefined : primerPreset
   const restrictionBestStrategy = guardrailRestriction.best_strategy as Record<string, any> | undefined
   const restrictionStrategies = (guardrailRestriction.strategy_scores as Record<string, any>[] | undefined) ?? []
-  const toolkitRecommended = (toolkitState?.recommended_use as string[] | undefined) ?? []
-  const toolkitNotes = (toolkitState?.notes as string[] | undefined) ?? []
+  const toolkitRecommended = useMemo(() => {
+    const fromState = (toolkitState?.recommended_use as string[] | undefined) ?? []
+    const selectedPreset = toolkitPresets.find((preset) => preset.preset_id === resolvedPreset)
+    if (!selectedPreset) {
+      return fromState
+    }
+    const merged = new Set<string>([...fromState, ...selectedPreset.recommended_use])
+    return Array.from(merged)
+  }, [toolkitState?.recommended_use, toolkitPresets, resolvedPreset])
+  const toolkitNotes = useMemo(() => {
+    const fromState = (toolkitState?.notes as string[] | undefined) ?? []
+    const selectedPreset = toolkitPresets.find((preset) => preset.preset_id === resolvedPreset)
+    if (!selectedPreset) {
+      return fromState
+    }
+    const merged = new Set<string>([...fromState, ...selectedPreset.notes])
+    return Array.from(merged)
+  }, [toolkitState?.notes, toolkitPresets, resolvedPreset])
+  const selectedPresetDetail = useMemo(
+    () => toolkitPresets.find((preset) => preset.preset_id === (resolvedPreset ?? '')) ?? null,
+    [toolkitPresets, resolvedPreset],
+  )
   const primerDetailParts: string[] = []
   if (typeof guardrailPrimer.primer_warnings === 'number' && guardrailPrimer.primer_warnings > 0) {
     primerDetailParts.push(`${guardrailPrimer.primer_warnings} warnings`)
@@ -181,13 +229,31 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
     }
   }
 
+  const handleResumeFromToken = useCallback(
+    async (token: CloningPlannerResumeToken) => {
+      try {
+        setFormError(null)
+        await resume({
+          step: token.checkpoint,
+          overrides: { resume_token: token },
+        })
+      } catch (error) {
+        setFormError((error as Error).message)
+      }
+    },
+    [resume],
+  )
+
   const handleResume = async () => {
-    try {
-      setFormError(null)
-      await resume({})
-    } catch (error) {
-      setFormError((error as Error).message)
+    if (!latestResumeToken) {
+      setFormError('No deterministic resume token is available yet.')
+      return
     }
+    if (recoveryBundle?.resume_ready === false) {
+      setFormError('Guardrail recovery is still active; resume is unavailable.')
+      return
+    }
+    await handleResumeFromToken(latestResumeToken)
   }
 
   const handleFinalize = async () => {
@@ -229,7 +295,19 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
               type="button"
               onClick={handleResume}
               className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-              disabled={mutations.resume.isPending || backpressureActive}
+              disabled={
+                mutations.resume.isPending ||
+                backpressureActive ||
+                !latestResumeToken ||
+                recoveryBundle?.resume_ready === false
+              }
+              title={
+                !latestResumeToken
+                  ? 'Resume tokens appear after the first checkpoint completes.'
+                  : recoveryBundle?.resume_ready === false
+                  ? 'Guardrail mitigation must complete before resuming.'
+                  : undefined
+              }
             >
               Resume pipeline
             </button>
@@ -344,8 +422,11 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
             <div className="rounded border border-slate-200 p-3">
               <h3 className="text-sm font-semibold text-slate-800">Toolkit preset</h3>
               <p className="text-xs text-slate-500">
-                {toolkitState?.preset_name || toolkitState?.preset_id || 'Auto detected'}
+                {selectedPresetDetail?.name || toolkitState?.preset_name || toolkitState?.preset_id || 'Auto detected'}
               </p>
+              {selectedPresetDetail?.description && (
+                <p className="mt-2 text-xs text-slate-500">{selectedPresetDetail.description}</p>
+              )}
               {toolkitRecommended.length > 0 && (
                 <p className="mt-2 text-xs text-slate-500">Recommended use: {toolkitRecommended.join(', ')}</p>
               )}
@@ -376,6 +457,12 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
             events={events}
             stageHistory={session.stage_history}
             activeBranchId={session.active_branch_id ?? null}
+            replayWindow={replayWindow}
+            comparisonWindow={comparisonWindow}
+            mitigationHints={mitigationHints}
+            recoveryBundle={recoveryBundle}
+            onResume={handleResumeFromToken}
+            resumePending={mutations.resume.isPending}
           />
         </div>
       </section>
@@ -397,10 +484,11 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
                 onChange={(event) => setPrimerPreset(event.target.value)}
                 className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm"
               >
-                <option value="auto">Auto detect</option>
-                <option value="multiplex">Multiplex</option>
-                <option value="qpcr">qPCR validation</option>
-                <option value="high_gc">High GC</option>
+                {presetOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="flex flex-col text-xs text-slate-600">

@@ -1,8 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, Response, UploadFile, File
 import json
 from sqlalchemy.orm import Session
 import sqlalchemy as sa
-from typing import List, Optional
+from typing import Any, List, Optional
 import csv
 import io
 from uuid import UUID
@@ -11,6 +11,7 @@ from datetime import datetime
 from ..database import get_db
 from ..auth import get_current_user
 from .. import models, schemas, pubsub, search, barcodes, audit
+from ..services import sample_governance
 from ..rbac import check_team_role, ensure_item_access
 
 
@@ -143,15 +144,18 @@ async def get_facets(
         team_ids = [t.id for t in db.query(models.Team.id).all()]
     # Get all item types from the table
     all_types = db.query(models.ItemType).order_by(models.ItemType.name).all()
-    # Count usage for each type
+    # Count usage for each type scoped to the user's visibility
     type_counts = dict(
-        db.query(models.InventoryItem.item_type, sa.func.count())
+        query.with_entities(models.InventoryItem.item_type, sa.func.count())
         .group_by(models.InventoryItem.item_type)
         .all()
     )
+    observed_keys = {key for key in type_counts.keys() if key}
+    declared_keys = {it.name for it in all_types}
+    combined_keys = sorted(declared_keys | observed_keys)
     item_types = [
-        schemas.FacetCount(key=it.name, count=type_counts.get(it.name, 0))
-        for it in all_types
+        schemas.FacetCount(key=key, count=type_counts.get(key, 0))
+        for key in combined_keys
     ]
     statuses = (
         query.with_entities(models.InventoryItem.status, sa.func.count())
@@ -196,12 +200,49 @@ async def export_items(
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail=(
-            "Inventory exports now require DNA asset governance packaging. "
-            "Initiate an approved narrative export or asset release to retrieve inventory dossiers."
-        ),
+    query = db.query(models.InventoryItem)
+    if not user.is_admin:
+        team_ids = [m.team_id for m in user.teams]
+        query = query.filter(
+            (models.InventoryItem.owner_id == user.id)
+            | (models.InventoryItem.team_id.in_(team_ids))
+        )
+    items = query.order_by(models.InventoryItem.created_at.asc()).all()
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "id",
+            "item_type",
+            "name",
+            "status",
+            "barcode",
+            "team_id",
+            "owner_id",
+            "created_at",
+        ]
+    )
+    for item in items:
+        writer.writerow(
+            [
+                str(item.id),
+                item.item_type,
+                item.name,
+                item.status,
+                item.barcode or "",
+                str(item.team_id) if item.team_id else "",
+                str(item.owner_id) if item.owner_id else "",
+                item.created_at.isoformat() if item.created_at else "",
+            ]
+        )
+
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": "attachment; filename=inventory_export.csv"
+        },
     )
 
 
@@ -515,3 +556,90 @@ async def create_item_type(
     db.commit()
     db.refresh(db_type)
     return db_type
+
+
+@router.get(
+    "/samples",
+    response_model=List[schemas.InventorySampleSummary],
+)
+async def list_samples(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    team_ids = [membership.team_id for membership in user.teams]
+    query = db.query(models.InventoryItem)
+    if not user.is_admin:
+        query = query.filter(
+            (models.InventoryItem.owner_id == user.id)
+            | (models.InventoryItem.team_id.in_(team_ids))
+        )
+    query = query.filter(
+        sa.or_(
+            models.InventoryItem.custody_state.isnot(None),
+            sa.func.lower(models.InventoryItem.item_type).like("sample%"),
+        )
+    )
+    items = query.order_by(models.InventoryItem.updated_at.desc()).all()
+    return [_serialize_sample_summary(item) for item in items]
+
+
+@router.get(
+    "/items/{item_id}/custody",
+    response_model=schemas.SampleDetail,
+)
+async def get_sample_detail(
+    item_id: str,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    item = await get_item_and_check_permission(item_id, db=db, user=user)
+    team_scope = [membership.team_id for membership in user.teams]
+    logs = sample_governance.fetch_custody_logs(
+        db, inventory_item_id=item.id, limit=50
+    )
+    escalations = sample_governance.list_custody_escalations(
+        db,
+        inventory_item_id=item.id,
+        team_scope=team_scope,
+    )
+    summary = _serialize_sample_summary(item)
+    return schemas.SampleDetail(
+        item=summary,
+        recent_logs=logs,
+        escalations=escalations,
+    )
+
+
+def _serialize_sample_summary(item: models.InventoryItem) -> schemas.InventorySampleSummary:
+    snapshot = item.custody_snapshot or {}
+    guardrail_flags = snapshot.get("guardrail_flags") or []
+    planner_ids = _coerce_uuid_list(snapshot.get("planner_session_ids"))
+    asset_version_ids = _coerce_uuid_list(snapshot.get("asset_version_ids"))
+    open_escalations = int(snapshot.get("open_escalations") or 0)
+    return schemas.InventorySampleSummary(
+        id=item.id,
+        name=item.name,
+        item_type=item.item_type,
+        team_id=item.team_id,
+        custody_state=item.custody_state,
+        custody_snapshot=snapshot,
+        guardrail_flags=[str(flag) for flag in guardrail_flags],
+        linked_planner_session_ids=planner_ids,
+        linked_asset_version_ids=asset_version_ids,
+        open_escalations=open_escalations,
+        updated_at=item.updated_at,
+    )
+
+
+def _coerce_uuid_list(raw: Any) -> list[UUID]:
+    values: list[UUID] = []
+    if not raw:
+        return values
+    if not isinstance(raw, (list, tuple, set)):
+        return values
+    for value in raw:
+        try:
+            values.append(UUID(str(value)))
+        except Exception:
+            continue
+    return values
