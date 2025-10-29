@@ -169,6 +169,9 @@ class DNAViewerAnalytics(BaseModel):
     codon_usage: dict[str, float] = Field(default_factory=dict)
     gc_skew: List[float] = Field(default_factory=list)
     thermodynamic_risk: dict[str, Any] = Field(default_factory=dict)
+    translation_frames: dict[str, Any] = Field(default_factory=dict)
+    codon_adaptation_index: float = 0.0
+    motif_hotspots: List[dict[str, Any]] = Field(default_factory=list)
 
 
 class DNAViewerTrack(BaseModel):

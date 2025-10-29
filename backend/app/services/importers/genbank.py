@@ -45,6 +45,7 @@ def _segment_map(location: Any) -> list[dict[str, int]]:
                 "strand": strand,
             }
         )
+    segments.sort(key=lambda value: value["start"])
     return segments
 
 
@@ -60,6 +61,9 @@ def _normalise_provenance_tags(feature: SeqFeature) -> list[str]:
         "experiment",
         "regulatory_class",
         "source",
+        "protein_id",
+        "function",
+        "bound_moiety",
     }
     tags: set[str] = set()
     feature_type = feature.type or ""
@@ -77,9 +81,14 @@ def _normalise_provenance_tags(feature: SeqFeature) -> list[str]:
             text = str(value).strip()
             if not text:
                 continue
-            if key == "note" and ":" in text:
-                _, _, remainder = text.partition(":")
-                text = remainder.strip() or text
+            if key == "note":
+                if ":" in text:
+                    _, _, remainder = text.partition(":")
+                    text = remainder.strip() or text
+                fragments = [fragment.strip() for fragment in text.split(";") if fragment.strip()]
+                if fragments:
+                    tags.update(fragment.lower() for fragment in fragments)
+                    continue
             tags.add(text.lower())
     return sorted(tags)
 

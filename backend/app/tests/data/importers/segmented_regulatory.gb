@@ -1,0 +1,26 @@
+LOCUS       SEGREG       120 bp    DNA     linear SYN 01-JAN-2024
+DEFINITION  Multi-segment importer fixture with regulatory metadata.
+ACCESSION   SEG0001
+VERSION     SEG0001.1
+SOURCE      Synthetic construct
+  ORGANISM  Synthetic construct
+FEATURES             Location/Qualifiers
+     source          1..120
+                     /organism="Synthetic construct"
+     CDS             join(11..20,41..60)
+                     /label="segmented_protein"
+                     /note="segmented protein"
+                     /experiment="northern blot"
+                     /gene="segP"
+     regulatory      61..90
+                     /label="promoter_region"
+                     /regulatory_class="promoter"
+                     /note="sigma70 promoter"
+     misc_binding    complement(join(91..95,101..110))
+                     /label="operator_site"
+                     /note="repressor binding"
+                     /locus_tag="op_tag"
+ORIGIN
+        1 atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc
+       61 atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc
+//
