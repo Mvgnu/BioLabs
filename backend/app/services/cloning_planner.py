@@ -6,15 +6,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
+from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
-import json
 from uuid import UUID
 
 from celery import chain
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from .. import models
+from .. import models, pubsub, storage
 from ..analytics.governance import invalidate_governance_analytics_cache
 from ..database import SessionLocal
 from ..schemas.sequence_toolkit import SequenceToolkitProfile
@@ -25,6 +29,155 @@ from . import qc_ingestion
 
 DEFAULT_TOOLKIT_PROFILE = SequenceToolkitProfile()
 
+
+def _json_default(value: Any) -> Any:
+    """Normalise complex values for JSON serialisation."""
+
+    # purpose: ensure planner payload persistence tolerates datetime objects
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
+def _persist_stage_payload(
+    planner: models.CloningPlannerSession,
+    step: str,
+    payload: Any,
+) -> tuple[str | None, dict[str, Any]]:
+    """Persist a stage payload to durable storage returning metadata."""
+
+    # purpose: offload large stage payloads to object storage with integrity metadata
+    # inputs: planner ORM instance, stage name, arbitrary payload
+    # outputs: tuple of storage path (or None) and payload metadata summary
+    # status: experimental
+    if payload in (None, {}, []):
+        return None, {"size_bytes": 0, "content_type": None}
+    data = json.dumps(payload, default=_json_default, sort_keys=True).encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    path, size = storage.save_binary_payload(
+        data,
+        f"{step}_payload.json",
+        namespace=f"cloning_planner/{planner.id}/{step}",
+        content_type="application/json",
+    )
+    return path, {
+        "size_bytes": size,
+        "content_type": "application/json",
+        "sha256": digest,
+    }
+
+
+def _derive_stage_metrics(
+    step: str,
+    guardrail_snapshot: dict[str, Any] | None,
+    payload: Any,
+) -> dict[str, Any]:
+    """Derive lightweight metrics for stage checkpoints."""
+
+    # purpose: store summary metrics aiding governance dashboards and resume flows
+    metrics: dict[str, Any] = {}
+    guardrail_snapshot = guardrail_snapshot or {}
+    if step == "primers":
+        metrics["primer_sets"] = guardrail_snapshot.get("primer_sets")
+        metrics["primer_warnings"] = guardrail_snapshot.get("primer_warnings")
+    elif step == "restriction":
+        metrics["restriction_alerts"] = len(guardrail_snapshot.get("restriction_alerts", []))
+        metrics["buffer_count"] = len(guardrail_snapshot.get("buffers", []))
+    elif step == "assembly":
+        metrics["assembly_success"] = guardrail_snapshot.get("assembly_success")
+        metrics["ligation_profiles"] = guardrail_snapshot.get("ligation_profiles", [])
+    elif step == "qc":
+        metrics["qc_checks"] = guardrail_snapshot.get("qc_checks")
+        metrics["breach_count"] = len(guardrail_snapshot.get("breaches", []))
+    if payload and isinstance(payload, dict):
+        metrics.setdefault("payload_keys", sorted(payload.keys()))
+    return metrics
+
+
+def _parse_stage_timestamp(entry: dict[str, Any], key: str) -> datetime | None:
+    """Parse ISO8601 timestamps from stage timing entries."""
+
+    # purpose: keep stage history timestamps consistent and timezone-aware
+    raw_value = entry.get(key)
+    if not raw_value:
+        return None
+    try:
+        return datetime.fromisoformat(str(raw_value))
+    except ValueError:
+        return None
+
+
+def _persist_stage_record(
+    db: Session,
+    planner: models.CloningPlannerSession,
+    *,
+    step: str,
+    status: str,
+    guardrail_snapshot: dict[str, Any],
+    payload: Any,
+    task_id: str | None,
+    error: str | None,
+) -> models.CloningPlannerStageRecord:
+    """Persist history entries for planner stages."""
+
+    # purpose: durably record stage outputs, retries, and storage handles
+    timings = dict(planner.stage_timings or {})
+    timing_entry = dict(timings.get(step) or {})
+    attempt_count = (
+        db.query(func.count(models.CloningPlannerStageRecord.id))
+        .filter(
+            models.CloningPlannerStageRecord.session_id == planner.id,
+            models.CloningPlannerStageRecord.stage == step,
+        )
+        .scalar()
+    ) or 0
+    retries = int(timing_entry.get("retries", 0) or 0)
+    payload_path, payload_meta = _persist_stage_payload(planner, step, payload)
+    metrics = _derive_stage_metrics(step, guardrail_snapshot, payload)
+    record = models.CloningPlannerStageRecord(
+        session=planner,
+        stage=step,
+        status=status,
+        attempt=attempt_count,
+        retry_count=retries,
+        task_id=task_id,
+        payload_path=payload_path,
+        payload_metadata=payload_meta,
+        guardrail_snapshot=guardrail_snapshot,
+        metrics=metrics,
+        review_state={},
+        started_at=_parse_stage_timestamp(timing_entry, "started_at"),
+        completed_at=_parse_stage_timestamp(timing_entry, "completed_at"),
+        error=error,
+    )
+    db.add(record)
+    db.flush()
+    return record
+
+
+def _dispatch_planner_event(
+    planner: models.CloningPlannerSession,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    """Publish planner orchestration updates over the pub/sub channel."""
+
+    # purpose: expose real-time orchestration state to UI clients via Redis pub/sub
+    message = {
+        "type": event_type,
+        "session_id": str(planner.id),
+        "status": planner.status,
+        "current_step": planner.current_step,
+        "guardrail_state": compose_guardrail_state(planner),
+        "payload": payload,
+        "timestamp": _utcnow().isoformat(),
+    }
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(pubsub.publish_planner_event(str(planner.id), message))
+        return
+    loop.create_task(pubsub.publish_planner_event(str(planner.id), message))
 
 def _merge_guardrail_state(
     planner: models.CloningPlannerSession, updates: dict[str, Any]
@@ -217,6 +370,11 @@ def create_session(
     db.add(record)
     db.flush()
     db.refresh(record)
+    _dispatch_planner_event(
+        record,
+        "session_created",
+        {"stage": "intake", "status": "intake_recorded"},
+    )
     return record
 
 
@@ -342,7 +500,7 @@ def run_qc_checks(
     # outputs: updated planner with qc payload and guardrail snapshot
     # status: experimental
     profile = DEFAULT_TOOLKIT_PROFILE
-    ingestion = qc_ingestion.ingest_chromatograms(chromatograms)
+    ingestion = qc_ingestion.ingest_chromatograms(db, planner, chromatograms)
     qc_payload = sequence_toolkit.evaluate_qc_reports(
         planner.assembly_plan,
         config=profile,
@@ -364,6 +522,7 @@ def run_qc_checks(
         status=status,
         guardrail_state=guardrail_state,
         task_id=task_id,
+        artifacts=ingestion.get("records"),
     )
 
 
@@ -447,6 +606,11 @@ def _mark_stage_started(
     planner.updated_at = now
     db.add(planner)
     db.flush()
+    _dispatch_planner_event(
+        planner,
+        "stage_started",
+        {"stage": stage, "task_id": task_id},
+    )
     return planner
 
 
@@ -480,7 +644,22 @@ def _record_stage_failure(
     if task_id is not None:
         planner.celery_task_id = task_id
     db.add(planner)
+    record = _persist_stage_record(
+        db,
+        planner,
+        step=stage,
+        status=f"{stage}_errored",
+        guardrail_snapshot={},
+        payload={},
+        task_id=task_id,
+        error=str(exc),
+    )
     db.commit()
+    _dispatch_planner_event(
+        planner,
+        "stage_failed",
+        {"stage": stage, "error": str(exc), "record_id": str(record.id)},
+    )
 
 
 def _complete_pipeline_stage(
@@ -517,8 +696,23 @@ def _complete_pipeline_stage(
     if status == "qc_guardrail_blocked":
         invalidate_governance_analytics_cache(execution_ids=[planner.id])
     db.add(planner)
+    record = _persist_stage_record(
+        db,
+        planner,
+        step="finalize",
+        status=status,
+        guardrail_snapshot=guardrails,
+        payload=guardrails,
+        task_id=task_id,
+        error=None,
+    )
     db.flush()
     db.refresh(planner)
+    _dispatch_planner_event(
+        planner,
+        "stage_completed",
+        {"stage": "finalize", "record_id": str(record.id), "status": status},
+    )
     return planner
 
 
@@ -813,6 +1007,7 @@ def record_stage_progress(
     guardrail_state: dict[str, Any] | None = None,
     task_id: str | None = None,
     error: str | None = None,
+    artifacts: Sequence[models.CloningPlannerQCArtifact] | None = None,
 ) -> models.CloningPlannerSession:
     """Persist outputs for a planner stage and advance state tracking."""
 
@@ -877,13 +1072,36 @@ def record_stage_progress(
     planner.updated_at = now
     if next_step:
         planner.current_step = next_step
-    if status:
-        planner.status = status
-        if status in {"finalized", "completed"}:
+    resolved_status = status or f"{step}_completed"
+    planner.status = resolved_status
+    if resolved_status in {"finalized", "completed"}:
             planner.completed_at = now
     db.add(planner)
+    stage_guardrail = guardrail_snapshot.get(step)
+    record = _persist_stage_record(
+        db,
+        planner,
+        step=step,
+        status=resolved_status,
+        guardrail_snapshot=stage_guardrail if isinstance(stage_guardrail, dict) else {},
+        payload=payload,
+        task_id=task_id,
+        error=error,
+    )
+    if artifacts:
+        qc_ingestion.attach_artifacts_to_stage(db, artifacts, record)
     db.flush()
     db.refresh(planner)
+    _dispatch_planner_event(
+        planner,
+        "stage_completed",
+        {
+            "stage": step,
+            "status": resolved_status,
+            "record_id": str(record.id),
+            "task_id": task_id,
+        },
+    )
     return planner
 
 
@@ -907,9 +1125,70 @@ def finalize_session(
     planner.completed_at = now
     planner.updated_at = now
     db.add(planner)
+    record = _persist_stage_record(
+        db,
+        planner,
+        step="finalize",
+        status="finalized",
+        guardrail_snapshot=planner.guardrail_state or {},
+        payload=planner.guardrail_state or {},
+        task_id=None,
+        error=None,
+    )
     db.flush()
     db.refresh(planner)
+    _dispatch_planner_event(
+        planner,
+        "session_finalized",
+        {"stage": "finalize", "record_id": str(record.id), "status": "finalized"},
+    )
     return planner
+
+
+def _serialise_stage_record(record: models.CloningPlannerStageRecord) -> dict[str, Any]:
+    """Convert a stage record ORM instance into serialisable metadata."""
+
+    # purpose: surface durable checkpoint lineage for UI consumers
+    return {
+        "id": record.id,
+        "stage": record.stage,
+        "attempt": record.attempt,
+        "retry_count": record.retry_count,
+        "status": record.status,
+        "task_id": record.task_id,
+        "payload_path": record.payload_path,
+        "payload_metadata": record.payload_metadata,
+        "guardrail_snapshot": record.guardrail_snapshot,
+        "metrics": record.metrics,
+        "review_state": record.review_state,
+        "started_at": record.started_at,
+        "completed_at": record.completed_at,
+        "error": record.error,
+        "created_at": record.created_at,
+        "updated_at": record.updated_at,
+    }
+
+
+def _serialise_qc_artifact(artifact: models.CloningPlannerQCArtifact) -> dict[str, Any]:
+    """Convert QC artifact ORM rows into API payloads."""
+
+    # purpose: expose QC ingestion lineage, guardrail thresholds, and reviewer loops
+    return {
+        "id": artifact.id,
+        "artifact_name": artifact.artifact_name,
+        "sample_id": artifact.sample_id,
+        "trace_path": artifact.trace_path,
+        "storage_path": artifact.storage_path,
+        "metrics": artifact.metrics,
+        "thresholds": artifact.thresholds,
+        "stage_record_id": artifact.stage_record_id,
+        "reviewer_id": artifact.reviewer_id,
+        "reviewer_decision": artifact.reviewer_decision,
+        "reviewer_notes": artifact.reviewer_notes,
+        "reviewed_at": artifact.reviewed_at,
+        "created_at": artifact.created_at,
+        "updated_at": artifact.updated_at,
+    }
 
 
 def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
@@ -919,6 +1198,14 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
     # inputs: CloningPlannerSession ORM instance
     # outputs: dictionary for JSON responses
     # status: experimental
+    stage_history = [
+        _serialise_stage_record(record)
+        for record in sorted(planner.stage_history or [], key=lambda item: item.created_at or datetime.min)
+    ]
+    qc_artifacts = [
+        _serialise_qc_artifact(artifact)
+        for artifact in sorted(planner.qc_artifacts or [], key=lambda item: item.created_at or datetime.min)
+    ]
     return {
         "id": planner.id,
         "created_by_id": planner.created_by_id,
@@ -938,4 +1225,6 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
         "created_at": planner.created_at,
         "updated_at": planner.updated_at,
         "completed_at": planner.completed_at,
+        "stage_history": stage_history,
+        "qc_artifacts": qc_artifacts,
     }

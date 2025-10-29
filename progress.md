@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2025-07-12
+- Productionised cloning planner orchestration with durable stage history via `cloning_planner_stage_records`, QC artifact persistence, and Redis-backed streaming events.
+- Added QC ingestion storage and reviewer loop helpers that persist chromatogram traces, thresholds, and reviewer metadata linked to planner checkpoints.
+- Delivered planner event streaming endpoint plus pytest coverage validating stage history snapshots, QC artifact lineage, and SSE progress notifications.
+
 ## 2025-07-11
 - Landed DNA asset lifecycle foundation: Alembic migration `20241010_02_dna_asset_lifecycle`, SQLAlchemy models, and FastAPI routes exposing create/list/version/diff/guardrail workflows.
 - Expanded `sequence_toolkit` with configuration schemas, reusable sequence metrics, and diff utilities to support cloning planner and DNA assets.

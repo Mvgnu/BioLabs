@@ -1363,6 +1363,96 @@ class CloningPlannerSession(Base):
     completed_at = Column(DateTime)
 
     created_by = relationship("User")
+    stage_history = relationship(
+        "CloningPlannerStageRecord",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="CloningPlannerStageRecord.created_at",
+    )
+    qc_artifacts = relationship(
+        "CloningPlannerQCArtifact",
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="CloningPlannerQCArtifact.created_at",
+    )
+
+
+class CloningPlannerStageRecord(Base):
+    """Durable record of cloning planner stage checkpoints."""
+
+    # purpose: persist stage payload metadata, guardrail snapshots, and retries
+    # status: experimental
+    __tablename__ = "cloning_planner_stage_records"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("cloning_planner_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stage = Column(String, nullable=False)
+    attempt = Column(Integer, nullable=False, default=0)
+    retry_count = Column(Integer, nullable=False, default=0)
+    status = Column(String, nullable=False)
+    task_id = Column(String)
+    payload_path = Column(String)
+    payload_metadata = Column(JSON, default=dict, nullable=False)
+    guardrail_snapshot = Column(JSON, default=dict, nullable=False)
+    metrics = Column(JSON, default=dict, nullable=False)
+    review_state = Column(JSON, default=dict, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    error = Column(Text)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    session = relationship("CloningPlannerSession", back_populates="stage_history")
+
+
+class CloningPlannerQCArtifact(Base):
+    """Stored QC chromatogram artifacts tied to planner sessions."""
+
+    # purpose: retain QC files, derived metrics, and reviewer outcomes for guardrail loops
+    # status: experimental
+    __tablename__ = "cloning_planner_qc_artifacts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("cloning_planner_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    stage_record_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("cloning_planner_stage_records.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    artifact_name = Column(String)
+    sample_id = Column(String)
+    trace_path = Column(String)
+    storage_path = Column(String)
+    metrics = Column(JSON, default=dict, nullable=False)
+    thresholds = Column(JSON, default=dict, nullable=False)
+    reviewer_decision = Column(String)
+    reviewer_notes = Column(Text)
+    reviewer_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    reviewed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    session = relationship("CloningPlannerSession", back_populates="qc_artifacts")
+    stage_record = relationship("CloningPlannerStageRecord")
+    reviewer = relationship("User")
 
 
 class Project(Base):
