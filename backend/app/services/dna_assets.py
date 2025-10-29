@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
@@ -146,6 +147,38 @@ def _normalize_sequence(sequence: str) -> str:
     return (sequence or "").upper().replace("U", "T")
 
 
+_DEFAULT_CAI_REFERENCE: dict[str, float] = {
+    codon: (1.0 if codon.endswith(("G", "C")) else 0.78)
+    for codon, amino_acid in _CODON_TABLE.items()
+    if amino_acid != "*"
+}
+_DEFAULT_CAI_REFERENCE.update(
+    {
+        "ATG": 0.95,
+        "TTG": 0.82,
+        "CTG": 1.0,
+        "ATA": 0.7,
+        "ATT": 0.75,
+        "ATC": 0.9,
+        "TTA": 0.68,
+        "CTA": 0.7,
+        "TGT": 0.85,
+        "TGC": 0.95,
+        "TGG": 0.95,
+        "AGG": 0.72,
+        "AGA": 0.7,
+    }
+)
+
+
+_MOTIF_LIBRARY: list[dict[str, str]] = [
+    {"name": "tata_box", "sequence": "TATAAT"},
+    {"name": "pribnow_minus_35", "sequence": "TTGACA"},
+    {"name": "gc_clamp", "sequence": "CCGCGG"},
+    {"name": "rho_independent_core", "sequence": "GCCGCC"},
+]
+
+
 def _reverse_complement(sequence: str) -> str:
     table = str.maketrans("ACGTN", "TGCAN")
     return _normalize_sequence(sequence).translate(table)[::-1]
@@ -207,6 +240,110 @@ def _compute_gc_skew(sequence: str, *, window_size: int | None = None) -> list[f
             skew = (g - c) / (g + c)
         skews.append(round(skew, 4))
     return skews
+
+
+def _compute_translation_frame_summary(
+    translations: Sequence[DNAViewerTranslation],
+) -> dict[str, Any]:
+    """Summarise translation frames represented in the viewer payload."""
+
+    # purpose: expose frame utilisation metrics for analytics overlays
+    frame_counts: dict[str, int] = {
+        "+1": 0,
+        "+2": 0,
+        "+3": 0,
+        "-1": 0,
+        "-2": 0,
+        "-3": 0,
+    }
+    active_labels: set[str] = set()
+    for translation in translations:
+        key = f"{translation.frame:+d}"
+        frame_counts[key] = frame_counts.get(key, 0) + 1
+        if translation.amino_acids:
+            active_labels.add(translation.label)
+    total = sum(frame_counts.values())
+    utilisation = {
+        frame: round(count / total, 4) if total else 0.0
+        for frame, count in frame_counts.items()
+    }
+    return {
+        "counts": frame_counts,
+        "utilisation": utilisation,
+        "active_labels": sorted(active_labels),
+    }
+
+
+def _compute_codon_adaptation_index(
+    sequence: str, *, reference: dict[str, float] | None = None
+) -> float:
+    """Estimate codon adaptation index using a reference preference table."""
+
+    # purpose: offer governance-aligned codon adaptation heuristics for overlays
+    normalised = _normalize_sequence(sequence)
+    if len(normalised) < 3:
+        return 0.0
+    reference = reference or _DEFAULT_CAI_REFERENCE
+    weights: list[float] = []
+    for index in range(0, len(normalised) - 2, 3):
+        codon = normalised[index : index + 3]
+        if len(codon) < 3:
+            continue
+        amino_acid = _CODON_TABLE.get(codon)
+        if not amino_acid or amino_acid == "*":
+            continue
+        weight = reference.get(codon)
+        if weight is None:
+            amino_acid_codons = [
+                candidate
+                for candidate, aa in _CODON_TABLE.items()
+                if aa == amino_acid and reference.get(candidate)
+            ]
+            if amino_acid_codons:
+                weight = max(reference[candidate] for candidate in amino_acid_codons)
+        if weight is None or weight <= 0:
+            continue
+        weights.append(weight)
+    if not weights:
+        return 0.0
+    log_sum = sum(math.log(weight) for weight in weights)
+    return round(math.exp(log_sum / len(weights)), 4)
+
+
+def _find_motif_hotspots(sequence: str) -> list[dict[str, Any]]:
+    """Locate motif occurrences used for risk-aware viewer overlays."""
+
+    # purpose: surface promoter/terminator motifs for governance breadcrumbs
+    normalised = _normalize_sequence(sequence)
+    if not normalised:
+        return []
+    findings: list[dict[str, Any]] = []
+    for motif in _MOTIF_LIBRARY:
+        motif_sequence = motif["sequence"]
+        length = len(motif_sequence)
+        reverse = _reverse_complement(motif_sequence)
+        for index in range(0, len(normalised) - length + 1):
+            window = normalised[index : index + length]
+            if window == motif_sequence:
+                findings.append(
+                    {
+                        "motif": motif["name"],
+                        "start": index + 1,
+                        "end": index + length,
+                        "strand": 1,
+                    }
+                )
+            if reverse != motif_sequence and window == reverse:
+                findings.append(
+                    {
+                        "motif": motif["name"],
+                        "start": index + 1,
+                        "end": index + length,
+                        "strand": -1,
+                    }
+                )
+    findings.sort(key=lambda item: (item["start"], item["strand"]))
+    return findings
 
 
 def _find_homopolymer_runs(sequence: str, *, minimum: int = 6) -> list[dict[str, Any]]:
@@ -290,6 +427,15 @@ def _compute_thermodynamic_risk(
     primer_warnings = primer_summary.get("primer_warnings", 0)
     max_gc_skew = max((abs(value) for value in gc_skew or []), default=0.0)
     overall_state = "ok"
+    mitigations: list[str] = []
+    if homopolymers:
+        mitigations.append("Introduce sequence edits or primer offsets to disrupt homopolymer runs.")
+    if gc_hotspots:
+        mitigations.append("Adjust annealing conditions or re-design fragments to diffuse GC hotspots.")
+    if primer_warnings:
+        mitigations.append("Review primer design heuristics and resolve flagged thermodynamic warnings.")
+    if max_gc_skew >= 0.4:
+        mitigations.append("Balance GC distribution or lengthen synthesis fragments to dampen skew extremes.")
     if homopolymers or gc_hotspots or primer_warnings or max_gc_skew >= 0.4:
         overall_state = "review"
     return {
@@ -299,6 +445,7 @@ def _compute_thermodynamic_risk(
         "primer_warnings": primer_warnings,
         "max_gc_skew": max_gc_skew,
         "overall_state": overall_state,
+        "mitigations": mitigations,
     }
 
 
@@ -1025,6 +1172,7 @@ def build_viewer_payload(
     guardrails = version_out.guardrail_heuristics
     tracks = _build_viewer_tracks(version_out, guardrails)
     translations = _generate_translations(latest.sequence, tracks[0].features)
+    frame_summary = _compute_translation_frame_summary(translations)
     topology = (
         (asset.meta or {}).get("topology")
         or (latest.meta or {}).get("topology")
@@ -1035,12 +1183,17 @@ def build_viewer_payload(
     if compare_to is not None:
         diff = diff_versions(compare_to, latest)
     gc_skew = _compute_gc_skew(latest.sequence)
+    cai = _compute_codon_adaptation_index(latest.sequence)
+    motif_hotspots = _find_motif_hotspots(latest.sequence)
     analytics = DNAViewerAnalytics(
         codon_usage=_compute_codon_usage(latest.sequence),
         gc_skew=gc_skew,
         thermodynamic_risk=_compute_thermodynamic_risk(
             latest.sequence, guardrails, gc_skew=gc_skew
         ),
+        translation_frames=frame_summary,
+        codon_adaptation_index=cai,
+        motif_hotspots=motif_hotspots,
     )
     return DNAViewerPayload(
         asset=asset_summary,

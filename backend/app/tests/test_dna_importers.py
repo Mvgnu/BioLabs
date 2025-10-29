@@ -27,7 +27,7 @@ def test_load_genbank_normalises_annotations():
 
 
 def test_load_genbank_multi_segment_and_provenance_tags():
-    content = FIXTURE_DIR.joinpath("multisegment.gb").read_bytes()
+    content = FIXTURE_DIR.joinpath("segmented_regulatory.gb").read_bytes()
     result = load_genbank(content)
 
     payload = result.to_asset_payload()
@@ -35,11 +35,18 @@ def test_load_genbank_multi_segment_and_provenance_tags():
         ann for ann in payload.annotations if ann.feature_type.lower() == "regulatory"
     )
     cds = next(ann for ann in payload.annotations if ann.feature_type.lower() == "cds")
+    operator = next(ann for ann in payload.annotations if ann.label == "operator_site")
 
     assert len(cds.segments) == 2
-    assert cds.segments[0].start == 31
+    assert cds.segments[0].start == 11
+    assert cds.segments[1].strand == 1
+    assert cds.qualifiers["experiment"] == "northern blot"
     assert "segmented protein" in cds.provenance_tags
     assert any(tag.endswith("promoter") for tag in regulatory.provenance_tags)
+    assert regulatory.qualifiers["regulatory_class"] == "promoter"
+    assert len(operator.segments) == 2
+    assert operator.segments[0].strand == -1
+    assert "repressor binding" in operator.provenance_tags
 
 
 def test_load_sbol_generates_tracks():
@@ -104,3 +111,7 @@ def test_build_viewer_payload_tracks_and_translations(viewer_asset):
     assert payload.analytics.codon_usage
     assert payload.analytics.gc_skew
     assert payload.analytics.thermodynamic_risk["overall_state"] in {"ok", "review"}
+    assert payload.analytics.translation_frames["counts"]["+1"] >= 0
+    assert payload.analytics.codon_adaptation_index >= 0.0
+    assert isinstance(payload.analytics.motif_hotspots, list)
+    assert "mitigations" in payload.analytics.thermodynamic_risk

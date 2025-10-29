@@ -271,6 +271,18 @@ export interface DNAViewerAnalytics {
   codon_usage: Record<string, number>
   gc_skew: number[]
   thermodynamic_risk: Record<string, any>
+  translation_frames: {
+    counts: Record<string, number>
+    utilisation: Record<string, number>
+    active_labels: string[]
+  }
+  codon_adaptation_index: number
+  motif_hotspots: Array<{
+    motif: string
+    start: number
+    end: number
+    strand: number
+  }>
 }
 
 export interface DNAViewerPayload {

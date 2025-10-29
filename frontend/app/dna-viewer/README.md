@@ -9,7 +9,7 @@ experimental
 ## architecture
 - `hooks/useDNAViewer.ts` hydrates viewer payloads via `/api/dna-assets/{asset_id}/viewer`, caching responses with React Query and supporting optional comparison versions.
 - `components/CircularGenome.tsx` and `components/LinearTrack.tsx` provide circular and linear renderers with guardrail-aware styling.
-- `components/DNAViewerSummary.tsx` orchestrates the layout, showing kinetics, guardrail states, analytics overlays (codon usage, GC skew, thermodynamic risk), translations, and diff metrics behind a user-controlled analytics toggle.
+- `components/DNAViewerSummary.tsx` orchestrates the layout, showing kinetics, guardrail states, analytics overlays (codon usage, GC skew, thermodynamic risk with mitigation guidance, translation frame utilisation, codon adaptation index, and motif hotspots), translations, and diff metrics behind a user-controlled analytics toggle.
 - Route `dna-viewer/[assetId]/page.tsx` wires the hook and summary component together with comparison controls and empty-state messaging.
 
 ## integration notes
