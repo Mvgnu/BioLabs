@@ -15,6 +15,7 @@ const sessionFixture = (): CloningPlannerSession => ({
   created_by_id: 'user-1',
   status: 'ready_for_finalize',
   assembly_strategy: 'gibson',
+  protocol_execution_id: null,
   input_sequences: [{ name: 'vector', sequence: 'ATGC', metadata: { length: 4 } }],
   primer_set: { primers: [] },
   restriction_digest: { digests: [] },
@@ -27,6 +28,7 @@ const sessionFixture = (): CloningPlannerSession => ({
     assembly: { assembly_state: 'ok', ligations: [], metadata_tags: [] },
     qc: { qc_state: 'review', breaches: [{ metric: 'snr', value: 9.4 }], metadata_tags: [] },
   },
+  guardrail_gate: { active: false, reasons: [] },
   stage_timings: {
     primers: { status: 'primers_complete', retries: 1 },
     restriction: { status: 'restriction_running' },
@@ -83,8 +85,9 @@ const createHookReturn = () => {
   const resume = vi.fn()
   const finalize = vi.fn()
   const cancel = vi.fn()
+  const session = sessionFixture()
   mockedUseCloningPlanner.mockReturnValue({
-    data: sessionFixture(),
+    data: session,
     isLoading: false,
     events: [
       {
@@ -93,6 +96,7 @@ const createHookReturn = () => {
         status: 'ready_for_finalize',
         current_step: 'restriction',
         payload: { stage: 'primers' },
+        guardrail_gate: session.guardrail_gate,
         timestamp: '2024-01-01T00:00:00.000Z',
       },
     ],
@@ -133,13 +137,14 @@ describe('PlannerWizard', () => {
     render(<PlannerWizard sessionId="planner-1" />)
 
     const primerForm = screen.getAllByTestId('primer-stage-form')[0]
+    fireEvent.change(within(primerForm).getByLabelText('Primer preset'), { target: { value: 'multiplex' } })
     fireEvent.change(within(primerForm).getByLabelText('Target Tm (°C)'), { target: { value: '62' } })
     fireEvent.change(within(primerForm).getByLabelText('Product size min'), { target: { value: '90' } })
     fireEvent.change(within(primerForm).getByLabelText('Product size max'), { target: { value: '120' } })
     fireEvent.submit(primerForm)
 
     expect(runStage).toHaveBeenCalledWith('primers', {
-      payload: { target_tm: 62, product_size_range: [90, 120] },
+      payload: { target_tm: 62, product_size_range: [90, 120], preset_id: 'multiplex' },
     })
   })
 
@@ -150,6 +155,45 @@ describe('PlannerWizard', () => {
     const qcLoop = screen.getAllByTestId('guardrail-qc-loop')[0]
     expect(qcLoop).toBeTruthy()
     expect(within(qcLoop).getByText('Sample A')).toBeTruthy()
+  })
+
+  it('disables stage controls when guardrail gate is active', () => {
+    const session = sessionFixture()
+    session.guardrail_gate = { active: true, reasons: ['custody_status:halted'] }
+    session.guardrail_state = {
+      ...session.guardrail_state,
+      custody_status: 'halted',
+      custody: { open_escalations: 2, open_drill_count: 1, qc_backpressure: true },
+    }
+    session.stage_timings = {
+      ...session.stage_timings,
+      primers: { status: 'primers_guardrail_hold' },
+    }
+    const runStage = vi.fn()
+    mockedUseCloningPlanner.mockReturnValue({
+      data: session,
+      isLoading: false,
+      events: [],
+      runStage,
+      resume: vi.fn(),
+      finalize: vi.fn(),
+      cancel: vi.fn(),
+      refetch: vi.fn(),
+      isFetching: false,
+      error: null,
+      mutations: {
+        stage: { isPending: false },
+        resume: { isPending: false },
+        finalize: { isPending: false },
+        cancel: { isPending: false },
+      },
+    })
+
+    render(<PlannerWizard sessionId="planner-1" />)
+
+    expect(screen.getByTestId('planner-guardrail-gate')).toBeTruthy()
+    const resumeButtons = screen.getAllByRole('button', { name: /Resume pipeline/i })
+    expect(resumeButtons.some((button) => (button as HTMLButtonElement).disabled)).toBe(true)
   })
 })
 

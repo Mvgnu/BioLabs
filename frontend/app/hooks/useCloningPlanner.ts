@@ -37,6 +37,7 @@ const shouldInvalidate = (eventType: string): boolean => {
     'stage_completed',
     'stage_failed',
     'session_finalized',
+    'guardrail_hold',
   ].includes(eventType)
 }
 

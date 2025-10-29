@@ -16,7 +16,7 @@ from uuid import UUID
 
 from celery import chain
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from .. import models, pubsub, storage
 from ..analytics.governance import invalidate_governance_analytics_cache
@@ -37,6 +37,65 @@ def _json_default(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     return value
+
+
+def _toolkit_snapshot_from_profile(
+    profile: dict[str, Any] | None, fallback: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Normalize toolkit profile metadata for guardrail state."""
+
+    # purpose: centralize preset metadata persistence across planner stages
+    effective_profile: dict[str, Any] = {}
+    if fallback:
+        effective_profile.update(fallback)
+    if profile:
+        for key, value in profile.items():
+            if value not in (None, "", [], {}):
+                effective_profile[key] = value
+            elif key not in effective_profile:
+                effective_profile[key] = value
+    if not effective_profile:
+        return {}
+    return {
+        "preset_id": effective_profile.get("preset_id"),
+        "preset_name": effective_profile.get("preset_name"),
+        "preset_description": effective_profile.get("preset_description"),
+        "metadata_tags": effective_profile.get("metadata_tags", []),
+        "recommended_use": effective_profile.get("recommended_use", []),
+        "notes": effective_profile.get("notes", []),
+        "profile": effective_profile,
+    }
+
+
+def _resolve_toolkit_preset(
+    planner: models.CloningPlannerSession,
+    override: str | None = None,
+) -> str | None:
+    """Determine the toolkit preset to apply for the planner session."""
+
+    # purpose: align primer/restriction presets with assembly strategies and sequence traits
+    if override:
+        return override
+    state = planner.guardrail_state or {}
+    toolkit_state = state.get("toolkit") if isinstance(state, dict) else None
+    if isinstance(toolkit_state, dict):
+        existing = toolkit_state.get("preset_id")
+        if existing:
+            return existing
+    strategy = (planner.assembly_strategy or "").lower()
+    if strategy in {"golden_gate", "golden gate"}:
+        return "multiplex"
+    if strategy in {"qpcr", "qpcr_validation", "qpcr-validation"}:
+        return "qpcr"
+    sequences = planner.input_sequences or []
+    for descriptor in sequences:
+        sequence = descriptor.get("sequence") if isinstance(descriptor, dict) else None
+        if not sequence:
+            continue
+        metrics = sequence_toolkit.compute_sequence_metrics(sequence)
+        if metrics.get("gc_content", 0.0) >= 65.0:
+            return "high_gc"
+    return None
 
 
 def _persist_stage_payload(
@@ -80,15 +139,24 @@ def _derive_stage_metrics(
     if step == "primers":
         metrics["primer_sets"] = guardrail_snapshot.get("primer_sets")
         metrics["primer_warnings"] = guardrail_snapshot.get("primer_warnings")
+        metrics["multiplex_risk"] = guardrail_snapshot.get("multiplex_risk")
+        metrics["preset_id"] = guardrail_snapshot.get("preset_id")
+        metrics["cross_dimer_flags"] = guardrail_snapshot.get(
+            "cross_dimer_flags"
+        )
     elif step == "restriction":
         metrics["restriction_alerts"] = len(guardrail_snapshot.get("restriction_alerts", []))
         metrics["buffer_count"] = len(guardrail_snapshot.get("buffers", []))
+        metrics["best_strategy"] = guardrail_snapshot.get("best_strategy")
+        metrics["strategy_scores"] = guardrail_snapshot.get("strategy_scores")
     elif step == "assembly":
         metrics["assembly_success"] = guardrail_snapshot.get("assembly_success")
         metrics["ligation_profiles"] = guardrail_snapshot.get("ligation_profiles", [])
+        metrics["preset_id"] = guardrail_snapshot.get("preset_id")
     elif step == "qc":
         metrics["qc_checks"] = guardrail_snapshot.get("qc_checks")
         metrics["breach_count"] = len(guardrail_snapshot.get("breaches", []))
+        metrics["preset_id"] = guardrail_snapshot.get("preset_id")
     if payload and isinstance(payload, dict):
         metrics.setdefault("payload_keys", sorted(payload.keys()))
     return metrics
@@ -163,12 +231,14 @@ def _dispatch_planner_event(
     """Publish planner orchestration updates over the pub/sub channel."""
 
     # purpose: expose real-time orchestration state to UI clients via Redis pub/sub
+    guardrail_state = compose_guardrail_state(planner)
     message = {
         "type": event_type,
         "session_id": str(planner.id),
         "status": planner.status,
         "current_step": planner.current_step,
-        "guardrail_state": compose_guardrail_state(planner),
+        "guardrail_state": guardrail_state,
+        "guardrail_gate": _evaluate_guardrail_gate(guardrail_state),
         "payload": payload,
         "timestamp": _utcnow().isoformat(),
     }
@@ -186,8 +256,31 @@ def _merge_guardrail_state(
 
     # purpose: keep guardrail snapshots cumulative across orchestration stages
     base = dict(planner.guardrail_state or {})
-    base.update(updates)
+    for key, value in updates.items():
+        if key == "toolkit":
+            existing_toolkit = (
+                base.get("toolkit") if isinstance(base.get("toolkit"), dict) else {}
+            )
+            if isinstance(value, dict) and value:
+                merged_toolkit = dict(existing_toolkit)
+                merged_toolkit.update(value)
+                base["toolkit"] = merged_toolkit
+            elif "toolkit" not in base:
+                base["toolkit"] = {}
+            continue
+        base[key] = value
     return base
+
+
+def _merge_with_defaults(
+    payload: dict[str, Any] | None, defaults: dict[str, Any]
+) -> dict[str, Any]:
+    """Apply default schema fields to planner payloads."""
+
+    merged = json.loads(json.dumps(defaults))
+    if isinstance(payload, dict):
+        merged.update(payload)
+    return merged
 
 
 def _primer_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
@@ -206,17 +299,29 @@ def _primer_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
     ]
     tm_values = [value for value in tm_values if isinstance(value, (int, float))]
     tm_span = max(tm_values) - min(tm_values) if tm_values else 0.0
+    profile = result.get("profile") or {}
+    multiplex = result.get("multiplex") or {}
     metadata_tags = sorted({
         tag
         for primer in primers
         for tag in primer.get("metadata_tags", [])
-    })
+    } | set(multiplex.get("metadata_tags", []) or []) | set(profile.get("metadata_tags", []) or []))
+    state = "blocked" if multiplex.get("risk_level") == "blocked" else (
+        "review" if warning_count or multiplex.get("risk_level") == "review" else "ok"
+    )
     return {
         "primer_sets": len(primers),
         "primer_warnings": warning_count,
-        "primer_state": "review" if warning_count else "ok",
+        "primer_state": state,
         "metadata_tags": metadata_tags,
         "tm_span": tm_span,
+        "multiplex_risk": multiplex.get("risk_level"),
+        "cross_dimer_flags": len(multiplex.get("cross_dimer_flags", [])),
+        "recommended_use": multiplex.get("recommended_use")
+        or profile.get("recommended_use", []),
+        "notes": multiplex.get("notes", []),
+        "preset_id": profile.get("preset_id"),
+        "profile": profile,
     }
 
 
@@ -225,11 +330,13 @@ def _restriction_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
 
     alerts = result.get("alerts", [])
     digests = result.get("digests", [])
+    profile = result.get("profile") or {}
+    strategies = result.get("strategy_scores", [])
     metadata_tags = sorted({
         tag
         for digest in digests
         for tag in digest.get("metadata_tags", [])
-    })
+    } | set(profile.get("metadata_tags", []) or []))
     buffers = sorted({
         (digest.get("buffer") or {}).get("name")
         for digest in digests
@@ -241,12 +348,27 @@ def _restriction_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
         for profile in digest.get("kinetics_profiles", [])
         if profile.get("name")
     })
+    state = "review" if alerts else "ok"
+    best_strategy = None
+    for entry in strategies:
+        compatibility = entry.get("compatibility", 0.0)
+        hint = entry.get("guardrail_hint", "") or ""
+        if best_strategy is None or compatibility > best_strategy.get("compatibility", 0.0):
+            best_strategy = entry
+        if "blocked" in hint.lower() or compatibility < 0.4:
+            state = "blocked"
+        elif state != "blocked" and ("requires" in hint.lower() or compatibility < 0.7):
+            state = "review"
     return {
         "restriction_alerts": alerts,
-        "restriction_state": "review" if alerts else "ok",
+        "restriction_state": state,
         "metadata_tags": metadata_tags,
         "buffers": buffers,
         "kinetics": kinetics,
+        "strategy_scores": strategies,
+        "best_strategy": best_strategy,
+        "preset_id": profile.get("preset_id"),
+        "profile": profile,
     }
 
 
@@ -256,11 +378,12 @@ def _assembly_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
     success = result.get("average_success", 0.0)
     state = "ok" if success >= 0.7 else "review"
     steps = result.get("steps", [])
+    profile = result.get("profile") or {}
     metadata_tags = sorted({
         tag
         for step in steps
         for tag in step.get("metadata_tags", [])
-    })
+    } | set(profile.get("metadata_tags", []) or []))
     ligation_profiles = sorted({
         (step.get("ligation_profile") or {}).get("strategy")
         for step in steps
@@ -277,6 +400,8 @@ def _assembly_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
         for profile in step.get("kinetics_profiles", [])
         if profile.get("name")
     })
+    if success < 0.5:
+        state = "blocked"
     return {
         "assembly_success": success,
         "assembly_state": state,
@@ -284,6 +409,9 @@ def _assembly_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
         "ligation_profiles": ligation_profiles,
         "buffers": buffers,
         "kinetics": kinetics,
+        "preset_id": profile.get("preset_id"),
+        "recommended_use": profile.get("recommended_use", []),
+        "profile": profile,
     }
 
 
@@ -292,23 +420,30 @@ def _qc_guardrail_summary(result: dict[str, Any] | list[dict[str, Any]]) -> dict
 
     if isinstance(result, dict):
         reports = result.get("reports", [])
+        profile = result.get("profile") or {}
     else:
         reports = result
+        profile = {}
     statuses = {entry.get("status") for entry in reports}
     state = "ok" if statuses <= {"pass"} else "review"
     return {
         "qc_state": state,
         "qc_checks": len(reports),
+        "preset_id": profile.get("preset_id"),
+        "profile": profile,
     }
 
 
 def compose_guardrail_state(
     planner: models.CloningPlannerSession,
     override: dict[str, Any] | None = None,
+    *,
+    base_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build an aggregated guardrail snapshot from planner outputs."""
 
-    snapshot = dict(planner.guardrail_state or {})
+    snapshot_source = base_snapshot if base_snapshot is not None else planner.guardrail_state or {}
+    snapshot = dict(snapshot_source)
     if planner.primer_set:
         snapshot["primers"] = _primer_guardrail_summary(planner.primer_set)
     if planner.restriction_digest:
@@ -322,8 +457,191 @@ def compose_guardrail_state(
             qc_summary.setdefault("breaches", previous_qc.get("breaches", []))
         snapshot["qc"] = qc_summary
     if override:
-        snapshot.update(override)
+        for key, value in override.items():
+            snapshot[key] = value
+
+    qc_section = dict(snapshot.get("qc") or {})
+    custody_state = snapshot.get("custody")
+    override_backpressure = bool((override or {}).get("qc_backpressure"))
+    if isinstance(custody_state, dict):
+        open_counts = custody_state.get("open_counts") or {}
+        open_drill = custody_state.get("open_drill_count") or 0
+        recovery_gate = custody_state.get("recovery_gate")
+        custody_backpressure = bool(
+            custody_state.get("qc_backpressure")
+            or override_backpressure
+            or open_drill
+            or open_counts.get("critical")
+            or recovery_gate
+        )
+        if custody_backpressure:
+            qc_section["qc_backpressure"] = True
+        snapshot["custody_status"] = custody_state.get("status") or custody_state.get("guardrail_status")
+        snapshot["custody_event_overlays"] = custody_state.get("event_overlays", {})
+        snapshot["custody_open_counts"] = open_counts
+        snapshot["custody_execution_id"] = custody_state.get("execution_id")
+        snapshot.setdefault("custody", custody_state)
+    elif override_backpressure:
+        qc_section["qc_backpressure"] = True
+    snapshot["qc"] = qc_section
+    snapshot["qc_backpressure"] = bool(qc_section.get("qc_backpressure"))
     return snapshot
+
+
+class GuardrailBackpressureError(RuntimeError):
+    """Raised when custody guardrails enforce planner backpressure."""
+
+
+def _load_protocol_guardrail_snapshot(
+    db: Session, planner: models.CloningPlannerSession
+) -> dict[str, Any]:
+    """Fetch custody guardrail overlays linked to a planner session."""
+
+    if not planner.protocol_execution_id:
+        return {}
+    execution = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .filter(models.ProtocolExecution.id == planner.protocol_execution_id)
+        .first()
+    )
+    if not execution:
+        return {}
+    state = dict(execution.guardrail_state or {})
+    custody_payload = dict((execution.result or {}).get("custody", {}))
+    open_counts = dict(state.get("open_counts") or custody_payload.get("open_severity_counts") or {})
+    open_escalations = int(
+        state.get("open_escalations")
+        or custody_payload.get("open_escalations")
+        or sum(open_counts.values() or [0])
+    )
+    open_drill_count = int(
+        state.get("open_drill_count")
+        or custody_payload.get("open_drill_count")
+        or 0
+    )
+    recovery_gate = bool(state.get("recovery_gate") or custody_payload.get("recovery_gate"))
+    qc_backpressure = bool(
+        state.get("qc_backpressure")
+        or custody_payload.get("qc_backpressure")
+        or open_drill_count
+        or open_counts.get("critical")
+        or recovery_gate
+    )
+    snapshot = {
+        "execution_id": str(execution.id),
+        "template_id": str(execution.template_id) if execution.template_id else None,
+        "team_id": str(execution.template.team_id) if execution.template else None,
+        "status": execution.guardrail_status or "stable",
+        "qc_backpressure": qc_backpressure,
+        "open_counts": open_counts,
+        "open_escalations": open_escalations,
+        "open_drill_count": open_drill_count,
+        "recovery_gate": recovery_gate,
+        "event_overlays": state.get("event_overlays")
+        or custody_payload.get("event_overlays")
+        or {},
+        "last_synced_at": state.get("last_synced_at")
+        or custody_payload.get("last_synced_at"),
+    }
+    if custody_payload:
+        snapshot["custody_payload"] = custody_payload
+    return snapshot
+
+
+def refresh_planner_guardrails(
+    db: Session,
+    planner: models.CloningPlannerSession,
+    *,
+    base_snapshot: dict[str, Any] | None = None,
+    override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Recompute planner guardrail state incorporating custody overlays."""
+
+    override_payload = dict(override or {})
+    protocol_snapshot = _load_protocol_guardrail_snapshot(db, planner)
+    if protocol_snapshot:
+        override_payload["custody"] = protocol_snapshot
+        override_payload.setdefault("custody_status", protocol_snapshot.get("status"))
+        if protocol_snapshot.get("qc_backpressure"):
+            override_payload["qc_backpressure"] = True
+    aggregated = compose_guardrail_state(
+        planner,
+        override=override_payload or None,
+        base_snapshot=base_snapshot,
+    )
+    normalised = json.loads(json.dumps(aggregated, default=_json_default))
+    planner.guardrail_state = normalised
+    db.query(models.CloningPlannerSession).filter(
+        models.CloningPlannerSession.id == planner.id
+    ).update({"guardrail_state": normalised})
+    db.flush()
+    return normalised
+
+
+def _evaluate_guardrail_gate(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Derive guardrail gating metadata for downstream consumers."""
+
+    custody_status_raw = snapshot.get("custody_status") or ""
+    custody_status = custody_status_raw.lower() or None
+    qc_backpressure = bool(snapshot.get("qc_backpressure"))
+    custody_snapshot = snapshot.get("custody") or {}
+    open_drill_count = int(custody_snapshot.get("open_drill_count") or 0)
+    open_escalations = int(custody_snapshot.get("open_escalations") or 0)
+    reasons: list[str] = []
+    if custody_status in {"halted", "alert"}:
+        reasons.append(f"custody_status:{custody_status}")
+    if qc_backpressure and "qc_backpressure" not in reasons:
+        reasons.append("qc_backpressure")
+    if open_drill_count and "open_drill" not in reasons:
+        reasons.append("open_drill")
+    return {
+        "active": bool(reasons),
+        "reasons": reasons,
+        "custody_status": custody_status,
+        "qc_backpressure": qc_backpressure,
+        "open_drill_count": open_drill_count,
+        "open_escalations": open_escalations,
+    }
+
+
+def _record_guardrail_hold(
+    db: Session,
+    planner: models.CloningPlannerSession,
+    stage: str,
+    gate: dict[str, Any],
+    *,
+    task_id: str | None,
+) -> None:
+    """Persist guardrail hold metadata and emit orchestration events."""
+
+    hold_gate = json.loads(json.dumps(gate, default=_json_default))
+    now = _utcnow()
+    timings = dict(planner.stage_timings or {})
+    entry = dict(timings.get(stage) or {})
+    entry.setdefault("queued_at", now.isoformat())
+    entry.update(
+        {
+            "status": f"{stage}_guardrail_hold",
+            "hold_reason": hold_gate,
+            "task_id": task_id,
+            "error": None,
+        }
+    )
+    timings[stage] = entry
+    planner.stage_timings = timings
+    planner.status = f"{stage}_guardrail_hold"
+    planner.current_step = stage
+    planner.updated_at = now
+    if task_id is not None:
+        planner.celery_task_id = task_id
+    db.add(planner)
+    db.flush()
+    _dispatch_planner_event(
+        planner,
+        "guardrail_hold",
+        {"stage": stage, "gate": hold_gate, "task_id": task_id},
+    )
 
 
 def _utcnow() -> datetime:
@@ -340,8 +658,10 @@ def create_session(
     *,
     created_by: models.User | None,
     assembly_strategy: str,
+    protocol_execution_id: UUID | None = None,
     input_sequences: list[dict[str, Any]] | None = None,
     metadata: dict[str, Any] | None = None,
+    toolkit_preset: str | None = None,
 ) -> models.CloningPlannerSession:
     """Initialise a cloning planner session with intake context."""
 
@@ -350,11 +670,28 @@ def create_session(
     # outputs: persisted CloningPlannerSession ORM instance
     # status: experimental
     now = _utcnow()
+    execution_id = protocol_execution_id
+    if execution_id is None and metadata:
+        raw_execution = metadata.get("protocol_execution_id")
+        if raw_execution:
+            with suppress(ValueError, TypeError):
+                execution_id = UUID(str(raw_execution))
+    guardrail_state = dict(metadata.get("guardrail_state", {})) if metadata else {}
+    if toolkit_preset:
+        guardrail_state["toolkit"] = _toolkit_snapshot_from_profile(
+            {
+                "preset_id": toolkit_preset,
+                "metadata_tags": [f"preset:{toolkit_preset}"],
+                "recommended_use": [],
+                "notes": [],
+            }
+        )
     record = models.CloningPlannerSession(
         created_by_id=getattr(created_by, "id", None),
         assembly_strategy=assembly_strategy,
+        protocol_execution_id=execution_id,
         input_sequences=list(input_sequences or []),
-        guardrail_state=dict(metadata.get("guardrail_state", {})) if metadata else {},
+        guardrail_state=guardrail_state,
         stage_timings={
             "intake": {
                 "completed_at": now.isoformat(),
@@ -384,6 +721,7 @@ def run_primer_design(
     planner: models.CloningPlannerSession,
     product_size_range: tuple[int, int] | None = None,
     target_tm: float | None = None,
+    preset_id: str | None = None,
     task_id: str | None = None,
 ) -> models.CloningPlannerSession:
     """Execute primer design stage for a planner session."""
@@ -393,15 +731,23 @@ def run_primer_design(
     # outputs: updated planner with primer_set payload and guardrail summary
     # status: experimental
     profile = DEFAULT_TOOLKIT_PROFILE
+    resolved_preset = _resolve_toolkit_preset(planner, override=preset_id)
     primer_payload = sequence_toolkit.design_primers(
         planner.input_sequences,
         config=profile,
         product_size_range=product_size_range or (80, 280),
         target_tm=target_tm or 60.0,
+        preset_id=resolved_preset,
+    )
+    toolkit_snapshot = _toolkit_snapshot_from_profile(
+        primer_payload.get("profile")
     )
     guardrail_state = _merge_guardrail_state(
         planner,
-        {"primers": _primer_guardrail_summary(primer_payload)},
+        {
+            "primers": _primer_guardrail_summary(primer_payload),
+            "toolkit": toolkit_snapshot,
+        },
     )
     return record_stage_progress(
         db,
@@ -420,6 +766,7 @@ def run_restriction_analysis(
     *,
     planner: models.CloningPlannerSession,
     enzymes: Sequence[str] | None = None,
+    preset_id: str | None = None,
     task_id: str | None = None,
 ) -> models.CloningPlannerSession:
     """Execute restriction digest analysis for a planner session."""
@@ -429,14 +776,27 @@ def run_restriction_analysis(
     # outputs: updated planner with restriction digest payload
     # status: experimental
     profile = DEFAULT_TOOLKIT_PROFILE
+    upstream_profile = (planner.primer_set or {}).get("profile") if planner.primer_set else {}
+    resolved_preset = _resolve_toolkit_preset(
+        planner,
+        override=(preset_id or (upstream_profile or {}).get("preset_id")),
+    )
     digest_payload = sequence_toolkit.analyze_restriction_digest(
         planner.input_sequences,
         config=profile,
         enzymes=enzymes,
+        preset_id=resolved_preset,
+    )
+    toolkit_snapshot = _toolkit_snapshot_from_profile(
+        digest_payload.get("profile"),
+        fallback=upstream_profile or None,
     )
     guardrail_state = _merge_guardrail_state(
         planner,
-        {"restriction": _restriction_guardrail_summary(digest_payload)},
+        {
+            "restriction": _restriction_guardrail_summary(digest_payload),
+            "toolkit": toolkit_snapshot,
+        },
     )
     return record_stage_progress(
         db,
@@ -455,6 +815,7 @@ def run_assembly_planning(
     *,
     planner: models.CloningPlannerSession,
     strategy: str | None = None,
+    preset_id: str | None = None,
     task_id: str | None = None,
 ) -> models.CloningPlannerSession:
     """Execute assembly simulation for a planner session."""
@@ -464,15 +825,28 @@ def run_assembly_planning(
     # outputs: updated planner with assembly plan payload
     # status: experimental
     profile = DEFAULT_TOOLKIT_PROFILE
+    upstream_profile = (planner.restriction_digest or {}).get("profile") if planner.restriction_digest else {}
+    resolved_preset = _resolve_toolkit_preset(
+        planner,
+        override=(preset_id or (upstream_profile or {}).get("preset_id")),
+    )
     plan_payload = sequence_toolkit.simulate_assembly(
         planner.primer_set,
         planner.restriction_digest,
         config=profile,
         strategy=strategy or planner.assembly_strategy,
+        preset_id=resolved_preset,
+    )
+    toolkit_snapshot = _toolkit_snapshot_from_profile(
+        plan_payload.get("profile"),
+        fallback=upstream_profile or None,
     )
     guardrail_state = _merge_guardrail_state(
         planner,
-        {"assembly": _assembly_guardrail_summary(plan_payload)},
+        {
+            "assembly": _assembly_guardrail_summary(plan_payload),
+            "toolkit": toolkit_snapshot,
+        },
     )
     return record_stage_progress(
         db,
@@ -500,6 +874,7 @@ def run_qc_checks(
     # outputs: updated planner with qc payload and guardrail snapshot
     # status: experimental
     profile = DEFAULT_TOOLKIT_PROFILE
+    upstream_profile = (planner.assembly_plan or {}).get("profile") if planner.assembly_plan else {}
     ingestion = qc_ingestion.ingest_chromatograms(db, planner, chromatograms)
     qc_payload = sequence_toolkit.evaluate_qc_reports(
         planner.assembly_plan,
@@ -510,7 +885,13 @@ def run_qc_checks(
     qc_summary["breaches"] = ingestion["breaches"]
     guardrail_state = _merge_guardrail_state(
         planner,
-        {"qc": qc_summary},
+        {
+            "qc": qc_summary,
+            "toolkit": _toolkit_snapshot_from_profile(
+                qc_payload.get("profile"),
+                fallback=upstream_profile or None,
+            ),
+        },
     )
     status = "qc_guardrail_blocked" if ingestion["breaches"] else "qc_complete"
     return record_stage_progress(
@@ -670,8 +1051,7 @@ def _complete_pipeline_stage(
 ) -> models.CloningPlannerSession:
     """Summarise guardrail state and mark pipeline completion checkpoint."""
 
-    guardrails = compose_guardrail_state(planner)
-    planner.guardrail_state = guardrails
+    guardrails = refresh_planner_guardrails(db, planner)
     qc_breaches = guardrails.get("qc", {}).get("breaches", [])
     status = "qc_guardrail_blocked" if qc_breaches else "ready_for_finalize"
     now = _utcnow()
@@ -683,6 +1063,7 @@ def _complete_pipeline_stage(
             "completed_at": now.isoformat(),
             "task_id": task_id,
             "guardrail": guardrails.get("qc"),
+            "guardrail_gate": _evaluate_guardrail_gate(guardrails),
             "error": None,
         }
     )
@@ -731,6 +1112,12 @@ def _execute_stage_task(
         planner = db.get(models.CloningPlannerSession, UUID(planner_id))
         if not planner:
             return planner_id
+        guardrail_snapshot = refresh_planner_guardrails(db, planner)
+        gate_state = _evaluate_guardrail_gate(guardrail_snapshot)
+        if gate_state.get("active"):
+            _record_guardrail_hold(db, planner, stage, gate_state, task_id=task_id)
+            db.commit()
+            return str(planner.id)
         _mark_stage_started(db, planner, stage, task_id=task_id)
         planner = runner(db, planner, task_id)
         db.commit()
@@ -759,6 +1146,7 @@ def primer_stage_task(
     *,
     product_size_range: tuple[int, int] | None = None,
     target_tm: float | None = None,
+    preset_id: str | None = None,
 ) -> str:
     """Celery task for primer design stage."""
 
@@ -771,6 +1159,7 @@ def primer_stage_task(
             planner=planner,
             product_size_range=product_size_range,
             target_tm=target_tm,
+            preset_id=preset_id,
             task_id=task_id,
         ),
     )
@@ -788,6 +1177,7 @@ def restriction_stage_task(
     planner_id: str,
     *,
     enzymes: Sequence[str] | None = None,
+    preset_id: str | None = None,
 ) -> str:
     """Celery task for restriction digest stage."""
 
@@ -800,6 +1190,7 @@ def restriction_stage_task(
             db,
             planner=planner,
             enzymes=enzyme_list,
+            preset_id=preset_id,
             task_id=task_id,
         ),
     )
@@ -817,6 +1208,7 @@ def assembly_stage_task(
     planner_id: str,
     *,
     strategy: str | None = None,
+    preset_id: str | None = None,
 ) -> str:
     """Celery task for assembly planning stage."""
 
@@ -828,6 +1220,7 @@ def assembly_stage_task(
             db,
             planner=planner,
             strategy=strategy,
+            preset_id=preset_id,
             task_id=task_id,
         ),
     )
@@ -945,6 +1338,7 @@ def enqueue_pipeline(
     enzymes: Sequence[str] | None = None,
     chromatograms: Sequence[dict[str, Any]] | None = None,
     resume_from: str | None = None,
+    preset_id: str | None = None,
 ) -> str | None:
     """Schedule cloning planner orchestration via Celery."""
 
@@ -958,15 +1352,19 @@ def enqueue_pipeline(
                 str(planner_id),
                 product_size_range=product_size_range,
                 target_tm=target_tm,
+                preset_id=preset_id,
             ),
         ),
         (
             "restriction",
-            restriction_stage_task.s(enzymes=list(enzymes) if enzymes else None),
+            restriction_stage_task.s(
+                enzymes=list(enzymes) if enzymes else None,
+                preset_id=preset_id,
+            ),
         ),
         (
             "assembly",
-            assembly_stage_task.s(),
+            assembly_stage_task.s(preset_id=preset_id),
         ),
         (
             "qc",
@@ -1042,15 +1440,14 @@ def record_stage_progress(
         qc_state = _qc_guardrail_summary(planner.qc_reports)
         qc_state.setdefault("breaches", [])
         guardrail_snapshot["qc"] = qc_state
-    state_override: dict[str, Any] | None = None
-    if guardrail_state is not None:
-        state_override = guardrail_state
-    guardrail_snapshot = compose_guardrail_state(planner, override=state_override)
-    normalised_snapshot = json.loads(json.dumps(guardrail_snapshot))
-    planner.guardrail_state = normalised_snapshot
-    db.query(models.CloningPlannerSession).filter(models.CloningPlannerSession.id == planner.id).update(
-        {"guardrail_state": normalised_snapshot}
+    state_override: dict[str, Any] | None = guardrail_state if guardrail_state is not None else None
+    guardrail_snapshot = refresh_planner_guardrails(
+        db,
+        planner,
+        base_snapshot=guardrail_snapshot,
+        override=state_override,
     )
+    normalised_snapshot = guardrail_snapshot
     if task_id is not None:
         planner.celery_task_id = task_id
     planner.last_error = error
@@ -1065,9 +1462,19 @@ def record_stage_progress(
             "error": error,
         }
     )
+    gate_state = _evaluate_guardrail_gate(guardrail_snapshot)
+    checkpoint_payload["guardrail_gate"] = gate_state
+    stage_guardrail: dict[str, Any] = {}
     guardrail_key = guardrail_snapshot.get(step)
     if isinstance(guardrail_key, dict):
-        checkpoint_payload["guardrail"] = guardrail_key
+        stage_guardrail.update(guardrail_key)
+    custody_overlay = guardrail_snapshot.get("custody")
+    if isinstance(custody_overlay, dict):
+        stage_guardrail.setdefault("custody", custody_overlay)
+        stage_guardrail["custody_status"] = guardrail_snapshot.get("custody_status")
+        stage_guardrail["qc_backpressure"] = guardrail_snapshot.get("qc_backpressure")
+    if stage_guardrail:
+        checkpoint_payload["guardrail"] = stage_guardrail
     planner.stage_timings[step] = checkpoint_payload
     planner.updated_at = now
     if next_step:
@@ -1077,13 +1484,13 @@ def record_stage_progress(
     if resolved_status in {"finalized", "completed"}:
             planner.completed_at = now
     db.add(planner)
-    stage_guardrail = guardrail_snapshot.get(step)
+    stage_guardrail_payload = json.loads(json.dumps(stage_guardrail, default=_json_default)) if stage_guardrail else {}
     record = _persist_stage_record(
         db,
         planner,
         step=step,
         status=resolved_status,
-        guardrail_snapshot=stage_guardrail if isinstance(stage_guardrail, dict) else {},
+        guardrail_snapshot=stage_guardrail_payload,
         payload=payload,
         task_id=task_id,
         error=error,
@@ -1118,8 +1525,11 @@ def finalize_session(
     # outputs: finalized CloningPlannerSession instance
     # status: experimental
     now = _utcnow()
-    if guardrail_state is not None:
-        planner.guardrail_state = guardrail_state
+    base_snapshot = compose_guardrail_state(planner)
+    merged_guardrails = dict(base_snapshot)
+    if isinstance(guardrail_state, dict):
+        merged_guardrails.update(guardrail_state)
+    planner.guardrail_state = merged_guardrails
     planner.status = "finalized"
     planner.current_step = "finalized"
     planner.completed_at = now
@@ -1206,18 +1616,50 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
         _serialise_qc_artifact(artifact)
         for artifact in sorted(planner.qc_artifacts or [], key=lambda item: item.created_at or datetime.min)
     ]
+    guardrail_state = compose_guardrail_state(planner)
+    primer_payload = _merge_with_defaults(
+        planner.primer_set,
+        {
+            "primers": [],
+            "summary": {
+                "primer_count": 0,
+                "average_tm": 0.0,
+                "min_tm": 0.0,
+                "max_tm": 0.0,
+            },
+        },
+    )
+    restriction_payload = _merge_with_defaults(
+        planner.restriction_digest,
+        {"enzymes": [], "digests": [], "alerts": []},
+    )
+    assembly_payload = _merge_with_defaults(
+        planner.assembly_plan,
+        {
+            "strategy": planner.assembly_strategy,
+            "steps": [],
+            "average_success": 0.0,
+            "min_success": 0.0,
+            "max_success": 0.0,
+            "payload_contract": {},
+            "metadata_tags": [],
+        },
+    )
+    qc_payload = _merge_with_defaults(planner.qc_reports, {"reports": []})
     return {
         "id": planner.id,
         "created_by_id": planner.created_by_id,
         "status": planner.status,
         "assembly_strategy": planner.assembly_strategy,
+        "protocol_execution_id": planner.protocol_execution_id,
         "input_sequences": planner.input_sequences,
-        "primer_set": planner.primer_set,
-        "restriction_digest": planner.restriction_digest,
-        "assembly_plan": planner.assembly_plan,
-        "qc_reports": planner.qc_reports,
+        "primer_set": primer_payload,
+        "restriction_digest": restriction_payload,
+        "assembly_plan": assembly_payload,
+        "qc_reports": qc_payload,
         "inventory_reservations": planner.inventory_reservations,
-        "guardrail_state": compose_guardrail_state(planner),
+        "guardrail_state": guardrail_state,
+        "guardrail_gate": _evaluate_guardrail_gate(guardrail_state),
         "stage_timings": planner.stage_timings,
         "current_step": planner.current_step,
         "celery_task_id": planner.celery_task_id,
@@ -1227,4 +1669,23 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
         "completed_at": planner.completed_at,
         "stage_history": stage_history,
         "qc_artifacts": qc_artifacts,
+    }
+
+
+def guardrail_status_snapshot(
+    db: Session, planner: models.CloningPlannerSession
+) -> dict[str, Any]:
+    """Return a focused guardrail status payload for a planner session."""
+
+    state = refresh_planner_guardrails(db, planner)
+    gate = _evaluate_guardrail_gate(state)
+    return {
+        "session_id": planner.id,
+        "protocol_execution_id": planner.protocol_execution_id,
+        "status": planner.status,
+        "guardrail_state": state,
+        "guardrail_gate": gate,
+        "custody_status": state.get("custody_status"),
+        "qc_backpressure": state.get("qc_backpressure", False),
+        "updated_at": planner.updated_at,
     }

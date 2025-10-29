@@ -3,7 +3,7 @@
 // purpose: cloning planner multi-stage wizard mirroring backend orchestration
 // status: experimental
 
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 
 import { GuardrailBadge } from '../../components/guardrails/GuardrailBadge'
 import { GuardrailEscalationPrompt } from '../../components/guardrails/GuardrailEscalationPrompt'
@@ -43,6 +43,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
   const [primerTargetTm, setPrimerTargetTm] = useState('60')
   const [primerMin, setPrimerMin] = useState('80')
   const [primerMax, setPrimerMax] = useState('280')
+  const [primerPreset, setPrimerPreset] = useState('auto')
   const [restrictionEnzymes, setRestrictionEnzymes] = useState('EcoRI,BamHI')
   const [assemblyPreset, setAssemblyPreset] = useState('gibson')
   const [qcSampleId, setQcSampleId] = useState('sample-1')
@@ -55,6 +56,35 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
   const guardrailRestriction = resolveGuardrailState(session, 'restriction')
   const guardrailAssembly = resolveGuardrailState(session, 'assembly')
   const guardrailQc = resolveGuardrailState(session, 'qc')
+  const guardrailGate = (session?.guardrail_gate as Record<string, any> | undefined) ?? { active: false }
+  const gateReasons = (guardrailGate.reasons as string[] | undefined) ?? []
+  const backpressureActive = Boolean(guardrailGate.active)
+  const custodyOverlay = session?.guardrail_state?.custody as Record<string, any> | undefined
+  const custodyStatusRaw = (session?.guardrail_state?.custody_status as string | undefined) ?? 'stable'
+  const custodyBadgeState = backpressureActive || custodyStatusRaw === 'halted' ? 'blocked' : custodyStatusRaw === 'alert' ? 'review' : 'ok'
+  const custodyDetail = custodyOverlay?.open_escalations
+    ? `${custodyOverlay.open_escalations} escalation${custodyOverlay.open_escalations === 1 ? '' : 's'} open`
+    : undefined
+  const toolkitState = session?.guardrail_state?.toolkit as Record<string, any> | undefined
+  const custodyTags = useMemo(() => {
+    if (!custodyOverlay) return [] as string[]
+    const tags: string[] = []
+    if (typeof custodyOverlay.open_escalations === 'number') {
+      tags.push(`open_escalations:${custodyOverlay.open_escalations}`)
+    }
+    if (typeof custodyOverlay.open_drill_count === 'number' && custodyOverlay.open_drill_count > 0) {
+      tags.push(`open_drills:${custodyOverlay.open_drill_count}`)
+    }
+    if (typeof custodyOverlay.team_id === 'string' && custodyOverlay.team_id) {
+      tags.push(`team:${custodyOverlay.team_id}`)
+    }
+    if (typeof custodyOverlay.execution_id === 'string' && custodyOverlay.execution_id) {
+      tags.push(`execution:${custodyOverlay.execution_id}`)
+    }
+    tags.push(`status:${custodyStatusRaw}`)
+    return tags
+  }, [custodyOverlay, custodyStatusRaw])
+  const gateMessage = gateReasons.length > 0 ? gateReasons.join(', ') : 'Custody guardrail hold active'
 
   const primerState = (guardrailPrimer.primer_state as string | undefined) ?? 'unknown'
   const restrictionState =
@@ -64,10 +94,33 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
   const qcState = (guardrailQc.qc_state as string | undefined) ?? (guardrailQc.state as string | undefined) ?? 'unknown'
 
   const needsEscalation = useMemo(() => {
-    return [primerState, restrictionState, assemblyState, qcState].some((state) => state === 'review' || state === 'blocked')
-  }, [primerState, restrictionState, assemblyState, qcState])
+    return (
+      backpressureActive ||
+      [primerState, restrictionState, assemblyState, qcState].some((state) => state === 'review' || state === 'blocked')
+    )
+  }, [primerState, restrictionState, assemblyState, qcState, backpressureActive])
 
   const reviewerNotes = session?.stage_history?.find((entry) => Object.keys(entry.review_state || {}).length > 0)?.review_state
+
+  useEffect(() => {
+    if (toolkitState?.preset_id && primerPreset === 'auto') {
+      setPrimerPreset(toolkitState.preset_id)
+    }
+  }, [toolkitState?.preset_id, primerPreset])
+
+  const resolvedPreset = primerPreset === 'auto' ? toolkitState?.preset_id ?? undefined : primerPreset
+  const restrictionBestStrategy = guardrailRestriction.best_strategy as Record<string, any> | undefined
+  const restrictionStrategies = (guardrailRestriction.strategy_scores as Record<string, any>[] | undefined) ?? []
+  const toolkitRecommended = (toolkitState?.recommended_use as string[] | undefined) ?? []
+  const toolkitNotes = (toolkitState?.notes as string[] | undefined) ?? []
+  const primerDetailParts: string[] = []
+  if (typeof guardrailPrimer.primer_warnings === 'number' && guardrailPrimer.primer_warnings > 0) {
+    primerDetailParts.push(`${guardrailPrimer.primer_warnings} warnings`)
+  }
+  if (typeof guardrailPrimer.multiplex_risk === 'string') {
+    primerDetailParts.push(`Multiplex ${guardrailPrimer.multiplex_risk}`)
+  }
+  const primerDetail = primerDetailParts.join(' · ')
 
   const handlePrimerSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -77,6 +130,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
         payload: {
           target_tm: parseFloat(primerTargetTm),
           product_size_range: [parseInt(primerMin, 10), parseInt(primerMax, 10)],
+          preset_id: resolvedPreset,
         },
       }
       await runStage('primers', payload)
@@ -93,7 +147,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
         .split(',')
         .map((value) => value.trim())
         .filter(Boolean)
-      await runStage('restriction', { payload: { enzymes } })
+      await runStage('restriction', { payload: { enzymes, preset_id: resolvedPreset } })
     } catch (error) {
       setFormError((error as Error).message)
     }
@@ -103,7 +157,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
     event.preventDefault()
     try {
       setFormError(null)
-      await runStage('assembly', { payload: { assembly_preset: assemblyPreset } })
+      await runStage('assembly', { payload: { assembly_preset: assemblyPreset, preset_id: resolvedPreset } })
     } catch (error) {
       setFormError((error as Error).message)
     }
@@ -174,7 +228,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
               type="button"
               onClick={handleResume}
               className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50"
-              disabled={mutations.resume.isPending}
+              disabled={mutations.resume.isPending || backpressureActive}
             >
               Resume pipeline
             </button>
@@ -182,7 +236,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
               type="button"
               onClick={handleFinalize}
               className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-              disabled={mutations.finalize.isPending}
+              disabled={mutations.finalize.isPending || backpressureActive}
             >
               Finalize
             </button>
@@ -196,6 +250,16 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
             </button>
           </div>
         </header>
+
+        {backpressureActive && (
+          <div
+            className="mt-4 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700"
+            data-testid="planner-guardrail-gate"
+          >
+            Custody guardrails are holding this planner. Resolve escalations before continuing.
+            <span className="mt-1 block text-xs text-amber-600">Reasons: {gateMessage}</span>
+          </div>
+        )}
 
         {formError && <p className="mt-3 rounded border border-rose-200 bg-rose-50 p-2 text-sm text-rose-700">{formError}</p>}
 
@@ -229,10 +293,32 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
           <div className="space-y-4">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Guardrail overview</h2>
             <div className="space-y-3">
-              <GuardrailBadge label="Primer design" state={primerState} metadataTags={guardrailPrimer.metadata_tags ?? []} detail={guardrailPrimer.primer_warnings ? `${guardrailPrimer.primer_warnings} warnings` : undefined} />
-              <GuardrailBadge label="Restriction" state={restrictionState} metadataTags={guardrailRestriction.metadata_tags ?? []} detail={restrictionState === 'review' ? 'Review recommended' : undefined} />
+              <GuardrailBadge
+                label="Primer design"
+                state={primerState}
+                metadataTags={guardrailPrimer.metadata_tags ?? []}
+                detail={primerDetail || undefined}
+              />
+              <GuardrailBadge
+                label="Restriction"
+                state={restrictionState}
+                metadataTags={guardrailRestriction.metadata_tags ?? []}
+                detail={
+                  restrictionBestStrategy?.strategy
+                    ? `Best: ${restrictionBestStrategy.strategy} ${Math.round((restrictionBestStrategy.compatibility ?? 0) * 100)}%`
+                    : restrictionState === 'review'
+                    ? 'Review recommended'
+                    : undefined
+                }
+              />
               <GuardrailBadge label="Assembly" state={assemblyState} metadataTags={guardrailAssembly.metadata_tags ?? []} detail={guardrailAssembly.ligations ? `${guardrailAssembly.ligations.length} ligations` : undefined} />
               <GuardrailBadge label="QC" state={qcState} metadataTags={guardrailQc.metadata_tags ?? []} detail={guardrailQc.breaches?.length ? `${guardrailQc.breaches.length} breaches` : undefined} />
+              <GuardrailBadge
+                label="Custody"
+                state={custodyBadgeState}
+                metadataTags={custodyTags}
+                detail={custodyDetail ?? (backpressureActive ? gateMessage : undefined)}
+              />
             </div>
             {needsEscalation && (
               <GuardrailEscalationPrompt
@@ -243,6 +329,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
                   restriction_state: restrictionState,
                   assembly_state: assemblyState,
                   qc_state: qcState,
+                  custody_status: custodyStatusRaw,
                 }}
               />
             )}
@@ -253,15 +340,61 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
               notes={(reviewerNotes?.notes as string | undefined) ?? session.guardrail_state?.review_notes}
               pendingSince={session.updated_at ?? session.created_at ?? null}
             />
+            <div className="rounded border border-slate-200 p-3">
+              <h3 className="text-sm font-semibold text-slate-800">Toolkit preset</h3>
+              <p className="text-xs text-slate-500">
+                {toolkitState?.preset_name || toolkitState?.preset_id || 'Auto detected'}
+              </p>
+              {toolkitRecommended.length > 0 && (
+                <p className="mt-2 text-xs text-slate-500">Recommended use: {toolkitRecommended.join(', ')}</p>
+              )}
+              {toolkitNotes.length > 0 && (
+                <ul className="mt-2 space-y-1 text-xs text-slate-500">
+                  {toolkitNotes.map((note) => (
+                    <li key={note}>{note}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {restrictionStrategies.length > 0 && (
+              <div className="rounded border border-slate-200 p-3">
+                <h3 className="text-sm font-semibold text-slate-800">Restriction strategies</h3>
+                <ul className="mt-2 space-y-1 text-xs text-slate-500">
+                  {restrictionStrategies.map((entry) => (
+                    <li key={entry.strategy}>
+                      {entry.strategy}: {Math.round((entry.compatibility ?? 0) * 100)}% – {entry.guardrail_hint}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
         </div>
       </section>
 
       <section className="rounded border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Stage controls</h2>
+        {backpressureActive && (
+          <p className="mt-2 text-sm text-amber-600" data-testid="planner-guardrail-warning">
+            Stage execution is paused until custody guardrails clear the hold.
+          </p>
+        )}
         <div className="mt-4 grid gap-6 lg:grid-cols-2">
           <form onSubmit={handlePrimerSubmit} className="space-y-3" data-testid="primer-stage-form">
             <h3 className="text-sm font-semibold text-slate-800">Primer design</h3>
+            <label className="flex flex-col text-xs text-slate-600">
+              Primer preset
+              <select
+                value={primerPreset}
+                onChange={(event) => setPrimerPreset(event.target.value)}
+                className="mt-1 rounded border border-slate-300 px-2 py-1 text-sm"
+              >
+                <option value="auto">Auto detect</option>
+                <option value="multiplex">Multiplex</option>
+                <option value="qpcr">qPCR validation</option>
+                <option value="high_gc">High GC</option>
+              </select>
+            </label>
             <label className="flex flex-col text-xs text-slate-600">
               Target Tm (°C)
               <input
@@ -294,7 +427,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
             <button
               type="submit"
               className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-              disabled={mutations.stage.isPending}
+              disabled={mutations.stage.isPending || backpressureActive}
             >
               Run primer stage
             </button>
@@ -314,7 +447,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
             <button
               type="submit"
               className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-              disabled={mutations.stage.isPending}
+              disabled={mutations.stage.isPending || backpressureActive}
             >
               Run restriction stage
             </button>
@@ -337,7 +470,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
             <button
               type="submit"
               className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-              disabled={mutations.stage.isPending}
+              disabled={mutations.stage.isPending || backpressureActive}
             >
               Run assembly stage
             </button>
@@ -367,7 +500,7 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
             <button
               type="submit"
               className="rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:opacity-60"
-              disabled={mutations.stage.isPending}
+              disabled={mutations.stage.isPending || backpressureActive}
             >
               Run QC stage
             </button>

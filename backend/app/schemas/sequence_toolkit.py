@@ -118,24 +118,52 @@ class QCConfig(BaseModel):
     chromatogram_mismatch_threshold: float = Field(default=0.05, ge=0.0, le=1.0)
 
 
+class SequenceToolkitPreset(BaseModel):
+    """Preset descriptor capturing curated overrides for toolkit consumers."""
+
+    # purpose: represent reusable primer/assembly profiles tuned for lab workflows
+    # related_docs: docs/planning/primer_presets.md
+    preset_id: str
+    name: str
+    description: str
+    primer_overrides: Optional[PrimerDesignConfig] = None
+    restriction_overrides: Optional[RestrictionDigestConfig] = None
+    assembly_overrides: Optional[AssemblySimulationConfig] = None
+    metadata_tags: List[str] = Field(default_factory=list)
+    recommended_use: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
 class SequenceToolkitProfile(BaseModel):
     """Aggregate configuration bundle for sequence toolkit consumers."""
 
     # purpose: provide cohesive profile overrides for planner and DNA asset workflows
+    preset_id: Optional[str] = None
+    preset_name: Optional[str] = None
+    preset_description: Optional[str] = None
+    metadata_tags: List[str] = Field(default_factory=list)
     primer: PrimerDesignConfig = Field(default_factory=PrimerDesignConfig)
     restriction: RestrictionDigestConfig = Field(default_factory=RestrictionDigestConfig)
     assembly: AssemblySimulationConfig = Field(default_factory=AssemblySimulationConfig)
     qc: QCConfig = Field(default_factory=QCConfig)
+    recommended_use: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
 
     def with_strategy(self, strategy: str) -> "SequenceToolkitProfile":
         """Return a cloned profile with the specified assembly strategy."""
 
         # purpose: allow quick derivation of per-strategy assembly heuristics
         return SequenceToolkitProfile(
+            preset_id=self.preset_id,
+            preset_name=self.preset_name,
+            preset_description=self.preset_description,
+            metadata_tags=list(self.metadata_tags),
             primer=self.primer.model_copy(),
             restriction=self.restriction.model_copy(),
             assembly=self.assembly.model_copy(update={"strategy": strategy}),
             qc=self.qc.model_copy(),
+            recommended_use=list(self.recommended_use),
+            notes=list(self.notes),
         )
 
 
@@ -180,6 +208,18 @@ class RestrictionDigestResult(BaseModel):
     kinetics_profiles: List[EnzymeKineticsProfile] = Field(default_factory=list)
 
 
+class RestrictionStrategyEvaluation(BaseModel):
+    """Restriction strategy scoring payload."""
+
+    # purpose: score strategy feasibility for planner guardrails and guardrail hints
+    strategy: str
+    compatibility: float = Field(ge=0.0, le=1.0)
+    buffer_recommendations: List[str] = Field(default_factory=list)
+    guardrail_hint: str
+    notes: List[str] = Field(default_factory=list)
+    metadata_tags: List[str] = Field(default_factory=list)
+
+
 class RestrictionDigestResponse(BaseModel):
     """Aggregate restriction digest response payload."""
 
@@ -187,6 +227,34 @@ class RestrictionDigestResponse(BaseModel):
     enzymes: List[EnzymeMetadata]
     digests: List[RestrictionDigestResult]
     alerts: List[str] = Field(default_factory=list)
+    strategy_scores: List["RestrictionStrategyEvaluation"] = Field(default_factory=list)
+    profile: Optional[SequenceToolkitProfile] = None
+
+
+class PrimerCrossDimerFlag(BaseModel):
+    """Cross-dimer risk descriptor for multiplex primer sets."""
+
+    # purpose: document risky primer pairings for multiplex guardrails
+    primer_a: str
+    primer_b: str
+    overlap: int = Field(default=0, ge=0)
+    delta_g: Optional[float] = None
+    severity: str = Field(default="review")
+    metadata_tags: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
+
+
+class PrimerMultiplexCompatibility(BaseModel):
+    """Aggregate multiplex assessment for primer sets."""
+
+    # purpose: expose tm window, cross-dimer risks, and preset context to planners
+    risk_level: str = Field(default="ok")
+    delta_tm_window: float = Field(default=0.0, ge=0.0)
+    average_tm: float = Field(default=0.0, ge=0.0)
+    cross_dimer_flags: List[PrimerCrossDimerFlag] = Field(default_factory=list)
+    metadata_tags: List[str] = Field(default_factory=list)
+    recommended_use: List[str] = Field(default_factory=list)
+    notes: List[str] = Field(default_factory=list)
 
 
 class PrimerThermodynamics(BaseModel):
@@ -240,6 +308,8 @@ class PrimerDesignResponse(BaseModel):
     # purpose: share primer results plus summary statistics
     primers: List[PrimerDesignRecord]
     summary: PrimerDesignSummary
+    multiplex: Optional[PrimerMultiplexCompatibility] = None
+    profile: Optional[SequenceToolkitProfile] = None
 
 
 class AssemblyStepMetrics(BaseModel):
@@ -271,6 +341,7 @@ class AssemblySimulationResult(BaseModel):
     max_success: float = Field(ge=0.0, le=1.0)
     payload_contract: Dict[str, Any] = Field(default_factory=dict)
     metadata_tags: List[str] = Field(default_factory=list)
+    profile: Optional[SequenceToolkitProfile] = None
 
 
 class QCReport(BaseModel):
@@ -288,4 +359,5 @@ class QCReportResponse(BaseModel):
 
     # purpose: allow API responses to provide typed QC payloads
     reports: List[QCReport]
+    profile: Optional[SequenceToolkitProfile] = None
 

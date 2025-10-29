@@ -1599,6 +1599,12 @@ class CloningPlannerSession(Base):
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     status = Column(String, default="draft", nullable=False)
     assembly_strategy = Column(String, nullable=False)
+    protocol_execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     input_sequences = Column(JSON, default=list, nullable=False)
     primer_set = Column(JSON, default=dict, nullable=False)
     restriction_digest = Column(JSON, default=dict, nullable=False)
@@ -1615,6 +1621,7 @@ class CloningPlannerSession(Base):
     completed_at = Column(DateTime)
 
     created_by = relationship("User")
+    protocol_execution = relationship("ProtocolExecution")
     stage_history = relationship(
         "CloningPlannerStageRecord",
         back_populates="session",
