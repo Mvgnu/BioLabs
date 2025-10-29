@@ -23,13 +23,37 @@ from .dna_assets import (
     DNAAssetVersionCreate,
     DNAAssetVersionOut,
     DNAViewerAnalytics,
+    DNAViewerCustodyEscalation,
+    DNAViewerCustodyLedgerEntry,
     DNAViewerGovernanceContext,
+    DNAViewerGovernanceTimelineEntry,
     DNAViewerGuardrailTimelineEvent,
     DNAViewerLineageBreadcrumb,
     DNAViewerFeature,
+    DNAViewerPlannerContext,
     DNAViewerPayload,
     DNAViewerTrack,
     DNAViewerTranslation,
+)
+from .lifecycle import (
+    LifecycleContextChip,
+    LifecycleScope,
+    LifecycleSummary,
+    LifecycleTimelineEntry,
+    LifecycleTimelineResponse,
+)
+from .sharing import (
+    DNARepositoryCollaboratorAdd,
+    DNARepositoryCollaboratorOut,
+    DNARepositoryCreate,
+    DNARepositoryGuardrailPolicy,
+    DNARepositoryOut,
+    DNARepositoryReleaseApprovalCreate,
+    DNARepositoryReleaseApprovalOut,
+    DNARepositoryReleaseCreate,
+    DNARepositoryReleaseOut,
+    DNARepositoryTimelineEventOut,
+    DNARepositoryUpdate,
 )
 from .sequence_toolkit import (
     AssemblySimulationConfig,
@@ -43,6 +67,7 @@ from .sequence_toolkit import (
     RestrictionDigestResponse,
     SequenceToolkitProfile,
     SequenceToolkitPreset,
+    SequenceToolkitPresetCatalog,
     RestrictionStrategyEvaluation,
 )
 from .sample_governance import (
@@ -54,8 +79,10 @@ from .sample_governance import (
     FreezerFault,
     FreezerFaultCreate,
     ProtocolExecutionContext,
+    InventorySampleSummary,
     SampleCustodyLogCreate,
     SampleCustodyLogOut,
+    SampleDetail,
 )
 
 
@@ -164,6 +191,8 @@ class InventoryItemCreate(BaseModel):
     location_id: Optional[UUID] = None
     location: Dict[str, Any] = {}
     status: Optional[str] = None
+    custody_state: Optional[str] = None
+    custody_snapshot: Dict[str, Any] = {}
     custom_data: Dict[str, Any] = {}
 
 
@@ -176,6 +205,8 @@ class InventoryItemUpdate(BaseModel):
     location_id: Optional[UUID] = None
     location: Optional[Dict[str, Any]] = None
     status: Optional[str] = None
+    custody_state: Optional[str] = None
+    custody_snapshot: Optional[Dict[str, Any]] = None
     custom_data: Optional[Dict[str, Any]] = None
 
 
@@ -189,6 +220,8 @@ class InventoryItemOut(BaseModel):
     location_id: Optional[UUID]
     location: Dict[str, Any]
     status: str
+    custody_state: Optional[str]
+    custody_snapshot: Dict[str, Any] | None = None
     custom_data: Dict[str, Any]
     created_at: datetime
     updated_at: datetime
@@ -2795,6 +2828,12 @@ class CloningPlannerStageRecordOut(BaseModel):
     branch_id: UUID | None = None
     checkpoint_key: str | None = None
     checkpoint_payload: dict[str, Any]
+    resume_token: dict[str, Any] | None = None
+    branch_lineage: dict[str, Any] | None = None
+    mitigation_hints: list[dict[str, Any]] = Field(default_factory=list)
+    recovery_context: dict[str, Any] | None = None
+    recovery_bundle: dict[str, Any] | None = None
+    drill_summaries: list[dict[str, Any]] = Field(default_factory=list)
     guardrail_transition: dict[str, Any]
     timeline_position: str | None = None
     created_at: datetime | None = None
@@ -2838,6 +2877,8 @@ class CloningPlannerSessionOut(BaseModel):
     inventory_reservations: list[dict[str, Any]]
     guardrail_state: dict[str, Any]
     guardrail_gate: dict[str, Any]
+    recovery_context: dict[str, Any] | None = None
+    recovery_bundle: dict[str, Any] | None = None
     stage_timings: dict[str, Any]
     current_step: str | None = None
     celery_task_id: str | None = None
@@ -2848,8 +2889,11 @@ class CloningPlannerSessionOut(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None
+    drill_summaries: list[dict[str, Any]] = Field(default_factory=list)
     stage_history: list[CloningPlannerStageRecordOut]
     qc_artifacts: list[CloningPlannerQCArtifactOut]
+    replay_window: list[CloningPlannerStageRecordOut] = Field(default_factory=list)
+    toolkit_recommendations: dict[str, Any] = Field(default_factory=dict)
 
 
 class CloningPlannerGuardrailStatus(BaseModel):

@@ -12,6 +12,7 @@ from ..auth import get_current_user
 from ..database import get_db
 from ..rbac import check_team_role
 from ..services import sample_governance
+from .. import pubsub
 
 # purpose: expose custody governance endpoints for freezer topology and ledger actions
 # status: pilot
@@ -46,6 +47,7 @@ def list_custody_logs(
     protocol_execution_id: UUID | None = None,
     execution_event_id: UUID | None = None,
     compartment_id: UUID | None = None,
+    inventory_item_id: UUID | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
@@ -59,6 +61,7 @@ def list_custody_logs(
         protocol_execution_id=protocol_execution_id,
         execution_event_id=execution_event_id,
         compartment_id=compartment_id,
+        inventory_item_id=inventory_item_id,
         limit=limit,
     )
     return logs
@@ -69,15 +72,30 @@ def list_custody_logs(
     status_code=status.HTTP_201_CREATED,
     response_model=schemas.SampleCustodyLogOut,
 )
-def create_custody_log(
+async def create_custody_log(
     entry: schemas.SampleCustodyLogCreate,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
     _require_operator(user)
-    log = sample_governance.record_custody_event(db, entry, actor_id=user.id)
+    log, inventory_item = sample_governance.record_custody_event(
+        db, entry, actor_id=user.id
+    )
     db.refresh(log)
     db.commit()
+    if inventory_item and inventory_item.team_id:
+        await pubsub.publish_team_event(
+            str(inventory_item.team_id),
+            {
+                "type": "sample.custody_log.created",
+                "log_id": str(log.id),
+                "inventory_item_id": str(inventory_item.id),
+                "custody_state": inventory_item.custody_state,
+                "performed_at": log.performed_at,
+                "action": log.custody_action,
+                "guardrail_flags": list(log.guardrail_flags or []),
+            },
+        )
     return log
 
 
@@ -90,16 +108,20 @@ def list_custody_escalations(
     status_filters: list[str] | None = Query(default=None, alias="status"),
     protocol_execution_id: UUID | None = None,
     execution_event_id: UUID | None = None,
+    inventory_item_id: UUID | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
     _require_operator(user)
+    team_scope = [membership.team_id for membership in user.teams]
     escalations = sample_governance.list_custody_escalations(
         db,
         team_id=team_id,
         statuses=status_filters,
         protocol_execution_id=protocol_execution_id,
         execution_event_id=execution_event_id,
+        inventory_item_id=inventory_item_id,
+        team_scope=team_scope,
     )
     return escalations
 

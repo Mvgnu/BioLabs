@@ -42,6 +42,7 @@ class SampleCustodyLogBase(BaseModel):
     protocol_execution_id: UUID | None = None
     execution_event_id: UUID | None = None
     compartment_id: UUID | None = None
+    inventory_item_id: UUID | None = None
     custody_action: str = Field(min_length=1)
     quantity: int | None = None
     quantity_units: str | None = None
@@ -62,6 +63,28 @@ class SampleCustodyLogOut(SampleCustodyLogBase):
     performed_by_id: UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class InventorySampleSummary(BaseModel):
+    id: UUID
+    name: str
+    item_type: str
+    team_id: UUID | None = None
+    custody_state: str | None = None
+    custody_snapshot: dict[str, Any] = Field(default_factory=dict)
+    guardrail_flags: list[str] = Field(default_factory=list)
+    linked_planner_session_ids: list[UUID] = Field(default_factory=list)
+    linked_asset_version_ids: list[UUID] = Field(default_factory=list)
+    open_escalations: int = 0
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SampleDetail(BaseModel):
+    item: InventorySampleSummary
+    recent_logs: list[SampleCustodyLogOut] = Field(default_factory=list)
+    escalations: list[CustodyEscalation] = Field(default_factory=list)
 
 
 class ProtocolExecutionContext(BaseModel):

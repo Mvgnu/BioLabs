@@ -5,10 +5,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CloningPlannerSession } from '../../../types'
 import { PlannerWizard } from '../PlannerWizard'
 import { useCloningPlanner } from '../../../hooks/useCloningPlanner'
+import { useSequenceToolkitPresets } from '../../../hooks/useSequenceToolkitPresets'
 
 vi.mock('../../../hooks/useCloningPlanner')
+vi.mock('../../../hooks/useSequenceToolkitPresets')
 
 const mockedUseCloningPlanner = vi.mocked(useCloningPlanner)
+const mockedUseSequenceToolkitPresets = vi.mocked(useSequenceToolkitPresets)
 
 const sessionFixture = (): CloningPlannerSession => ({
   id: 'planner-1',
@@ -112,6 +115,27 @@ const createHookReturn = () => {
         timestamp: '2024-01-01T00:00:00.000Z',
       },
     ],
+    replayWindow: session.stage_history,
+    comparisonWindow: [],
+    latestResumeToken: {
+      session_id: 'planner-1',
+      checkpoint: 'primers',
+      branch_id: 'branch-main',
+      timeline_cursor: 'cursor-1',
+    },
+    recoveryBundle: {
+      stage: 'restriction',
+      recommended_stage: 'restriction',
+      resume_token: {
+        session_id: 'planner-1',
+        checkpoint: 'primers',
+        branch_id: 'branch-main',
+        timeline_cursor: 'cursor-1',
+      },
+      guardrail_reasons: [],
+      resume_ready: true,
+    },
+    mitigationHints: [],
     runStage,
     resume,
     finalize,
@@ -131,6 +155,93 @@ const createHookReturn = () => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  mockedUseSequenceToolkitPresets.mockReturnValue({
+    data: {
+      presets: [
+        {
+          preset_id: 'multiplex',
+          name: 'Multiplex',
+          description: 'Multi-amplicon balancing',
+          metadata_tags: ['preset:multiplex'],
+          recommended_use: ['Multiplex PCR'],
+          notes: ['Balance ΔTm across primer sets.'],
+          primer_overrides: {
+            product_size_range: [80, 280],
+            target_tm: 60,
+            min_tm: 55,
+            max_tm: 65,
+            min_size: 18,
+            opt_size: 22,
+            max_size: 30,
+            num_return: 1,
+            na_concentration_mM: 50,
+            primer_concentration_nM: 500,
+            gc_clamp_min: 1,
+            gc_clamp_max: 2,
+          },
+          restriction_overrides: {
+            enzymes: ['EcoRI', 'BamHI'],
+            require_all: false,
+            reaction_buffer: 'CutSmart',
+          },
+          assembly_overrides: {
+            strategy: 'gibson',
+            base_success: 0.85,
+            tm_penalty_factor: 0.1,
+            minimal_site_count: 2,
+            low_site_penalty: 0.4,
+            ligation_efficiency: 0.9,
+            kinetics_model: 'default',
+            overlap_optimum: 26,
+            overlap_tolerance: 8,
+            overhang_diversity_factor: null,
+          },
+        },
+        {
+          preset_id: 'high_gc',
+          name: 'High GC',
+          description: 'Stabilise GC-heavy amplicons',
+          metadata_tags: ['preset:high_gc'],
+          recommended_use: ['GC-rich templates'],
+          notes: ['Increase salt and clamp length.'],
+          primer_overrides: {
+            product_size_range: [100, 320],
+            target_tm: 62,
+            min_tm: 58,
+            max_tm: 66,
+            min_size: 20,
+            opt_size: 24,
+            max_size: 32,
+            num_return: 2,
+            na_concentration_mM: 70,
+            primer_concentration_nM: 900,
+            gc_clamp_min: 2,
+            gc_clamp_max: 4,
+          },
+          restriction_overrides: {
+            enzymes: ['NheI', 'XhoI'],
+            require_all: false,
+            reaction_buffer: 'High-GC',
+          },
+          assembly_overrides: {
+            strategy: 'gibson',
+            base_success: 0.72,
+            tm_penalty_factor: 0.07,
+            minimal_site_count: 2,
+            low_site_penalty: 0.6,
+            ligation_efficiency: 0.9,
+            kinetics_model: 'high_fidelity',
+            overlap_optimum: 28,
+            overlap_tolerance: 8,
+            overhang_diversity_factor: null,
+          },
+        },
+      ],
+      count: 2,
+      generated_at: new Date().toISOString(),
+    },
+    isLoading: false,
+  })
 })
 
 describe('PlannerWizard', () => {

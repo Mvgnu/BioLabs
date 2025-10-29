@@ -1,4 +1,6 @@
+from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -92,12 +94,61 @@ def viewer_asset():
     session.commit()
     session.refresh(asset)
     session.refresh(asset.latest_version)
-    yield asset
+    yield asset, session
     session.close()
 
 
 def test_build_viewer_payload_tracks_and_translations(viewer_asset):
-    payload = dna_assets.build_viewer_payload(viewer_asset)
+    asset, session = viewer_asset
+    latest_version = asset.latest_version
+    assert latest_version is not None
+
+    planner = models.CloningPlannerSession(
+        created_by_id=asset.created_by_id,
+        status="halted",
+        assembly_strategy="gibson",
+        input_sequences=[{"name": asset.name, "sequence": latest_version.sequence}],
+        primer_set={},
+        restriction_digest={},
+        assembly_plan={},
+        qc_reports={},
+        inventory_reservations=[],
+        guardrail_state={
+            "custody_status": "halted",
+            "custody": {"status": "halted", "recovery_gate": True},
+        },
+        branch_state={"order": ["branch-1"], "branches": {"branch-1": {"id": "branch-1"}}},
+        active_branch_id=uuid4(),
+    )
+    session.add(planner)
+    session.flush()
+
+    custody_log = models.GovernanceSampleCustodyLog(
+        asset_version_id=latest_version.id,
+        planner_session_id=planner.id,
+        custody_action="deposit",
+        quantity=1,
+        quantity_units="tube",
+        guardrail_flags=["warning"],
+        meta={"severity": "review"},
+        performed_at=datetime.now(timezone.utc),
+    )
+    session.add(custody_log)
+    session.flush()
+
+    escalation = models.GovernanceCustodyEscalation(
+        log_id=custody_log.id,
+        severity="review",
+        reason="temperature",
+        status="open",
+        created_at=datetime.now(timezone.utc),
+        due_at=datetime.now(timezone.utc),
+        guardrail_flags=["temp"],
+    )
+    session.add(escalation)
+    session.commit()
+
+    payload = dna_assets.build_viewer_payload(asset, db=session)
 
     assert payload.sequence.startswith("ATGC")
     assert payload.tracks[0].features
@@ -115,8 +166,15 @@ def test_build_viewer_payload_tracks_and_translations(viewer_asset):
     assert payload.analytics.codon_adaptation_index >= 0.0
     assert isinstance(payload.analytics.motif_hotspots, list)
     assert "mitigations" in payload.analytics.thermodynamic_risk
+    assert payload.toolkit_recommendations["scorecard"]["preset_id"]
+    assert payload.toolkit_recommendations["strategy_scores"]
+    assert payload.version.toolkit_recommendations["scorecard"]["preset_id"]
     assert payload.governance_context.lineage
     assert payload.governance_context.guardrail_history == []
+    assert payload.governance_context.custody_ledger[0].custody_action == "deposit"
+    assert payload.governance_context.custody_escalations[0].reason == "temperature"
+    assert any(entry.source == "custody_escalation" for entry in payload.governance_context.timeline)
+    assert payload.governance_context.planner_sessions[0].session_id == planner.id
     assert payload.governance_context.regulatory_feature_density is None or isinstance(
         payload.governance_context.regulatory_feature_density, float
     )
