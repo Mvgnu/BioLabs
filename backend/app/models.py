@@ -83,9 +83,20 @@ class InventoryItem(Base):
     location_id = Column(UUID(as_uuid=True), ForeignKey("locations.id"))
     location = Column(JSON, default={})
     status = Column(String, default="available")
+    # purpose: persist custody lifecycle summary for inventory samples
+    # status: pilot
+    custody_state = Column(String, default="idle")
+    custody_snapshot = Column(JSON, default=dict)
     custom_data = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
+
+    custody_logs = relationship(
+        "GovernanceSampleCustodyLog",
+        back_populates="inventory_item",
+        cascade="all, delete-orphan",
+        order_by="GovernanceSampleCustodyLog.performed_at.desc()",
+    )
 
 class FieldDefinition(Base):
     __tablename__ = "field_definitions"
@@ -1285,6 +1296,12 @@ class GovernanceSampleCustodyLog(Base):
         nullable=True,
         index=True,
     )
+    inventory_item_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("inventory_items.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     custody_action = Column(String, nullable=False)
     quantity = Column(Integer, nullable=True)
     quantity_units = Column(String, nullable=True)
@@ -1301,6 +1318,7 @@ class GovernanceSampleCustodyLog(Base):
     protocol_execution = relationship("ProtocolExecution", back_populates="custody_logs")
     execution_event = relationship("ExecutionEvent", backref="custody_logs")
     compartment = relationship("GovernanceFreezerCompartment", back_populates="custody_logs")
+    inventory_item = relationship("InventoryItem", back_populates="custody_logs")
     actor = relationship("User", foreign_keys=[performed_by_id])
     team = relationship("Team", foreign_keys=[performed_for_team_id])
 
@@ -2235,3 +2253,203 @@ class ItemType(Base):
     description = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
+
+
+class DNARepository(Base):
+    __tablename__ = "dna_repositories"
+
+    # purpose: persist guardrail-aware collaborative DNA workspaces for governed sharing
+    # status: experimental
+    # depends_on: users, teams
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    slug = Column(String, unique=True, nullable=False)
+    description = Column(Text, nullable=True)
+    owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    guardrail_policy = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    owner = relationship("User")
+    team = relationship("Team")
+    collaborators = relationship(
+        "DNARepositoryCollaborator",
+        back_populates="repository",
+        cascade="all, delete-orphan",
+    )
+    releases = relationship(
+        "DNARepositoryRelease",
+        back_populates="repository",
+        cascade="all, delete-orphan",
+        order_by="DNARepositoryRelease.created_at.desc()",
+    )
+    timeline_events = relationship(
+        "DNARepositoryTimelineEvent",
+        back_populates="repository",
+        cascade="all, delete-orphan",
+        order_by="DNARepositoryTimelineEvent.created_at.desc()",
+    )
+
+
+class DNARepositoryCollaborator(Base):
+    __tablename__ = "dna_repository_collaborators"
+
+    # purpose: capture repository collaborator roles and guardrail-aware invitation state
+    # status: experimental
+    # depends_on: dna_repositories, users
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    role = Column(String, default="contributor", nullable=False)
+    invitation_status = Column(String, default="active", nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    meta = Column(JSON, default=dict, nullable=False)
+
+    repository = relationship("DNARepository", back_populates="collaborators")
+    user = relationship("User")
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "repository_id",
+            "user_id",
+            name="uq_dna_repository_collaborator",
+        ),
+    )
+
+
+class DNARepositoryRelease(Base):
+    __tablename__ = "dna_repository_releases"
+
+    # purpose: store guardrail-validated release payloads and publication lifecycle state
+    # status: experimental
+    # depends_on: dna_repositories, users
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    notes = Column(Text, nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    status = Column(String, default="draft", nullable=False)
+    guardrail_state = Column(String, default="pending", nullable=False)
+    guardrail_snapshot = Column(JSON, default=dict, nullable=False)
+    mitigation_summary = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+    published_at = Column(DateTime, nullable=True)
+
+    repository = relationship("DNARepository", back_populates="releases")
+    creator = relationship("User")
+    approvals = relationship(
+        "DNARepositoryReleaseApproval",
+        back_populates="release",
+        cascade="all, delete-orphan",
+    )
+    timeline_events = relationship(
+        "DNARepositoryTimelineEvent",
+        back_populates="release",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "repository_id",
+            "version",
+            name="uq_dna_repository_release_version",
+        ),
+    )
+
+
+class DNARepositoryReleaseApproval(Base):
+    __tablename__ = "dna_repository_release_approvals"
+
+    # purpose: capture guardrail approvals required before release publication
+    # status: experimental
+    # depends_on: dna_repository_releases, users
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    release_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_releases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    approver_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    status = Column(String, default="pending", nullable=False)
+    guardrail_flags = Column(JSON, default=list, nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    release = relationship("DNARepositoryRelease", back_populates="approvals")
+    approver = relationship("User")
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "release_id",
+            "approver_id",
+            name="uq_dna_repository_release_approver",
+        ),
+    )
+
+
+class DNARepositoryTimelineEvent(Base):
+    __tablename__ = "dna_repository_timeline_events"
+
+    # purpose: track repository history for guardrail-aware workspace timelines
+    # status: experimental
+    # depends_on: dna_repositories, dna_repository_releases
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    release_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_releases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    event_type = Column(String, nullable=False)
+    payload = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    repository = relationship("DNARepository", back_populates="timeline_events")
+    release = relationship("DNARepositoryRelease", back_populates="timeline_events")
+    actor = relationship("User")

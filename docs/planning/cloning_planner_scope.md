@@ -2,12 +2,12 @@
 
 - purpose: define the backend and frontend orchestration blueprint that chains existing sequence utilities into inventory-aware cloning plans
 - status: draft
-- updated: 2025-07-05
+- updated: 2025-07-15
 - related_docs: docs/governance/export_enforcement_audit.md, docs/governance/analytics_extension_plan.md
 
 ## Existing Building Blocks
 - Sequence endpoints already expose primer design, restriction maps, GenBank parsing, chromatogram ingestion, and async analysis jobs via `/api/sequence/*` routes, backed by helpers in `backend/app/sequence.py` and FastAPI router `backend/app/routes/sequence.py`.【F:backend/app/routes/sequence.py†L13-L122】【F:backend/app/sequence.py†L1-L119】
-- Inventory models and CSV exporter live in `backend/app/routes/inventory.py`, with items persisted through `models.InventoryItem`. Guardrail integration is pending (see audit document).【F:backend/app/routes/inventory.py†L193-L236】
+- Inventory models and CSV exporter live in `backend/app/routes/inventory.py`, with items persisted through `models.InventoryItem`. Custody integration now surfaces `/api/inventory/samples` and `/api/inventory/items/{id}/custody` dashboards, linking planner sessions and DNA assets back to sample guardrail state.【F:backend/app/routes/inventory.py†L200-L347】
 - Celery infrastructure exists for narrative packaging and sequence analysis jobs (`backend/app/tasks.py`, `backend/app/workers/packaging.py`), providing patterns for resumable orchestration and storage management.【F:backend/app/workers/packaging.py†L30-L221】【F:backend/app/tasks.py†L46-L69】
 - Frontend sequence utilities sit under `frontend/app/sequence/` with hooks in `frontend/app/hooks` for API calls, which we can extend for planner flows.
 - Sequence toolkit catalogs now include enzyme kinetics (`backend/app/data/enzyme_kinetics.json`) and ligation efficiency presets (`backend/app/data/ligation_profiles.json`) surfaced through cached loaders so planner stages can consume consistent parameters without re-reading disk.
@@ -20,6 +20,7 @@
    - Restriction analysis (`restriction_map`) filtered by assembly strategy.
    - Enzyme compatibility scoring and recommended digestion plans.
    - Assembly simulation (Gibson overlap checks, Golden Gate overhang validation).
+   - Toolkit recommendation bundle builder merging preset scorecards, buffer guidance, and QC readiness for planner and DNA viewer consumers.
    - Payload contract builder stamping metadata tags for governance-aware dashboards.
    - Optional chromatogram QC ingestion to gate progression when sequencing data is attached.
 3. **Inventory Awareness**: Query `models.InventoryItem` for enzyme/reagent SKUs, enforce reservations, and record expirations. Provide failure reasons when stock insufficient.
@@ -36,12 +37,17 @@
   - `GET /api/cloning-planner/{session_id}` – retrieve aggregated outputs and guardrail status.
 - `POST /api/cloning-planner/{session_id}/finalize` – persist final plan, enforce guardrails, attach inventory reservations.
 - Schema updates in `backend/app/schemas.py` for session payloads and stage outputs.
-- Real-time events stream (`GET /api/cloning-planner/{session_id}/events`) now exposes branch-aware payloads including guardrail gate transitions, checkpoint metadata, and timeline cursors so UI clients can replay halted sessions and custody escalations without polling.
+- Real-time events stream (`GET /api/cloning-planner/{session_id}/events`) now exposes branch-aware payloads including guardrail gate transitions, checkpoint metadata, and timeline cursors so UI clients can replay halted sessions and custody escalations without polling. Each envelope also carries a `recovery_bundle` that pairs resume tokens, branch lineage deltas, mitigation hints, and guardrail readiness signals for deterministic restart flows, plus `drill_summaries` detailing custody drill overlays (severity, open escalation counts, resume readiness) derived from governance event overlays.
+- Toolkit catalog route `GET /api/sequence-toolkit/presets` publishes curated preset metadata for planner intake and DNA viewer overlays, driving consistent preset selection experiences across surfaces.
+- SSE envelopes additionally carry `recovery_context` metadata summarizing active holds, pending mitigation drills, and last resume timestamps so the frontend can render custody recovery actions alongside guardrail transitions.
 
 ## Timeline Replay & Branch Recovery
 - Persist branch metadata (`active_branch_id`, `branch_state`) on each session alongside checkpoint payloads for every stage record, ensuring resume flows understand whether operators followed the mainline or a remediation branch.
 - Emit SSE payloads with explicit `guardrail_transition` fields capturing prior and current gate states, plus `checkpoint` descriptors keyed by stage, enabling deterministic replay and governance auditing.
-- Frontend `PlannerTimeline` component consumes the enriched stream, providing a scrubber that highlights guardrail holds, custody escalations, and branch switches so operators can narrate recovery actions directly within the planner UI.
+- Frontend `PlannerTimeline` component consumes the enriched stream, providing a scrubber that highlights guardrail holds, custody escalations, branch comparisons, mitigation hint links, and per-checkpoint resume controls so operators can narrate and restart recovery actions directly within the planner UI.
+- Branch comparison envelopes now describe ahead checkpoints, missing reference stages, and divergent guardrail states, allowing operators to reconcile remediation branches before resuming halted work.
+- Custody overlays include aggregated severity metrics, open drill/escalation totals, and resume-readiness deltas for the active and reference branches so replay operators immediately understand which branch carries higher governance risk before performing a resume action.
+- `recovery_context` snapshots annotate stage history with guardrail hold lifecycle details (hold start, released timestamps, pending mitigations) and drive automatic Celery re-queues when custody recovery clears the gate, ensuring deterministic replay includes recovery provenance. Stage records now persist a `recovery_bundle` mirror of the SSE payload so downstream UIs can display resume readiness, open escalations, pending drills, and curated `drill_summaries` directly from history without recomputing guardrail state.
 
 ## Frontend Experience
 - Create planner UI under `frontend/app/cloning-planner/` with multi-step wizard components (sequence upload, strategy selection, reagent confirmation, assembly preview).

@@ -7,7 +7,8 @@ import React, { type FC, useMemo, useState } from 'react'
 
 import { GuardrailBadge } from '../../components/guardrails/GuardrailBadge'
 import { GuardrailEscalationPrompt } from '../../components/guardrails/GuardrailEscalationPrompt'
-import type { DNAViewerPayload } from '../../types'
+import { LifecycleSummaryPanel } from '../../components/lifecycle/LifecycleSummaryPanel'
+import type { DNAViewerPayload, DNAViewerPlannerContext } from '../../types'
 import { CircularGenome } from './CircularGenome'
 import { LinearTrack } from './LinearTrack'
 
@@ -19,7 +20,62 @@ export const DNAViewerSummary: FC<DNAViewerSummaryProps> = ({ payload }) => {
   const annotationsTrack = payload.tracks.find((track) => track.name === 'Annotations') ?? payload.tracks[0]
   const guardrailTrack = payload.tracks.find((track) => track.name === 'Guardrails')
   const guardrailStates = payload.guardrails
+  const governance = payload.governance_context
   const [showAnalytics, setShowAnalytics] = useState(false)
+
+  const custodyLedger = useMemo(() => governance.custody_ledger?.slice(0, 6) ?? [], [governance.custody_ledger])
+  const timelineEntries = useMemo(() => governance.timeline?.slice(0, 10) ?? [], [governance.timeline])
+  const openCustodyEscalations = useMemo(
+    () => governance.custody_escalations?.filter((entry) => entry.status !== 'resolved') ?? [],
+    [governance.custody_escalations],
+  )
+  const plannerContexts = useMemo(() => governance.planner_sessions ?? [], [governance.planner_sessions])
+  const sopLinks = useMemo(() => governance.sop_links ?? [], [governance.sop_links])
+  const mitigationPlaybooks = useMemo(() => governance.mitigation_playbooks ?? [], [governance.mitigation_playbooks])
+  const toolkitRecommendations = payload.toolkit_recommendations ?? {}
+  const toolkitScorecard = useMemo(
+    () => (toolkitRecommendations.scorecard ?? {}) as Record<string, any>,
+    [toolkitRecommendations.scorecard],
+  )
+  const toolkitStrategies = useMemo(() => {
+    const scores = toolkitRecommendations.strategy_scores
+    if (!Array.isArray(scores)) {
+      return [] as Array<Record<string, any>>
+    }
+    return scores.slice(0, 3)
+  }, [toolkitRecommendations.strategy_scores])
+
+  const formatDateTime = (value?: string | null) => {
+    if (!value) return 'N/A'
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) {
+      return value
+    }
+    return date.toLocaleString()
+  }
+
+  const resolveEscalationSeverity = (severity?: string | null): 'info' | 'review' | 'critical' => {
+    if (!severity) return 'info'
+    const normalized = severity.toLowerCase()
+    if (['critical', 'halted', 'high', 'severe'].includes(normalized)) {
+      return 'critical'
+    }
+    if (['review', 'warning', 'medium', 'alert'].includes(normalized)) {
+      return 'review'
+    }
+    return 'info'
+  }
+
+  const summariseResumeTarget = (context: DNAViewerPlannerContext) => {
+    const token = context.replay_window?.resume_token as Record<string, any> | undefined
+    if (token && typeof token === 'object') {
+      const stage = token.stage ?? token.checkpoint ?? token.step
+      if (stage) {
+        return String(stage)
+      }
+    }
+    return 'No checkpoint'
+  }
 
   const primerState = useMemo(() => {
     const state = guardrailStates.primers?.primer_state ?? guardrailStates.primers?.state
@@ -79,6 +135,59 @@ export const DNAViewerSummary: FC<DNAViewerSummaryProps> = ({ payload }) => {
     }
     return undefined
   }, [guardrailStates])
+
+  const recommendedBuffers = useMemo(() => {
+    const buffers = toolkitScorecard.recommended_buffers
+    if (Array.isArray(buffers)) {
+      return buffers
+    }
+    return [] as string[]
+  }, [toolkitScorecard.recommended_buffers])
+
+  const primerWindowSummary = useMemo(() => {
+    const window = toolkitScorecard.primer_window as Record<string, number | null> | undefined
+    if (!window) {
+      return 'N/A'
+    }
+    const min = typeof window.min_tm === 'number' ? window.min_tm.toFixed(1) : null
+    const max = typeof window.max_tm === 'number' ? window.max_tm.toFixed(1) : null
+    if (min && max) {
+      return `${min}°C – ${max}°C`
+    }
+    if (min) {
+      return `${min}°C`
+    }
+    if (max) {
+      return `${max}°C`
+    }
+    return 'N/A'
+  }, [toolkitScorecard.primer_window])
+
+  const compatibilityIndex = useMemo(() => {
+    const value = toolkitScorecard.compatibility_index
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value.toFixed(2)
+    }
+    return undefined
+  }, [toolkitScorecard.compatibility_index])
+
+  const presetLabel = useMemo(() => {
+    if (toolkitScorecard.preset_name) {
+      return String(toolkitScorecard.preset_name)
+    }
+    if (toolkitScorecard.preset_id) {
+      return String(toolkitScorecard.preset_id)
+    }
+    return 'N/A'
+  }, [toolkitScorecard.preset_name, toolkitScorecard.preset_id])
+
+  const multiplexRisk = useMemo(() => {
+    const risk = toolkitScorecard.multiplex_risk
+    if (!risk) {
+      return 'Unknown'
+    }
+    return String(risk)
+  }, [toolkitScorecard.multiplex_risk])
 
   const codonUsageTop = useMemo(() => {
     const entries = Object.entries(payload.analytics?.codon_usage ?? {})
@@ -158,6 +267,59 @@ export const DNAViewerSummary: FC<DNAViewerSummaryProps> = ({ payload }) => {
                 />
               </div>
             </div>
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Toolkit strategies</h2>
+              <dl className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-600">
+                <div>
+                  <dt className="font-medium text-slate-700">Preset</dt>
+                  <dd>{presetLabel}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium text-slate-700">Compatibility index</dt>
+                  <dd>{compatibilityIndex ?? 'N/A'}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium text-slate-700">Multiplex risk</dt>
+                  <dd>{multiplexRisk}</dd>
+                </div>
+                <div>
+                  <dt className="font-medium text-slate-700">Primer window</dt>
+                  <dd>{primerWindowSummary}</dd>
+                </div>
+              </dl>
+              {recommendedBuffers.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Recommended buffers</p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {recommendedBuffers.map((buffer) => (
+                      <span
+                        key={buffer}
+                        className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600"
+                      >
+                        {buffer}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {toolkitStrategies.length > 0 && (
+                <div className="mt-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Top strategies</p>
+                  <ul className="mt-2 space-y-1 text-xs text-slate-600">
+                    {toolkitStrategies.map((entry, index) => {
+                      const label = entry.strategy ?? `Strategy ${index + 1}`
+                      const score = typeof entry.compatibility === 'number' ? entry.compatibility.toFixed(2) : 'N/A'
+                      return (
+                        <li key={`${label}-${index}`} className="flex items-center justify-between">
+                          <span className="font-medium text-slate-700">{label}</span>
+                          <span className="font-mono text-slate-500">{score}</span>
+                        </li>
+                      )
+                    })}
+                  </ul>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </section>
@@ -170,6 +332,33 @@ export const DNAViewerSummary: FC<DNAViewerSummaryProps> = ({ payload }) => {
           metadata={escalationMetadata}
         />
       )}
+
+      {openCustodyEscalations.map((escalation) => {
+        const metadata: Record<string, any> = {
+          status: escalation.status,
+          due_at: formatDateTime(escalation.due_at ?? escalation.created_at),
+        }
+        if (escalation.planner_session_id) {
+          metadata.planner_session_id = escalation.planner_session_id
+        }
+        if (escalation.guardrail_flags?.length) {
+          metadata.guardrail_flags = escalation.guardrail_flags.join(', ')
+        }
+        return (
+          <GuardrailEscalationPrompt
+            key={escalation.id}
+            severity={resolveEscalationSeverity(escalation.severity)}
+            title={`Custody escalation: ${escalation.reason}`}
+            message={`Created ${formatDateTime(escalation.created_at)}`}
+            metadata={metadata}
+          />
+        )
+      })}
+
+      <LifecycleSummaryPanel
+        scope={{ dna_asset_id: payload.asset.id, dna_asset_version_id: payload.version.id }}
+        title="Lifecycle context"
+      />
 
       <section className="rounded border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Linear annotations</h2>
@@ -186,6 +375,146 @@ export const DNAViewerSummary: FC<DNAViewerSummaryProps> = ({ payload }) => {
           <div className="mt-4">
             <LinearTrack sequenceLength={payload.version.sequence_length} features={guardrailTrack.features} />
           </div>
+        </section>
+      )}
+
+      <section className="rounded border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">Governance timeline</h2>
+        <p className="text-sm text-slate-500">Guardrail, custody, and planner events unified for situational awareness</p>
+        <div className="mt-4 space-y-3">
+          {timelineEntries.length === 0 && (
+            <p className="text-sm text-slate-500">No governance events recorded yet.</p>
+          )}
+          {timelineEntries.map((entry) => (
+            <div key={entry.id} className="rounded border border-slate-200 p-3">
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold text-slate-800">{entry.title}</p>
+                  <p className="text-xs uppercase tracking-wide text-slate-500">{entry.source}</p>
+                </div>
+                <div className="text-xs text-slate-500">{formatDateTime(entry.timestamp)}</div>
+              </div>
+              {entry.severity && (
+                <p className="mt-1 text-xs font-medium uppercase tracking-wide text-rose-600">Severity: {entry.severity}</p>
+              )}
+              {entry.details && Object.keys(entry.details).length > 0 && (
+                <dl className="mt-2 grid grid-cols-2 gap-2 text-xs text-slate-600">
+                  {Object.entries(entry.details).map(([key, value]) => (
+                    <div key={key} className="space-y-0.5">
+                      <dt className="font-semibold uppercase tracking-wide text-slate-500">{key}</dt>
+                      <dd className="font-mono text-[11px] text-slate-700 break-all">
+                        {typeof value === 'object' ? JSON.stringify(value) : String(value ?? '')}
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="rounded border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">Custody ledger</h2>
+        <p className="text-sm text-slate-500">Recent custody transfers aligned with planner branches</p>
+        {custodyLedger.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-500">No custody ledger entries are linked to this asset yet.</p>
+        ) : (
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-600">
+                <tr>
+                  <th className="px-3 py-2">Performed</th>
+                  <th className="px-3 py-2">Action</th>
+                  <th className="px-3 py-2">Compartment</th>
+                  <th className="px-3 py-2">Branch</th>
+                  <th className="px-3 py-2">Planner session</th>
+                  <th className="px-3 py-2">Flags</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {custodyLedger.map((entry) => (
+                  <tr key={entry.id} className="bg-white">
+                    <td className="px-3 py-2 text-xs text-slate-600">{formatDateTime(entry.performed_at)}</td>
+                    <td className="px-3 py-2 font-medium text-slate-700">{entry.custody_action}</td>
+                    <td className="px-3 py-2 text-xs text-slate-600">{entry.compartment_label ?? 'Unassigned'}</td>
+                    <td className="px-3 py-2 text-xs text-slate-600">{entry.branch_id ?? '—'}</td>
+                    <td className="px-3 py-2 text-xs text-slate-600">{entry.planner_session_id ?? '—'}</td>
+                    <td className="px-3 py-2 text-xs text-slate-600">
+                      {entry.guardrail_flags.length > 0 ? entry.guardrail_flags.join(', ') : 'None'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {plannerContexts.length > 0 && (
+        <section className="rounded border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-900">Planner branch context</h2>
+          <p className="text-sm text-slate-500">Active recovery hints and branch checkpoints from linked cloning planner sessions</p>
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            {plannerContexts.map((context) => (
+              <div key={context.session_id} className="rounded border border-slate-200 p-4">
+                <h3 className="text-sm font-semibold text-slate-800">Session {context.session_id.slice(0, 8)}…</h3>
+                <dl className="mt-3 space-y-2 text-xs text-slate-600">
+                  <div className="flex items-center justify-between">
+                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Status</dt>
+                    <dd className="text-slate-700">{context.status}</dd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Guardrail gate</dt>
+                    <dd className="text-slate-700">{context.guardrail_gate ?? 'n/a'}</dd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Custody status</dt>
+                    <dd className="text-slate-700">{context.custody_status ?? 'n/a'}</dd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Active branch</dt>
+                    <dd className="text-slate-700">{context.active_branch_id ?? 'n/a'}</dd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Next checkpoint</dt>
+                    <dd className="text-slate-700">{summariseResumeTarget(context)}</dd>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <dt className="font-semibold uppercase tracking-wide text-slate-500">Updated</dt>
+                    <dd className="text-slate-700">{formatDateTime(context.updated_at)}</dd>
+                  </div>
+                </dl>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {(sopLinks.length > 0 || mitigationPlaybooks.length > 0) && (
+        <section className="rounded border border-slate-200 bg-white p-6 shadow-sm">
+          <h2 className="text-lg font-semibold text-slate-900">Governance playbooks & SOPs</h2>
+          <p className="text-sm text-slate-500">Reference links highlighted by guardrail events and mitigation presets</p>
+          {mitigationPlaybooks.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {mitigationPlaybooks.map((playbook) => (
+                <span key={playbook} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
+                  {playbook}
+                </span>
+              ))}
+            </div>
+          )}
+          {sopLinks.length > 0 && (
+            <ul className="mt-4 space-y-2 text-sm text-slate-600">
+              {sopLinks.map((link) => (
+                <li key={link}>
+                  <a href={link} target="_blank" rel="noreferrer" className="text-sky-600 hover:underline">
+                    {link}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
         </section>
       )}
 

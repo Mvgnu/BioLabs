@@ -112,6 +112,7 @@ describe('useCloningPlanner', () => {
 
     await waitFor(() => expect(result.current.isLoading).toBe(false))
     expect(result.current.data?.id).toBe('planner-1')
+    expect(result.current.recoveryBundle).toBeNull()
 
     await act(async () => {
       await result.current.runStage('primers', { payload: { target_tm: 60 } })
@@ -144,11 +145,30 @@ describe('useCloningPlanner', () => {
         current_step: 'restriction',
         payload: { stage: 'primers' },
         timestamp: new Date().toISOString(),
+        recovery_bundle: {
+          stage: 'primers',
+          resume_token: {
+            session_id: 'planner-1',
+            checkpoint: 'primers',
+          },
+          guardrail_reasons: ['custody_status:halted'],
+          resume_ready: true,
+        },
+        drill_summaries: [
+          {
+            event_id: 'evt-1',
+            status: 'open',
+            resume_ready: false,
+          },
+        ],
       })
     })
 
     await waitFor(() => expect(result.current.events.length).toBe(1))
     expect(invalidateSpy).toHaveBeenCalled()
+    expect(result.current.recoveryBundle?.stage).toBe('primers')
+    expect(result.current.recoveryBundle?.drill_summaries?.length).toBe(1)
+    expect(result.current.latestResumeToken?.checkpoint).toBe('primers')
   })
 
   it('exposes resume and finalize helpers', async () => {

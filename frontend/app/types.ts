@@ -17,6 +17,8 @@ export interface InventoryItem {
   location: Record<string, any>
   custom_data: Record<string, any>
   status?: string
+  custody_state?: string | null
+  custody_snapshot?: Record<string, any>
   created_at: string
   updated_at: string
 }
@@ -196,6 +198,46 @@ export interface DNAKineticsSummary {
   metadata_tags: string[]
 }
 
+export interface LifecycleScope {
+  planner_session_id?: string | null
+  dna_asset_id?: string | null
+  dna_asset_version_id?: string | null
+  custody_log_inventory_item_id?: string | null
+  protocol_execution_id?: string | null
+  repository_id?: string | null
+}
+
+export interface LifecycleContextChip {
+  label: string
+  value: string
+  kind?: string
+}
+
+export interface LifecycleTimelineEntry {
+  entry_id: string
+  source: string
+  event_type: string
+  occurred_at: string
+  title: string
+  summary?: string | null
+  metadata: Record<string, any>
+}
+
+export interface LifecycleSummary {
+  total_events: number
+  open_escalations: number
+  active_guardrails: number
+  latest_event_at?: string | null
+  custody_state?: string | null
+  context_chips: LifecycleContextChip[]
+}
+
+export interface LifecycleTimelineResponse {
+  scope: LifecycleScope
+  summary: LifecycleSummary
+  entries: LifecycleTimelineEntry[]
+}
+
 export interface DNAAssetGuardrailHeuristics {
   primers: Record<string, any>
   restriction: Record<string, any>
@@ -214,6 +256,7 @@ export interface DNAAssetVersion {
   kinetics_summary: DNAKineticsSummary
   assembly_presets: string[]
   guardrail_heuristics: DNAAssetGuardrailHeuristics
+  toolkit_recommendations: Record<string, any>
 }
 
 export interface DNAAssetSummary {
@@ -267,6 +310,67 @@ export interface DNAViewerTranslation {
   amino_acids: string
 }
 
+export interface DNAViewerCustodyLedgerEntry {
+  // purpose: custody ledger entry aligned with DNA viewer governance overlays
+  // status: pilot
+  id: string
+  performed_at: string
+  custody_action: string
+  quantity?: number | null
+  quantity_units?: string | null
+  compartment_label?: string | null
+  guardrail_flags: string[]
+  planner_session_id?: string | null
+  branch_id?: string | null
+  performed_by_id?: string | null
+  performed_for_team_id?: string | null
+  notes?: string | null
+  metadata: Record<string, any>
+}
+
+export interface DNAViewerCustodyEscalation {
+  // purpose: custody escalation overlays for DNA viewer narratives
+  // status: pilot
+  id: string
+  severity: string
+  status: string
+  reason: string
+  created_at: string
+  due_at?: string | null
+  acknowledged_at?: string | null
+  resolved_at?: string | null
+  assigned_to_id?: string | null
+  planner_session_id?: string | null
+  asset_version_id?: string | null
+  guardrail_flags: string[]
+  metadata: Record<string, any>
+}
+
+export interface DNAViewerGovernanceTimelineEntry {
+  // purpose: unified governance timeline entries for DNA viewer surfaces
+  // status: pilot
+  id: string
+  timestamp: string
+  source: string
+  title: string
+  severity?: string | null
+  details: Record<string, any>
+}
+
+export interface DNAViewerPlannerContext {
+  // purpose: planner branch checkpoint summary for viewer overlays
+  // status: pilot
+  session_id: string
+  status: string
+  guardrail_gate?: string | null
+  custody_status?: string | null
+  active_branch_id?: string | null
+  branch_order: string[]
+  replay_window: Record<string, any>
+  recovery_context: Record<string, any>
+  updated_at?: string | null
+}
+
 export interface DNAViewerGuardrailEvent {
   // purpose: governance guardrail event timeline entry for DNA viewer overlays
   // status: pilot
@@ -296,6 +400,11 @@ export interface DNAViewerGovernanceContext {
   guardrail_history: DNAViewerGuardrailEvent[]
   regulatory_feature_density?: number | null
   mitigation_playbooks: string[]
+  custody_ledger: DNAViewerCustodyLedgerEntry[]
+  custody_escalations: DNAViewerCustodyEscalation[]
+  timeline: DNAViewerGovernanceTimelineEntry[]
+  planner_sessions: DNAViewerPlannerContext[]
+  sop_links: string[]
 }
 
 export interface DNAViewerAnalytics {
@@ -328,6 +437,59 @@ export interface DNAViewerPayload {
   analytics: DNAViewerAnalytics
   diff: DNAAssetDiff | null
   governance_context: DNAViewerGovernanceContext
+  toolkit_recommendations: Record<string, any>
+}
+
+export interface SequenceToolkitPrimerConfig {
+  product_size_range: [number, number]
+  target_tm: number
+  min_tm: number
+  max_tm: number
+  min_size: number
+  opt_size: number
+  max_size: number
+  num_return: number
+  na_concentration_mM: number
+  primer_concentration_nM: number
+  gc_clamp_min: number
+  gc_clamp_max: number
+}
+
+export interface SequenceToolkitRestrictionConfig {
+  enzymes: string[]
+  require_all: boolean
+  reaction_buffer?: string | null
+}
+
+export interface SequenceToolkitAssemblyConfig {
+  strategy: string
+  base_success: number
+  tm_penalty_factor: number
+  minimal_site_count: number
+  low_site_penalty: number
+  ligation_efficiency: number
+  kinetics_model: string
+  overlap_optimum?: number | null
+  overlap_tolerance?: number | null
+  overhang_diversity_factor?: number | null
+}
+
+export interface SequenceToolkitPreset {
+  preset_id: string
+  name: string
+  description: string
+  metadata_tags: string[]
+  recommended_use: string[]
+  notes: string[]
+  primer_overrides?: SequenceToolkitPrimerConfig | null
+  restriction_overrides?: SequenceToolkitRestrictionConfig | null
+  assembly_overrides?: SequenceToolkitAssemblyConfig | null
+}
+
+export interface SequenceToolkitPresetCatalog {
+  presets: SequenceToolkitPreset[]
+  count: number
+  generated_at: string
 }
 
 export interface CloningPlannerSequenceInput {
@@ -345,6 +507,146 @@ export interface CloningPlannerStageTiming {
   next_step?: string | null
   error?: string | null
   [key: string]: any
+}
+
+export interface CloningPlannerResumeToken {
+  session_id: string
+  checkpoint: string
+  branch_id?: string | null
+  timeline_cursor?: string | null
+  generated_at?: string | null
+}
+
+export interface CloningPlannerBranchAncestryNode {
+  id?: string | null
+  label?: string | null
+  status?: string | null
+}
+
+export interface CloningPlannerBranchLineageDelta {
+  branch_id?: string | null
+  branch_label?: string | null
+  stage?: string | null
+  history_length?: number | null
+  latest_stage?: string | null
+  latest_checkpoint?: string | null
+  latest_cursor?: string | null
+  ancestry?: CloningPlannerBranchAncestryNode[]
+}
+
+export interface CloningPlannerMitigationHint {
+  category: string
+  action: string
+  notes?: unknown
+  pending?: number | Record<string, any> | null
+  risk_level?: string
+}
+
+export interface CloningPlannerBranchCheckpointSummary {
+  index: number
+  stage?: string | null
+  checkpoint_key?: string | null
+  status?: string | null
+  timeline_position?: string | null
+  guardrail_state?: string | null
+  guardrail_active?: boolean | null
+  resume_ready?: boolean | null
+  custody_summary?: CloningPlannerCheckpointCustodySummary | null
+}
+
+export interface CloningPlannerBranchDivergence {
+  index: number
+  primary: CloningPlannerBranchCheckpointSummary
+  reference: CloningPlannerBranchCheckpointSummary
+}
+
+export interface CloningPlannerCheckpointCustodySummary {
+  max_severity?: string | null
+  open_drill_count?: number | null
+  open_escalations?: number | null
+  pending_event_count?: number | null
+  resume_ready?: boolean | null
+}
+
+export interface CloningPlannerBranchCustodyMetrics {
+  checkpoint_count?: number | null
+  open_drill_total?: number | null
+  open_escalation_total?: number | null
+  pending_event_total?: number | null
+  resume_ready_count?: number | null
+  blocked_checkpoint_count?: number | null
+  max_severity?: string | null
+}
+
+export interface CloningPlannerBranchCustodyDeltas {
+  severity_delta?: number | null
+  open_drill_delta?: number | null
+  open_escalation_delta?: number | null
+  pending_event_delta?: number | null
+  blocked_checkpoint_delta?: number | null
+  resume_ready_delta?: number | null
+}
+
+export interface CloningPlannerBranchComparison {
+  reference_branch_id?: string | null
+  reference_history_length?: number | null
+  history_delta?: number | null
+  ahead_checkpoints?: CloningPlannerBranchCheckpointSummary[]
+  missing_checkpoints?: CloningPlannerBranchCheckpointSummary[]
+  divergent_stages?: CloningPlannerBranchDivergence[]
+  primary_custody_metrics?: CloningPlannerBranchCustodyMetrics | null
+  reference_custody_metrics?: CloningPlannerBranchCustodyMetrics | null
+  custody_deltas?: CloningPlannerBranchCustodyDeltas | null
+}
+
+export interface CloningPlannerRecoveryHold {
+  stage?: string | null
+  status?: string | null
+  hold_started_at?: string | null
+  hold_released_at?: string | null
+  resumed_at?: string | null
+}
+
+export interface CloningPlannerRecoveryPendingEvent {
+  event_id?: string | null
+  open_escalations?: string[]
+  max_severity?: string | null
+  mitigation_checklist?: unknown[]
+}
+
+export interface CloningPlannerDrillSummary {
+  event_id?: string | null
+  status?: string | null
+  max_severity?: string | null
+  open_drill_count?: number | null
+  open_escalations?: string[]
+  escalation_ids?: string[]
+  mitigation_checklist?: string[]
+  checklist_completed?: boolean | null
+  resume_ready?: boolean | null
+  last_updated_at?: string | null
+}
+
+export interface CloningPlannerRecoveryBundle {
+  stage?: string | null
+  recommended_stage?: string | null
+  resume_token: CloningPlannerResumeToken
+  branch_lineage?: CloningPlannerBranchLineageDelta | null
+  primary_hint?: CloningPlannerMitigationHint | null
+  mitigation_hints?: CloningPlannerMitigationHint[]
+  pending_events?: CloningPlannerRecoveryPendingEvent[]
+  holds?: CloningPlannerRecoveryHold[]
+  drill_summaries?: CloningPlannerDrillSummary[]
+  active_stage?: string | null
+  last_resumed_at?: string | null
+  recovery_gate?: boolean
+  open_drill_count?: number | null
+  open_escalations?: number | null
+  custody_status?: string | null
+  guardrail_active?: boolean
+  guardrail_reasons?: string[]
+  resume_ready?: boolean
+  generated_at?: string | null
 }
 
 export interface CloningPlannerStageRecord {
@@ -365,10 +667,17 @@ export interface CloningPlannerStageRecord {
   branch_id?: string | null
   checkpoint_key?: string | null
   checkpoint_payload: Record<string, any>
+  resume_token?: CloningPlannerResumeToken | null
+  branch_lineage?: CloningPlannerBranchLineageDelta | null
+  mitigation_hints?: CloningPlannerMitigationHint[]
+  recovery_context?: Record<string, any> | null
+  recovery_bundle?: CloningPlannerRecoveryBundle | null
+  drill_summaries?: CloningPlannerDrillSummary[]
   guardrail_transition: Record<string, any>
   timeline_position?: string | null
   created_at?: string | null
   updated_at?: string | null
+  custody_summary?: CloningPlannerCheckpointCustodySummary | null
 }
 
 export interface CloningPlannerQCArtifact {
@@ -409,6 +718,11 @@ export interface CloningPlannerSession {
   branch_state: Record<string, any>
   active_branch_id?: string | null
   timeline_cursor?: string | null
+  recovery_context?: Record<string, any> | null
+  recovery_bundle?: CloningPlannerRecoveryBundle | null
+  drill_summaries?: CloningPlannerDrillSummary[]
+  replay_window?: CloningPlannerStageRecord[]
+  toolkit_recommendations?: Record<string, any>
   created_at?: string | null
   updated_at?: string | null
   completed_at?: string | null
@@ -452,6 +766,15 @@ export interface CloningPlannerEventPayload {
   timeline_cursor?: string | null
   id?: string
   timestamp: string
+  resume_token?: CloningPlannerResumeToken | null
+  branch_lineage_delta?: CloningPlannerBranchLineageDelta | null
+  mitigation_hints?: CloningPlannerMitigationHint[]
+  recovery_context?: Record<string, any> | null
+  recovery_bundle?: CloningPlannerRecoveryBundle | null
+  drill_summaries?: CloningPlannerDrillSummary[]
+  replay_window?: CloningPlannerStageRecord[]
+  comparison_window?: CloningPlannerStageRecord[]
+  branch_comparison?: CloningPlannerBranchComparison | null
 }
 
 export interface AssistantMessage {
@@ -1246,6 +1569,52 @@ export interface CustodyEscalationAck {
   status: 'acknowledged'
 }
 
+export interface SampleCustodyLog {
+  // purpose: represent freezer custody ledger events for inventory-linked samples
+  // status: pilot
+  id: string
+  asset_version_id?: string | null
+  planner_session_id?: string | null
+  protocol_execution_id?: string | null
+  execution_event_id?: string | null
+  compartment_id?: string | null
+  inventory_item_id?: string | null
+  custody_action: string
+  quantity?: number | null
+  quantity_units?: string | null
+  performed_for_team_id?: string | null
+  performed_by_id?: string | null
+  guardrail_flags: string[]
+  performed_at: string
+  created_at: string
+  notes?: string | null
+  meta?: Record<string, any>
+}
+
+export interface InventorySampleSummary {
+  // purpose: condensed view of inventory sample custody state and guardrail context
+  // status: pilot
+  id: string
+  name: string
+  item_type: string
+  team_id?: string | null
+  custody_state?: string | null
+  custody_snapshot: Record<string, any>
+  guardrail_flags: string[]
+  linked_planner_session_ids: string[]
+  linked_asset_version_ids: string[]
+  open_escalations: number
+  updated_at: string
+}
+
+export interface SampleDetail {
+  // purpose: aggregate custody ledger and escalation context for a single sample dashboard view
+  // status: pilot
+  item: InventorySampleSummary
+  recent_logs: SampleCustodyLog[]
+  escalations: CustodyEscalation[]
+}
+
 export interface FreezerFaultRecord {
   // purpose: freezer health incident record for governance dashboards
   // status: pilot
@@ -1749,4 +2118,73 @@ export interface GovernanceTemplateAssignment {
   metadata: Record<string, any>
   created_at: string
   created_by_id: string
+}
+
+// purpose: describe guardrail-aware repositories for the sharing workspace
+// status: experimental
+export interface DNARepositoryCollaborator {
+  id: string
+  repository_id: string
+  user_id: string
+  role: 'viewer' | 'contributor' | 'maintainer' | 'owner' | string
+  invitation_status: string
+  created_at: string
+}
+
+export interface DNARepositoryReleaseApproval {
+  id: string
+  release_id: string
+  approver_id: string
+  status: string
+  guardrail_flags: string[]
+  notes?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DNARepositoryRelease {
+  id: string
+  repository_id: string
+  version: string
+  title: string
+  notes?: string | null
+  status: string
+  guardrail_state: string
+  guardrail_snapshot: Record<string, any>
+  mitigation_summary?: string | null
+  created_by_id: string
+  created_at: string
+  updated_at: string
+  published_at?: string | null
+  approvals: DNARepositoryReleaseApproval[]
+}
+
+export interface DNARepository {
+  id: string
+  name: string
+  slug: string
+  description?: string | null
+  owner_id: string
+  team_id?: string | null
+  guardrail_policy: {
+    name: string
+    approval_threshold: number
+    requires_custody_clearance: boolean
+    requires_planner_link: boolean
+    mitigation_playbooks: string[]
+  }
+  created_at: string
+  updated_at: string
+  collaborators: DNARepositoryCollaborator[]
+  releases: DNARepositoryRelease[]
+}
+
+export interface DNARepositoryTimelineEvent {
+  id: string
+  repository_id: string
+  release_id?: string | null
+  event_type: string
+  payload: Record<string, any>
+  created_at: string
+  created_by_id?: string | null
 }
