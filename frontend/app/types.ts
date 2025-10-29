@@ -1173,6 +1173,8 @@ export interface ProtocolExecutionContext {
     run_by: string | null
     template_id: string | null
     template_name: string | null
+    guardrail_status: string | null
+    guardrail_state: Record<string, any> | null
     created_at: string
     updated_at: string
 }
@@ -1200,6 +1202,24 @@ export interface CustodyEscalation {
     protocol_execution: ProtocolExecutionContext | null
     created_at: string
     updated_at: string
+}
+
+export interface CustodyProtocolExecution {
+  // purpose: aggregate guardrail snapshot for protocol execution custody drill overlays
+  // status: pilot
+  id: string
+  status: string
+  guardrail_status: string
+  guardrail_state: Record<string, any>
+  template_id: string | null
+  template_name: string | null
+  run_by: string | null
+  open_escalations: number
+  open_drill_count: number
+  qc_backpressure: boolean
+  event_overlays: Record<string, any>
+  created_at: string
+  updated_at: string
 }
 
 export interface CustodyEscalationAck {

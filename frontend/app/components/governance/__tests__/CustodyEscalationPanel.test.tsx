@@ -2,7 +2,11 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import CustodyEscalationPanel from '../CustodyEscalationPanel'
-import type { CustodyEscalation, FreezerFaultRecord } from '../../../types'
+import type {
+  CustodyEscalation,
+  CustodyProtocolExecution,
+  FreezerFaultRecord,
+} from '../../../types'
 
 const buildEscalation = (overrides: Partial<CustodyEscalation> = {}): CustodyEscalation => ({
   id: 'esc-1',
@@ -28,6 +32,8 @@ const buildEscalation = (overrides: Partial<CustodyEscalation> = {}): CustodyEsc
     run_by: 'user-1',
     template_id: 'tpl-1',
     template_name: 'QC workflow',
+    guardrail_status: 'halted',
+    guardrail_state: { last_synced_at: new Date().toISOString() },
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   },
@@ -51,6 +57,32 @@ const buildFault = (overrides: Partial<FreezerFaultRecord> = {}): FreezerFaultRe
   ...overrides,
 })
 
+const buildProtocolSnapshot = (
+  overrides: Partial<CustodyProtocolExecution> = {},
+): CustodyProtocolExecution => ({
+  id: 'exec-1',
+  status: 'running',
+  guardrail_status: 'halted',
+  guardrail_state: { last_synced_at: new Date().toISOString() },
+  template_id: 'tpl-1',
+  template_name: 'QC workflow',
+  run_by: 'user-1',
+  open_escalations: 1,
+  open_drill_count: 1,
+  qc_backpressure: true,
+  event_overlays: {
+    'event-1': {
+      mitigation_checklist: ['Relocate or thaw samples to restore compartment capacity.'],
+      open_escalation_ids: ['esc-1'],
+      open_drill_count: 1,
+      max_severity: 'critical',
+    },
+  },
+  created_at: new Date().toISOString(),
+  updated_at: new Date().toISOString(),
+  ...overrides,
+})
+
 describe('CustodyEscalationPanel', () => {
   it('renders empty states when no escalations or faults', () => {
     render(
@@ -59,6 +91,9 @@ describe('CustodyEscalationPanel', () => {
         faults={[]}
         isEscalationLoading={false}
         isFaultLoading={false}
+        protocols={[]}
+        isProtocolLoading={false}
+        protocolError={null}
         onAcknowledge={() => {}}
         onResolve={() => {}}
         onNotify={() => {}}
@@ -80,6 +115,9 @@ describe('CustodyEscalationPanel', () => {
         faults={[buildFault()]}
         isEscalationLoading={false}
         isFaultLoading={false}
+        protocols={[buildProtocolSnapshot()]}
+        isProtocolLoading={false}
+        protocolError={null}
         onAcknowledge={acknowledge}
         onResolve={resolve}
         onNotify={notify}
@@ -100,5 +138,8 @@ describe('CustodyEscalationPanel', () => {
 
     expect(screen.getAllByText(/temperature\.high/i).length).toBeGreaterThan(0)
     expect(screen.getByText(/protocol:/i)).toBeTruthy()
+    expect(screen.getAllByText(/protocol guardrail timeline/i).length).toBeGreaterThan(0)
+    expect(screen.getByText(/review sop guidance/i)).toBeTruthy()
+    expect(screen.getAllByText(/recovery drill/i).length).toBeGreaterThan(0)
   })
 })

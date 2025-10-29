@@ -70,6 +70,8 @@ class ProtocolExecutionContext(BaseModel):
     run_by: UUID | None = None
     template_id: UUID | None = None
     template_name: str | None = None
+    guardrail_status: str | None = None
+    guardrail_state: dict[str, Any] | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -104,6 +106,24 @@ class CustodyEscalation(BaseModel):
 class CustodyEscalationAck(BaseModel):
     acknowledged_at: datetime
     status: str
+
+
+class CustodyProtocolExecution(BaseModel):
+    id: UUID
+    status: str
+    guardrail_status: str
+    guardrail_state: dict[str, Any]
+    template_id: UUID | None = None
+    template_name: str | None = None
+    run_by: UUID | None = None
+    open_escalations: int = 0
+    open_drill_count: int = 0
+    qc_backpressure: bool = False
+    event_overlays: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
 class FreezerFault(BaseModel):

@@ -38,6 +38,7 @@ import type {
   CustodyLogCreate,
   CustodyEscalation,
   CustodyEscalationAck,
+  CustodyProtocolExecution,
   FreezerFaultRecord,
   FreezerFaultCreate,
 } from '../types'
@@ -301,14 +302,33 @@ export const governanceApi = {
     const response = await api.get<CustodyEscalation[]>(
       '/api/governance/custody/escalations',
       {
-          params: {
-            team_id: params?.team_id ?? undefined,
-            status: params?.status ?? undefined,
-            protocol_execution_id: params?.protocol_execution_id ?? undefined,
-            execution_event_id: params?.execution_event_id ?? undefined,
-          },
+        params: {
+          team_id: params?.team_id ?? undefined,
+          status: params?.status ?? undefined,
+          protocol_execution_id: params?.protocol_execution_id ?? undefined,
+          execution_event_id: params?.execution_event_id ?? undefined,
         },
-      )
+      },
+    )
+    return response.data
+  },
+  async listCustodyProtocols(params?: {
+    status?: string[] | null
+    has_open_drill?: boolean
+    severity?: string | null
+    limit?: number | null
+  }) {
+    const response = await api.get<CustodyProtocolExecution[]>(
+      '/api/governance/custody/protocols',
+      {
+        params: {
+          status: params?.status ?? undefined,
+          has_open_drill: params?.has_open_drill ?? undefined,
+          severity: params?.severity ?? undefined,
+          limit: params?.limit ?? undefined,
+        },
+      },
+    )
     return response.data
   },
   async acknowledgeCustodyEscalation(escalationId: string) {

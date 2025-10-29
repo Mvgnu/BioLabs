@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Sequence
+from typing import Any, Iterable, Sequence
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -24,6 +24,20 @@ _ESCALATION_DEFAULT_SLA_MINUTES = {
     "critical": 15,
     "warning": 60,
     "info": 240,
+}
+
+# severity_rank: convert severity strings into comparable weights
+_SEVERITY_RANK = {"critical": 3, "warning": 2, "info": 1}
+
+# mitigation_guidance: default guardrail flag -> operator checklist prompts
+_GUARDRAIL_MITIGATION_GUIDANCE = {
+    "capacity.exceeded": "Relocate or thaw samples to restore compartment capacity.",
+    "capacity.depleted": "Re-stock inventory or confirm sample withdrawals are intentional.",
+    "utilization.critical": "Plan redistribution to alternate freezers to avoid overloading.",
+    "lineage.unlinked": "Attach custody logs to planner sessions or asset versions for traceability.",
+    "lineage.required": "Link the movement to an approved protocol or planner record before proceeding.",
+    "occupancy.stale": "Schedule a drill to audit stale inventory and validate storage health.",
+    "fault.temperature.high": "Initiate freezer recovery SOP and verify temperature probes.",
 }
 
 
@@ -207,14 +221,19 @@ def _attach_log_to_protocol(
         "custody_action": log.custody_action,
         "compartment_id": str(log.compartment_id) if log.compartment_id else None,
         "guardrail_flags": list(log.guardrail_flags or []),
+        "protocol_execution_id": str(log.protocol_execution_id)
+        if log.protocol_execution_id
+        else None,
+        "execution_event_id": str(log.execution_event_id)
+        if log.execution_event_id
+        else None,
     }
     if all(existing.get("log_id") != log_ref["log_id"] for existing in ledger):
         ledger.append(log_ref)
-        custody_payload["ledger"] = ledger
-        governance_result["custody"] = custody_payload
-        execution.result = governance_result
-        execution.updated_at = datetime.now(timezone.utc)
-        db.add(execution)
+    custody_payload["ledger"] = ledger
+    custody_payload["last_log_at"] = log.performed_at.isoformat()
+    _apply_execution_custody_snapshot(execution, governance_result, custody_payload)
+    db.add(execution)
 
 
 def _resolve_quantity_delta(log: models.GovernanceSampleCustodyLog) -> int:
@@ -295,6 +314,66 @@ def list_custody_escalations(
     return (
         query.order_by(models.GovernanceCustodyEscalation.due_at.asc()).all()
     )
+
+
+def list_protocol_guardrail_executions(
+    db: Session,
+    *,
+    guardrail_statuses: Sequence[str] | None = None,
+    has_open_drill: bool | None = None,
+    severity: str | None = None,
+    limit: int = 50,
+) -> list[schemas.CustodyProtocolExecution]:
+    """Return protocol executions decorated with custody guardrail state."""
+
+    query = db.query(models.ProtocolExecution).options(
+        joinedload(models.ProtocolExecution.template)
+    )
+    if guardrail_statuses:
+        lowered = [status.lower() for status in guardrail_statuses]
+        query = query.filter(
+            sa.func.lower(models.ProtocolExecution.guardrail_status).in_(lowered)
+        )
+    executions: list[models.ProtocolExecution] = (
+        query.order_by(models.ProtocolExecution.updated_at.desc())
+        .limit(limit)
+        .all()
+    )
+    filtered: list[schemas.CustodyProtocolExecution] = []
+    severity_key = severity.lower() if severity else None
+    for execution in executions:
+        state = dict(execution.guardrail_state or {})
+        open_counts = {
+            key: int(value)
+            for key, value in (state.get("open_counts") or {}).items()
+        }
+        open_escalations = int(state.get("open_escalations") or 0)
+        if not open_escalations:
+            open_escalations = sum(open_counts.values())
+        open_drill_count = int(state.get("open_drill_count") or 0)
+        qc_backpressure = bool(state.get("qc_backpressure"))
+        if has_open_drill is not None and bool(open_drill_count) != has_open_drill:
+            continue
+        if severity_key and open_counts.get(severity_key, 0) <= 0:
+            continue
+        filtered.append(
+            schemas.CustodyProtocolExecution(
+                id=execution.id,
+                status=execution.status,
+                guardrail_status=execution.guardrail_status or "stable",
+                guardrail_state=state,
+                template_id=execution.template_id,
+                template_name=execution.template_name,
+                run_by=execution.run_by,
+                open_escalations=open_escalations,
+                open_drill_count=open_drill_count,
+                qc_backpressure=qc_backpressure,
+                event_overlays=state.get("event_overlays") or {},
+                created_at=execution.created_at,
+                updated_at=execution.updated_at,
+            )
+        )
+    return filtered
 
 
 def acknowledge_custody_escalation(
@@ -566,6 +645,7 @@ def _sync_protocol_escalation_state(
     governance_result = dict(execution.result or {})
     custody_payload = dict(governance_result.get("custody", {}))
     escalation_map = dict(custody_payload.get("escalations", {}))
+    meta = dict(escalation.meta or {})
     escalation_map[str(escalation.id)] = {
         "status": escalation.status,
         "severity": escalation.severity,
@@ -576,13 +656,152 @@ def _sync_protocol_escalation_state(
         else None,
         "resolved_at": escalation.resolved_at.isoformat() if escalation.resolved_at else None,
         "guardrail_flags": list(escalation.guardrail_flags or []),
-        "recovery_drill_open": (escalation.meta or {}).get("recovery_drill_open"),
+        "recovery_drill_open": meta.get("recovery_drill_open"),
+        "protocol_execution_id": str(escalation.protocol_execution_id)
+        if escalation.protocol_execution_id
+        else None,
+        "execution_event_id": str(escalation.execution_event_id)
+        if escalation.execution_event_id
+        else None,
+        "assigned_to_id": str(escalation.assigned_to_id)
+        if escalation.assigned_to_id
+        else None,
+        "mitigation_checklist": _derive_mitigation_steps(escalation.guardrail_flags or []),
+        "meta": meta,
+        "created_at": escalation.created_at.isoformat() if escalation.created_at else None,
+        "updated_at": escalation.updated_at.isoformat() if escalation.updated_at else None,
     }
     custody_payload["escalations"] = escalation_map
+    overlays = _build_execution_event_overlays(escalation_map)
+    custody_payload["event_overlays"] = overlays
+    custody_payload["open_drill_count"] = sum(
+        overlay.get("open_drill_count", 0) for overlay in overlays.values()
+    )
+    custody_payload["open_escalations"] = sum(
+        len(overlay.get("open_escalation_ids", [])) for overlay in overlays.values()
+    )
+    custody_payload["open_severity_counts"] = _count_open_severity(escalation_map)
+    custody_payload["recovery_gate"] = any(
+        overlay.get("max_severity") == "critical"
+        and overlay.get("open_escalation_ids")
+        for overlay in overlays.values()
+    )
+    custody_payload["qc_backpressure"] = custody_payload["open_escalations"] > 0
+    custody_payload["last_synced_at"] = datetime.now(timezone.utc).isoformat()
+    _apply_execution_custody_snapshot(execution, governance_result, custody_payload)
+    db.add(execution)
+
+
+def _apply_execution_custody_snapshot(
+    execution: models.ProtocolExecution,
+    governance_result: dict[str, Any],
+    custody_payload: dict[str, Any],
+) -> None:
+    """Persist custody metadata and refresh guardrail state for the execution."""
+
     governance_result["custody"] = custody_payload
     execution.result = governance_result
+    _apply_execution_guardrail_state(execution, custody_payload)
     execution.updated_at = datetime.now(timezone.utc)
-    db.add(execution)
+
+
+def _apply_execution_guardrail_state(
+    execution: models.ProtocolExecution,
+    custody_payload: dict[str, Any],
+) -> None:
+    """Derive guardrail status and structured state for protocol executions."""
+
+    open_counts = _count_open_severity(custody_payload.get("escalations", {}))
+    total_open = sum(open_counts.values())
+    status = "stable"
+    if open_counts.get("critical"):
+        status = "halted"
+    elif open_counts.get("warning"):
+        status = "alert"
+    elif open_counts.get("info"):
+        status = "monitor"
+    elif custody_payload.get("escalations"):
+        status = "stabilizing"
+    execution.guardrail_status = status
+    execution.guardrail_state = {
+        "open_counts": open_counts,
+        "open_escalations": total_open,
+        "open_drill_count": custody_payload.get("open_drill_count", 0),
+        "qc_backpressure": custody_payload.get("qc_backpressure", False),
+        "recovery_gate": custody_payload.get("recovery_gate", False),
+        "event_overlays": custody_payload.get("event_overlays", {}),
+        "last_synced_at": custody_payload.get("last_synced_at"),
+    }
+
+
+def _build_execution_event_overlays(
+    escalation_map: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Aggregate escalation summaries per execution event."""
+
+    overlays: dict[str, dict[str, Any]] = {}
+    for escalation_id, details in escalation_map.items():
+        event_key = details.get("execution_event_id") or "unassigned"
+        overlay = overlays.setdefault(
+            event_key,
+            {
+                "escalation_ids": [],
+                "open_escalation_ids": [],
+                "mitigation_checklist": [],
+                "open_drill_count": 0,
+                "max_severity": "info",
+            },
+        )
+        overlay["escalation_ids"].append(escalation_id)
+        severity = details.get("severity") or "info"
+        current_rank = _SEVERITY_RANK.get(overlay.get("max_severity", "info"), 0)
+        severity_rank = _SEVERITY_RANK.get(severity, 0)
+        if severity_rank >= current_rank:
+            overlay["max_severity"] = severity
+        if (details.get("status") or "").lower() == "open":
+            overlay["open_escalation_ids"].append(escalation_id)
+            if details.get("recovery_drill_open"):
+                overlay["open_drill_count"] += 1
+        overlay["mitigation_checklist"].extend(details.get("mitigation_checklist") or [])
+    for overlay in overlays.values():
+        overlay["mitigation_checklist"] = sorted(
+            {item for item in overlay.get("mitigation_checklist", []) if item}
+        )
+    return overlays
+
+
+def _count_open_severity(
+    escalation_map: dict[str, dict[str, Any]]
+) -> dict[str, int]:
+    """Count open escalations grouped by severity."""
+
+    counts = {"critical": 0, "warning": 0, "info": 0}
+    for details in escalation_map.values():
+        if (details.get("status") or "").lower() != "open":
+            continue
+        severity = (details.get("severity") or "info").lower()
+        counts[severity] = counts.get(severity, 0) + 1
+    return counts
+
+
+def _derive_mitigation_steps(flags: Sequence[str]) -> list[str]:
+    """Map guardrail flags onto mitigation checklist items."""
+
+    if not flags:
+        return []
+    steps: set[str] = set()
+    for flag in flags:
+        key = flag
+        if flag not in _GUARDRAIL_MITIGATION_GUIDANCE and "." in flag:
+            prefix = flag.split(".", 1)[0]
+            if prefix in _GUARDRAIL_MITIGATION_GUIDANCE:
+                key = prefix
+        guidance = _GUARDRAIL_MITIGATION_GUIDANCE.get(key)
+        if guidance:
+            steps.add(guidance)
+        else:
+            steps.add(f"Investigate guardrail flag: {flag}.")
+    return sorted(steps)
 
 
 def _compute_sla_due_at(

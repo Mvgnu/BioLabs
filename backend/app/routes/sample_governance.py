@@ -103,6 +103,29 @@ def list_custody_escalations(
     return escalations
 
 
+@router.get(
+    "/protocols",
+    response_model=list[schemas.CustodyProtocolExecution],
+)
+def list_protocol_guardrail_snapshots(
+    guardrail_status: list[str] | None = Query(default=None, alias="status"),
+    has_open_drill: bool | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    _require_operator(user)
+    executions = sample_governance.list_protocol_guardrail_executions(
+        db,
+        guardrail_statuses=guardrail_status,
+        has_open_drill=has_open_drill,
+        severity=severity,
+        limit=limit,
+    )
+    return executions
+
+
 @router.post(
     "/escalations/{escalation_id}/acknowledge",
     response_model=schemas.CustodyEscalationAck,
