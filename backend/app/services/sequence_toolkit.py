@@ -38,6 +38,8 @@ from ..schemas.sequence_toolkit import (
     PrimerDesignResponse,
     PrimerDesignSummary,
     PrimerThermodynamics,
+    PrimerMultiplexCompatibility,
+    PrimerCrossDimerFlag,
     QCConfig,
     QCReport,
     QCReportResponse,
@@ -46,7 +48,9 @@ from ..schemas.sequence_toolkit import (
     RestrictionDigestResponse,
     RestrictionDigestResult,
     RestrictionDigestSite,
+    RestrictionStrategyEvaluation,
     SequenceToolkitProfile,
+    SequenceToolkitPreset,
 )
 
 
@@ -96,6 +100,141 @@ _NEAREST_NEIGHBOR_PARAMS: dict[str, tuple[float, float]] = {
     "GG": (-8.0, -19.9),
     "CC": (-8.0, -19.9),
 }
+
+
+_PRESET_DEFINITIONS: tuple[SequenceToolkitPreset, ...] = (
+    SequenceToolkitPreset(
+        preset_id="multiplex",
+        name="Multiplex cloning",
+        description="Optimises primer thermodynamics for multiplex Golden Gate workflows.",
+        primer_overrides=PrimerDesignConfig(
+            product_size_range=(120, 240),
+            target_tm=62.0,
+            min_tm=59.0,
+            max_tm=66.0,
+            min_size=20,
+            opt_size=24,
+            max_size=30,
+            num_return=3,
+            primer_concentration_nM=750.0,
+            gc_clamp_min=2,
+            gc_clamp_max=3,
+        ),
+        restriction_overrides=RestrictionDigestConfig(
+            enzymes=["BsaI", "BsmBI", "SapI", "BbsI"],
+            require_all=False,
+            reaction_buffer="CutSmart",
+        ),
+        assembly_overrides=AssemblySimulationConfig(
+            strategy="golden_gate",
+            base_success=0.78,
+            tm_penalty_factor=0.09,
+            minimal_site_count=2,
+            low_site_penalty=0.65,
+            ligation_efficiency=0.88,
+            kinetics_model="type_iis_pulsed",
+            overlap_optimum=20,
+            overlap_tolerance=6,
+            overhang_diversity_factor=6.0,
+        ),
+        metadata_tags=["preset:multiplex", "workflow:multiplex"],
+        recommended_use=[
+            "Golden Gate multiplex assemblies",
+            "Parallel amplicon enrichment",
+        ],
+        notes=[
+            "Optimised for Type IIS multiplex digestion windows and balanced tm deltas.",
+        ],
+    ),
+    SequenceToolkitPreset(
+        preset_id="qpcr",
+        name="qPCR validation",
+        description="Narrow amplicon and tm window for qPCR guardrail verification.",
+        primer_overrides=PrimerDesignConfig(
+            product_size_range=(70, 140),
+            target_tm=60.5,
+            min_tm=59.0,
+            max_tm=62.5,
+            min_size=18,
+            opt_size=20,
+            max_size=24,
+            num_return=2,
+            primer_concentration_nM=400.0,
+            na_concentration_mM=30.0,
+            gc_clamp_min=1,
+            gc_clamp_max=2,
+        ),
+        restriction_overrides=RestrictionDigestConfig(
+            enzymes=["EcoRI", "BamHI"],
+            require_all=True,
+        ),
+        assembly_overrides=AssemblySimulationConfig(
+            strategy="gibson",
+            base_success=0.75,
+            tm_penalty_factor=0.08,
+            minimal_site_count=1,
+            low_site_penalty=0.7,
+            ligation_efficiency=0.82,
+            kinetics_model="isothermal_exonuclease",
+            overlap_optimum=18,
+            overlap_tolerance=4,
+        ),
+        metadata_tags=["preset:qpcr", "workflow:validation"],
+        recommended_use=[
+            "Assay verification",
+            "qPCR target validation",
+        ],
+        notes=["Supports tight tm spreads suited to qPCR melt curve validation."],
+    ),
+    SequenceToolkitPreset(
+        preset_id="high_gc",
+        name="High-GC amplicons",
+        description="Balances tm and clamps for GC-rich templates and Gibson workflows.",
+        primer_overrides=PrimerDesignConfig(
+            product_size_range=(140, 320),
+            target_tm=64.0,
+            min_tm=62.0,
+            max_tm=68.0,
+            min_size=22,
+            opt_size=26,
+            max_size=32,
+            num_return=2,
+            primer_concentration_nM=900.0,
+            na_concentration_mM=70.0,
+            gc_clamp_min=2,
+            gc_clamp_max=4,
+        ),
+        restriction_overrides=RestrictionDigestConfig(
+            enzymes=["NheI", "XhoI", "NotI"],
+            require_all=False,
+            reaction_buffer="High-GC",
+        ),
+        assembly_overrides=AssemblySimulationConfig(
+            strategy="gibson",
+            base_success=0.72,
+            tm_penalty_factor=0.07,
+            minimal_site_count=2,
+            low_site_penalty=0.6,
+            ligation_efficiency=0.9,
+            kinetics_model="high_fidelity",
+            overlap_optimum=28,
+            overlap_tolerance=8,
+        ),
+        metadata_tags=["preset:high_gc", "workflow:gc_rich"],
+        recommended_use=["GC-rich amplicon cloning", "Difficult template rescue"],
+        notes=[
+            "Increases clamp length and salt concentrations to stabilise GC-heavy primers.",
+        ],
+    ),
+)
+
+
+@lru_cache(maxsize=1)
+def get_sequence_toolkit_presets() -> dict[str, SequenceToolkitPreset]:
+    """Return indexed catalog of toolkit presets."""
+
+    # purpose: allow deterministic preset lookups for planner orchestration
+    return {entry.preset_id.lower(): entry for entry in _PRESET_DEFINITIONS}
 
 
 def _normalize_sequence(seq: str) -> str:
@@ -180,6 +319,27 @@ def _max_homodimer_run(seq: str) -> int:
                     max_run = run
             else:
                 run = 0
+    return max_run
+
+
+def _max_cross_dimer_run(seq_a: str, seq_b: str) -> int:
+    """Return the maximum complement run between two primers."""
+
+    # purpose: assess multiplex cross-dimer overlap heuristics
+    primer_a = _normalize_sequence(seq_a)
+    primer_b = _reverse_complement(seq_b)
+    max_run = 0
+    for idx in range(len(primer_a)):
+        for jdx in range(len(primer_b)):
+            run = 0
+            while (
+                idx + run < len(primer_a)
+                and jdx + run < len(primer_b)
+                and primer_a[idx + run] == primer_b[jdx + run]
+            ):
+                run += 1
+            if run > max_run:
+                max_run = run
     return max_run
 
 
@@ -412,50 +572,246 @@ def diff_sequences(reference: str, candidate: str) -> dict[str, int]:
     }
 
 
+def _evaluate_restriction_strategies(
+    digests: Sequence[RestrictionDigestResult],
+    *,
+    profile: SequenceToolkitProfile,
+    default_buffer: ReactionBuffer | None,
+) -> list[RestrictionStrategyEvaluation]:
+    """Return strategy compatibility evaluations for restriction digests."""
+
+    # purpose: surface double digest and Golden Gate readiness for planner guardrails
+    total = len(digests)
+    if not total:
+        return []
+    double_ready = 0
+    partial_ready = 0
+    buffer_recommendations: set[str] = set()
+    if default_buffer and default_buffer.name:
+        buffer_recommendations.add(default_buffer.name)
+    golden_scores: list[float] = []
+    type_iis_names = {
+        "bsai",
+        "bsmbi",
+        "bsmbi-v2",
+        "sapI".lower(),
+        "bbsi",
+        "esp3i",
+    }
+    for digest in digests:
+        enzyme_hits = 0
+        type_iis_hit = 0
+        overhang_signatures: set[str] = set()
+        buffer_payload = digest.buffer
+        if buffer_payload:
+            if isinstance(buffer_payload, ReactionBuffer):
+                if buffer_payload.name:
+                    buffer_recommendations.add(buffer_payload.name)
+            elif isinstance(buffer_payload, dict):
+                buffer_name = buffer_payload.get("name")
+                if buffer_name:
+                    buffer_recommendations.add(buffer_name)
+        for site in digest.sites.values():
+            positions = site.positions if isinstance(site, RestrictionDigestSite) else []
+            if positions:
+                enzyme_hits += 1
+            enzyme_name = (site.enzyme or "").lower()
+            if enzyme_name in type_iis_names and positions:
+                type_iis_hit += len(positions)
+                metadata = site.metadata
+                overhang = None
+                if isinstance(metadata, EnzymeMetadata):
+                    overhang = metadata.overhang or metadata.recognition_site
+                elif isinstance(metadata, dict):
+                    overhang = metadata.get("overhang") or metadata.get("recognition_site")
+                if overhang:
+                    overhang_signatures.add(str(overhang))
+        if enzyme_hits >= 2:
+            double_ready += 1
+        elif enzyme_hits == 1:
+            partial_ready += 1
+        if type_iis_hit >= 2 and len(overhang_signatures) >= 2:
+            golden_scores.append(1.0)
+        elif type_iis_hit >= 1:
+            golden_scores.append(0.5)
+        else:
+            golden_scores.append(0.0)
+    double_score = (
+        (double_ready + (partial_ready * 0.5)) / total if total else 0.0
+    )
+    double_hint = "Double digest ready for execution" if double_score >= 0.75 else (
+        "Double digest requires enzyme balancing" if double_score >= 0.4 else "Double digest blocked: insufficient cut site coverage"
+    )
+    double_metadata = sorted(
+        {
+            *profile.metadata_tags,
+            "strategy:double_digest",
+        }
+    )
+    double_notes: list[str] = []
+    if double_score < 0.75:
+        double_notes.append(
+            "Ensure at least two enzymes cut each template to sustain parallel digests."
+        )
+    if partial_ready:
+        double_notes.append(
+            f"{partial_ready} template(s) only have a single enzyme with cut sites."
+        )
+    if profile.preset_id:
+        double_notes.append(
+            f"Preset {profile.preset_id} applied to restriction scoring."
+        )
+    evaluations = [
+        RestrictionStrategyEvaluation(
+            strategy="double_digest",
+            compatibility=round(double_score, 3),
+            buffer_recommendations=sorted(buffer_recommendations),
+            guardrail_hint=double_hint,
+            notes=double_notes,
+            metadata_tags=double_metadata,
+        )
+    ]
+    golden_score = mean(golden_scores) if golden_scores else 0.0
+    golden_hint = "Golden Gate ready for multiplex assembly" if golden_score >= 0.75 else (
+        "Golden Gate requires overhang diversification" if golden_score >= 0.4 else "Golden Gate blocked: insufficient Type IIS coverage"
+    )
+    golden_notes: list[str] = []
+    if golden_score < 0.75:
+        golden_notes.append(
+            "Increase Type IIS site count and diversify overhangs for Golden Gate."
+        )
+    if profile.recommended_use:
+        golden_notes.extend(profile.recommended_use)
+    golden_metadata = sorted(
+        {
+            *profile.metadata_tags,
+            "strategy:golden_gate",
+        }
+    )
+    evaluations.append(
+        RestrictionStrategyEvaluation(
+            strategy="golden_gate",
+            compatibility=round(golden_score, 3),
+            buffer_recommendations=sorted(buffer_recommendations),
+            guardrail_hint=golden_hint,
+            notes=golden_notes,
+            metadata_tags=golden_metadata,
+        )
+    )
+    return evaluations
+
+
+def _resolve_profile(
+    config: PrimerDesignConfig
+    | RestrictionDigestConfig
+    | AssemblySimulationConfig
+    | SequenceToolkitProfile
+    | QCConfig
+    | None,
+    *,
+    preset_id: str | None = None,
+) -> SequenceToolkitProfile:
+    """Return a SequenceToolkitProfile with optional preset overrides applied."""
+
+    # purpose: centralize preset application for primer, restriction, and assembly flows
+    if isinstance(config, SequenceToolkitProfile):
+        base_profile = SequenceToolkitProfile(**config.model_dump())
+    elif isinstance(config, PrimerDesignConfig):
+        base_profile = SequenceToolkitProfile(primer=config)
+    elif isinstance(config, RestrictionDigestConfig):
+        base_profile = SequenceToolkitProfile(restriction=config)
+    elif isinstance(config, AssemblySimulationConfig):
+        base_profile = SequenceToolkitProfile(assembly=config)
+    elif isinstance(config, QCConfig):
+        base_profile = SequenceToolkitProfile(qc=config)
+    else:
+        base_profile = SequenceToolkitProfile()
+    selected = (preset_id or base_profile.preset_id or "").lower()
+    if not selected:
+        return base_profile
+    preset_catalog = get_sequence_toolkit_presets()
+    preset = preset_catalog.get(selected)
+    if not preset:
+        return base_profile
+    primer = base_profile.primer.model_copy()
+    if preset.primer_overrides:
+        primer = primer.model_copy(
+            update=preset.primer_overrides.model_dump()
+        )
+    restriction = base_profile.restriction.model_copy()
+    if preset.restriction_overrides:
+        restriction = restriction.model_copy(
+            update=preset.restriction_overrides.model_dump()
+        )
+    assembly = base_profile.assembly.model_copy()
+    if preset.assembly_overrides:
+        assembly = assembly.model_copy(
+            update=preset.assembly_overrides.model_dump()
+        )
+    metadata_tags = sorted(
+        {
+            *base_profile.metadata_tags,
+            *preset.metadata_tags,
+            f"preset:{preset.preset_id}",
+        }
+    )
+    recommended_use = sorted(
+        set((*base_profile.recommended_use, *preset.recommended_use))
+    )
+    notes = list(dict.fromkeys([*base_profile.notes, *preset.notes]))
+    return SequenceToolkitProfile(
+        preset_id=preset.preset_id,
+        preset_name=preset.name,
+        preset_description=preset.description,
+        metadata_tags=metadata_tags,
+        primer=primer,
+        restriction=restriction,
+        assembly=assembly,
+        qc=base_profile.qc.model_copy(),
+        recommended_use=recommended_use,
+        notes=notes,
+    )
+
+
 def _resolve_primer_config(
     config: PrimerDesignConfig | SequenceToolkitProfile | None,
     *,
     product_size_range: tuple[int, int] | None,
     target_tm: float | None,
-) -> tuple[PrimerDesignConfig, tuple[int, int], float]:
-    if isinstance(config, SequenceToolkitProfile):
-        base = config.primer
-    elif isinstance(config, PrimerDesignConfig):
-        base = config
-    else:
-        base = PrimerDesignConfig()
-    size_range = product_size_range or base.product_size_range
-    tm = target_tm if target_tm is not None else base.target_tm
-    return base, size_range, tm
+    preset_id: str | None = None,
+) -> tuple[SequenceToolkitProfile, PrimerDesignConfig, tuple[int, int], float]:
+    profile = _resolve_profile(config, preset_id=preset_id)
+    primer_config = profile.primer.model_copy()
+    size_range = product_size_range or primer_config.product_size_range
+    tm_request = target_tm if target_tm is not None else primer_config.target_tm
+    clamped_tm = max(primer_config.min_tm, min(primer_config.max_tm, tm_request))
+    primer_config = primer_config.model_copy(update={"target_tm": clamped_tm})
+    profile = profile.model_copy(update={"primer": primer_config})
+    return profile, primer_config, size_range, clamped_tm
 
 
 def _resolve_restriction_config(
     config: RestrictionDigestConfig | SequenceToolkitProfile | None,
     *,
     enzymes: Sequence[str] | None,
-) -> RestrictionDigestConfig:
-    if isinstance(config, SequenceToolkitProfile):
-        base = config.restriction
-    elif isinstance(config, RestrictionDigestConfig):
-        base = config
-    else:
-        base = RestrictionDigestConfig()
+    preset_id: str | None = None,
+) -> tuple[SequenceToolkitProfile, RestrictionDigestConfig]:
+    profile = _resolve_profile(config, preset_id=preset_id)
+    base = profile.restriction.model_copy()
     if enzymes:
         base = base.model_copy(update={"enzymes": list(enzymes)})
-    return base
+    profile = profile.model_copy(update={"restriction": base})
+    return profile, base
 
 
 def _resolve_assembly_config(
     config: AssemblySimulationConfig | SequenceToolkitProfile | None,
     *,
     strategy: str | None,
-) -> AssemblySimulationConfig:
-    if isinstance(config, SequenceToolkitProfile):
-        base = config.assembly
-    elif isinstance(config, AssemblySimulationConfig):
-        base = config
-    else:
-        base = AssemblySimulationConfig()
+    preset_id: str | None = None,
+) -> tuple[SequenceToolkitProfile, AssemblySimulationConfig]:
+    profile = _resolve_profile(config, preset_id=preset_id)
+    base = profile.assembly.model_copy()
     if strategy:
         base = base.model_copy(update={"strategy": strategy})
     strategy_entry = _assembly_strategy_index().get(base.strategy.lower())
@@ -472,17 +828,17 @@ def _resolve_assembly_config(
             "overhang_diversity_factor": strategy_entry.overhang_diversity_factor,
         }
         base = base.model_copy(update=update_payload)
-    return base
+    profile = profile.model_copy(update={"assembly": base})
+    return profile, base
 
 
 def _resolve_qc_config(
     config: QCConfig | SequenceToolkitProfile | None,
-) -> QCConfig:
-    if isinstance(config, SequenceToolkitProfile):
-        return config.qc
-    if isinstance(config, QCConfig):
-        return config
-    return QCConfig()
+    *,
+    preset_id: str | None = None,
+) -> tuple[SequenceToolkitProfile, QCConfig]:
+    profile = _resolve_profile(config, preset_id=preset_id)
+    return profile, profile.qc.model_copy()
 
 
 def design_primers(
@@ -491,6 +847,7 @@ def design_primers(
     config: PrimerDesignConfig | SequenceToolkitProfile | None = None,
     product_size_range: tuple[int, int] | None = None,
     target_tm: float | None = None,
+    preset_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate primer sets for uploaded templates using Primer3."""
 
@@ -498,10 +855,11 @@ def design_primers(
     # inputs: sequence descriptors with `name` and `sequence` keys
     # outputs: mapping of template names to primer metrics compatible with planner schemas
     # status: experimental
-    primer_config, size_range, tm_target = _resolve_primer_config(
+    profile, primer_config, size_range, tm_target = _resolve_primer_config(
         config,
         product_size_range=product_size_range,
         target_tm=target_tm,
+        preset_id=preset_id,
     )
     records: list[PrimerDesignRecord] = []
     tm_values: list[float] = []
@@ -633,6 +991,10 @@ def design_primers(
             metadata_tags.append("risk:homodimer_reverse")
         if warnings:
             metadata_tags.append("primer_warning:present")
+        if profile.metadata_tags:
+            metadata_tags.extend(profile.metadata_tags)
+        if profile.preset_id:
+            metadata_tags.append(f"preset:{profile.preset_id}")
         records.append(
             PrimerDesignRecord(
                 name=name,
@@ -660,7 +1022,88 @@ def design_primers(
             min_tm=0.0,
             max_tm=0.0,
         )
-    return PrimerDesignResponse(primers=records, summary=summary).model_dump()
+    primer_pairs: list[tuple[str, PrimerCandidate]] = []
+    for record in records:
+        if record.forward:
+            primer_pairs.append((f"{record.name}:forward", record.forward))
+        if record.reverse:
+            primer_pairs.append((f"{record.name}:reverse", record.reverse))
+    cross_dimer_flags: list[PrimerCrossDimerFlag] = []
+    for idx in range(len(primer_pairs)):
+        name_a, primer_a = primer_pairs[idx]
+        for jdx in range(idx + 1, len(primer_pairs)):
+            name_b, primer_b = primer_pairs[jdx]
+            overlap = _max_cross_dimer_run(primer_a.sequence, primer_b.sequence)
+            if overlap < 5:
+                continue
+            delta_g = _delta_g_from_run(overlap)
+            severity = "blocked" if overlap >= 7 else "review"
+            flag_tags = [f"overlap:{overlap}"]
+            if profile.preset_id:
+                flag_tags.append(f"preset:{profile.preset_id}")
+            cross_dimer_flags.append(
+                PrimerCrossDimerFlag(
+                    primer_a=name_a,
+                    primer_b=name_b,
+                    overlap=overlap,
+                    delta_g=delta_g,
+                    severity=severity,
+                    metadata_tags=flag_tags,
+                    notes=[
+                        (
+                            "Predicted cross-dimer overlap "
+                            f"of {overlap} bases between {name_a} and {name_b}"
+                        )
+                    ],
+                )
+            )
+    delta_tm_window = summary.max_tm - summary.min_tm if tm_values else 0.0
+    risk_level = "ok"
+    multiplex_notes = list(profile.notes)
+    if delta_tm_window > 6.0:
+        risk_level = "blocked"
+        multiplex_notes.append(
+            "Tm window exceeds 6°C; multiplex runs require redesign or staging."
+        )
+    elif delta_tm_window > 4.0:
+        risk_level = "review"
+        multiplex_notes.append(
+            "Tm window exceeds 4°C; balance primer pairs before multiplexing."
+        )
+    if any(flag.severity == "blocked" for flag in cross_dimer_flags):
+        risk_level = "blocked"
+    elif risk_level != "blocked" and any(
+        flag.severity == "review" for flag in cross_dimer_flags
+    ):
+        risk_level = "review"
+    if cross_dimer_flags and all(
+        "cross_dimer" not in tag for tag in profile.metadata_tags
+    ):
+        multiplex_notes.append("Cross-dimer risk detected across multiplex primer sets.")
+    multiplex_metadata = sorted(
+        {
+            *profile.metadata_tags,
+            "assessment:multiplex",
+            *(flag.metadata_tags[0] for flag in cross_dimer_flags if flag.metadata_tags),
+        }
+    )
+    multiplex = PrimerMultiplexCompatibility(
+        risk_level=risk_level,
+        delta_tm_window=delta_tm_window,
+        average_tm=summary.average_tm,
+        cross_dimer_flags=cross_dimer_flags,
+        metadata_tags=multiplex_metadata,
+        recommended_use=profile.recommended_use,
+        notes=multiplex_notes,
+    )
+    response = PrimerDesignResponse(
+        primers=records,
+        summary=summary,
+        multiplex=multiplex,
+    )
+    payload = response.model_dump()
+    payload["profile"] = profile.model_dump()
+    return payload
 
 
 def analyze_restriction_digest(
@@ -668,6 +1111,7 @@ def analyze_restriction_digest(
     *,
     config: RestrictionDigestConfig | SequenceToolkitProfile | None = None,
     enzymes: Sequence[str] | None = None,
+    preset_id: str | None = None,
 ) -> dict[str, Any]:
     """Evaluate restriction sites for templates."""
 
@@ -675,7 +1119,11 @@ def analyze_restriction_digest(
     # inputs: sequence descriptors and optional enzyme list
     # outputs: digest summary keyed by template
     # status: experimental
-    digest_config = _resolve_restriction_config(config, enzymes=enzymes)
+    profile, digest_config = _resolve_restriction_config(
+        config,
+        enzymes=enzymes,
+        preset_id=preset_id,
+    )
     enzyme_list = list(digest_config.enzymes)
     catalog_index = _enzyme_index()
     kinetics_index = _enzyme_kinetics_index()
@@ -738,6 +1186,12 @@ def analyze_restriction_digest(
                 template_tags.extend(
                     tag for tag in kinetics.metadata_tags if tag not in template_tags
                 )
+        if profile.metadata_tags:
+            template_tags.extend(
+                tag for tag in profile.metadata_tags if tag not in template_tags
+            )
+        if profile.preset_id:
+            template_tags.append(f"preset:{profile.preset_id}")
         digest_notes: list[str] = []
         for enzyme_name, meta in ((entry.name, entry) for entry in enzyme_catalog):
             if meta.star_activity_notes:
@@ -778,11 +1232,20 @@ def analyze_restriction_digest(
             compatibility_alerts.append(
                 f"{name} lacks cut sites for {', '.join(absent_enzymes)}"
             )
-    return RestrictionDigestResponse(
+    strategy_scores = _evaluate_restriction_strategies(
+        digest_results,
+        profile=profile,
+        default_buffer=selected_buffer,
+    )
+    response = RestrictionDigestResponse(
         enzymes=enzyme_catalog,
         digests=digest_results,
         alerts=compatibility_alerts + metadata_alerts,
-    ).model_dump()
+        strategy_scores=strategy_scores,
+    )
+    payload = response.model_dump()
+    payload["profile"] = profile.model_dump()
+    return payload
 
 
 def simulate_assembly(
@@ -791,6 +1254,7 @@ def simulate_assembly(
     *,
     config: AssemblySimulationConfig | SequenceToolkitProfile | None = None,
     strategy: str | None = None,
+    preset_id: str | None = None,
 ) -> dict[str, Any]:
     """Generate assembly plan heuristics."""
 
@@ -798,7 +1262,11 @@ def simulate_assembly(
     # inputs: primer and restriction digest outputs with selected strategy
     # outputs: plan structure containing steps and success scoring
     # status: experimental
-    assembly_config = _resolve_assembly_config(config, strategy=strategy)
+    profile, assembly_config = _resolve_assembly_config(
+        config,
+        strategy=strategy,
+        preset_id=preset_id,
+    )
     steps: list[AssemblyStepMetrics] = []
     success_scores: list[float] = []
     primers = primer_results.get("primers", [])
@@ -806,6 +1274,7 @@ def simulate_assembly(
         item["name"]: item for item in digest_results.get("digests", [])
     }
     contract_tags: set[str] = {f"strategy:{assembly_config.strategy}"}
+    contract_tags.update(profile.metadata_tags)
     kinetics_index = _enzyme_kinetics_index()
     for entry in primers:
         name = entry.get("name")
@@ -991,7 +1460,7 @@ def simulate_assembly(
             "payload_contract",
         ],
     }
-    return AssemblySimulationResult(
+    result = AssemblySimulationResult(
         strategy=assembly_config.strategy,
         steps=steps,
         average_success=mean(success_scores) if success_scores else 0.0,
@@ -1000,6 +1469,8 @@ def simulate_assembly(
         payload_contract=payload_contract,
         metadata_tags=aggregated_tags,
     ).model_dump()
+    result["profile"] = profile.model_dump()
+    return result
 
 
 def evaluate_qc_reports(
@@ -1014,7 +1485,7 @@ def evaluate_qc_reports(
     # inputs: assembly plan metrics and optional chromatogram uploads
     # outputs: list of qc assessment dicts consumed by planner responses
     # status: experimental
-    qc_config = _resolve_qc_config(config)
+    profile, qc_config = _resolve_qc_config(config)
     reports: list[QCReport] = []
     for step in assembly_plan.get("steps", []):
         status = (
@@ -1048,4 +1519,6 @@ def evaluate_qc_reports(
                 details=dict(chromatogram),
             )
         )
-    return QCReportResponse(reports=reports).model_dump()
+    response = QCReportResponse(reports=reports).model_dump()
+    response["profile"] = profile.model_dump()
+    return response

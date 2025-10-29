@@ -36,11 +36,14 @@ from .sequence_toolkit import (
     AssemblySimulationResult,
     PrimerDesignConfig,
     PrimerDesignResponse,
+    PrimerMultiplexCompatibility,
     QCConfig,
     QCReportResponse,
     RestrictionDigestConfig,
     RestrictionDigestResponse,
     SequenceToolkitProfile,
+    SequenceToolkitPreset,
+    RestrictionStrategyEvaluation,
 )
 from .sample_governance import (
     CustodyEscalation,
@@ -2732,7 +2735,9 @@ class CloningPlannerSessionCreate(BaseModel):
     # purpose: represent planner session creation inputs across API and tests
     assembly_strategy: str
     input_sequences: list[CloningPlannerSequenceIn]
+    protocol_execution_id: UUID | None = None
     metadata: dict[str, Any] | None = None
+    toolkit_preset: str | None = None
 
 
 class CloningPlannerStageRequest(BaseModel):
@@ -2819,6 +2824,7 @@ class CloningPlannerSessionOut(BaseModel):
     created_by_id: UUID | None = None
     status: str
     assembly_strategy: str
+    protocol_execution_id: UUID | None = None
     input_sequences: list[dict[str, Any]]
     primer_set: PrimerDesignResponse
     restriction_digest: RestrictionDigestResponse
@@ -2826,6 +2832,7 @@ class CloningPlannerSessionOut(BaseModel):
     qc_reports: QCReportResponse
     inventory_reservations: list[dict[str, Any]]
     guardrail_state: dict[str, Any]
+    guardrail_gate: dict[str, Any]
     stage_timings: dict[str, Any]
     current_step: str | None = None
     celery_task_id: str | None = None
@@ -2835,6 +2842,20 @@ class CloningPlannerSessionOut(BaseModel):
     completed_at: datetime | None = None
     stage_history: list[CloningPlannerStageRecordOut]
     qc_artifacts: list[CloningPlannerQCArtifactOut]
+
+
+class CloningPlannerGuardrailStatus(BaseModel):
+    """Focused guardrail snapshot for planner governance overlays."""
+
+    # purpose: expose custody-aware guardrail status to planner and governance UIs
+    session_id: UUID
+    protocol_execution_id: UUID | None = None
+    status: str
+    guardrail_state: dict[str, Any]
+    guardrail_gate: dict[str, Any]
+    custody_status: str | None = None
+    qc_backpressure: bool = False
+    updated_at: datetime | None = None
 
 
 EquipmentTelemetryChannel.model_rebuild()

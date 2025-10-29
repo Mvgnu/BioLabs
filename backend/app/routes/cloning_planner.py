@@ -12,13 +12,14 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas, pubsub
 from ..auth import get_current_user
 from ..database import get_db
 from ..services import cloning_planner
 from ..tasks import celery_app
+from ..rbac import check_team_role
 
 router = APIRouter(prefix="/api/cloning-planner", tags=["cloning-planner"])
 
@@ -37,11 +38,16 @@ def create_cloning_planner_session(
         created_by=user,
         assembly_strategy=payload.assembly_strategy,
         input_sequences=[sequence.model_dump() for sequence in payload.input_sequences],
+        protocol_execution_id=payload.protocol_execution_id,
         metadata=payload.metadata or {},
+        toolkit_preset=payload.toolkit_preset,
     )
     db.commit()
     db.refresh(planner)
-    cloning_planner.enqueue_pipeline(planner.id)
+    cloning_planner.enqueue_pipeline(
+        planner.id,
+        preset_id=payload.toolkit_preset,
+    )
     db.refresh(planner)
     serialised = cloning_planner.serialize_session(planner)
     return schemas.CloningPlannerSessionOut(**serialised)
@@ -66,6 +72,44 @@ def get_cloning_planner_session(
     if planner.created_by_id not in {None, user.id} and not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access to planner session denied")
     return schemas.CloningPlannerSessionOut(**cloning_planner.serialize_session(planner))
+
+
+@router.get(
+    "/sessions/{session_id}/guardrails",
+    response_model=schemas.CloningPlannerGuardrailStatus,
+)
+def get_cloning_planner_guardrails(
+    session_id: UUID,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> schemas.CloningPlannerGuardrailStatus:
+    """Return custody-aware guardrail status for a planner session."""
+
+    planner = (
+        db.query(models.CloningPlannerSession)
+        .options(
+            joinedload(models.CloningPlannerSession.protocol_execution).joinedload(
+                models.ProtocolExecution.template
+            )
+        )
+        .filter(models.CloningPlannerSession.id == session_id)
+        .first()
+    )
+    if not planner:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planner session not found")
+    team_id = None
+    if planner.protocol_execution and planner.protocol_execution.template:
+        team_id = planner.protocol_execution.template.team_id
+    if not user.is_admin:
+        if planner.created_by_id not in {None, user.id}:
+            if team_id is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Guardrail status requires governance membership",
+                )
+            check_team_role(db, user, team_id, ["owner", "manager", "member"])
+    snapshot = cloning_planner.guardrail_status_snapshot(db, planner)
+    return schemas.CloningPlannerGuardrailStatus(**snapshot)
 
 
 @router.get("/sessions/{session_id}/events", response_class=StreamingResponse)
@@ -139,6 +183,7 @@ def resume_cloning_planner_session(
         enzymes=overrides.get("enzymes"),
         chromatograms=overrides.get("chromatograms"),
         resume_from=resume_step,
+        preset_id=overrides.get("preset_id"),
     )
     db.refresh(planner)
     serialised = cloning_planner.serialize_session(planner)
@@ -225,18 +270,21 @@ def record_cloning_planner_stage(
                 planner=planner,
                 product_size_range=size_range,
                 target_tm=config.get("target_tm"),
+                preset_id=config.get("preset_id"),
             )
         elif normalised_step == "restriction":
             updated = cloning_planner.run_restriction_analysis(
                 db,
                 planner=planner,
                 enzymes=config.get("enzymes"),
+                preset_id=config.get("preset_id"),
             )
         elif normalised_step == "assembly":
             updated = cloning_planner.run_assembly_planning(
                 db,
                 planner=planner,
                 strategy=config.get("strategy"),
+                preset_id=config.get("preset_id"),
             )
         elif normalised_step == "qc":
             updated = cloning_planner.run_qc_checks(

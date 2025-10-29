@@ -388,6 +388,7 @@ export interface CloningPlannerSession {
   created_by_id?: string | null
   status: string
   assembly_strategy: string
+  protocol_execution_id?: string | null
   input_sequences: Record<string, any>[]
   primer_set: Record<string, any>
   restriction_digest: Record<string, any>
@@ -395,6 +396,7 @@ export interface CloningPlannerSession {
   qc_reports: Record<string, any>
   inventory_reservations: Record<string, any>[]
   guardrail_state: Record<string, any>
+  guardrail_gate: Record<string, any>
   stage_timings: Record<string, CloningPlannerStageTiming>
   current_step?: string | null
   celery_task_id?: string | null
@@ -434,6 +436,7 @@ export interface CloningPlannerEventPayload {
   status: string
   current_step?: string | null
   guardrail_state?: Record<string, any>
+  guardrail_gate?: Record<string, any>
   payload?: Record<string, any>
   timestamp: string
 }

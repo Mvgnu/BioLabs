@@ -14,7 +14,9 @@ import type {
 export interface CreateCloningPlannerSessionPayload {
   assembly_strategy: string
   input_sequences: CloningPlannerSequenceInput[]
+  protocol_execution_id?: string | null
   metadata?: Record<string, any>
+  toolkit_preset?: string | null
 }
 
 export const createCloningPlannerSession = async (

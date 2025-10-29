@@ -30,20 +30,80 @@ def _create_session(client) -> tuple[str, dict]:
             }
         ],
         "metadata": {"guardrail_state": {"state": "intake"}},
+        "toolkit_preset": "multiplex",
     }
     response = client.post("/api/cloning-planner/sessions", json=payload, headers=headers)
     assert response.status_code == 201, response.text
     return headers, response.json()
 
 
+def _seed_protocol_with_guardrail(user_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
+    """Create a protocol execution with active custody backpressure."""
+
+    db = TestingSessionLocal()
+    try:
+        team = models.Team(name="Ops", created_by=user_id)
+        db.add(team)
+        db.commit()
+        db.refresh(team)
+        template = models.ProtocolTemplate(
+            name="Custody Protocol",
+            version="1",
+            content="{}",
+            team_id=team.id,
+            created_by=user_id,
+        )
+        db.add(template)
+        db.commit()
+        db.refresh(template)
+        execution = models.ProtocolExecution(
+            template_id=template.id,
+            run_by=user_id,
+            status="running",
+            guardrail_status="halted",
+            guardrail_state={
+                "open_counts": {"critical": 1},
+                "open_escalations": 1,
+                "open_drill_count": 1,
+                "qc_backpressure": True,
+            },
+            result={
+                "custody": {
+                    "open_escalations": 1,
+                    "open_drill_count": 1,
+                    "qc_backpressure": True,
+                    "recovery_gate": True,
+                    "event_overlays": {
+                        "evt": {
+                            "open_escalation_ids": ["esc-1"],
+                            "max_severity": "critical",
+                        }
+                    },
+                }
+            },
+        )
+        db.add(execution)
+        db.commit()
+        db.refresh(execution)
+        return team.id, execution.id
+    finally:
+        db.close()
+
+
 def test_create_cloning_planner_session_persists_inputs(client):
     _, body = _create_session(client)
     assert body["assembly_strategy"] == "gibson"
     assert body["status"] == "ready_for_finalize"
+    assert body["guardrail_gate"]["active"] is False
     assert body["input_sequences"][0]["metadata"]["length"] == 120
     assert isinstance(body["stage_history"], list)
     assert body["stage_history"], body["stage_history"]
     assert isinstance(body["qc_artifacts"], list)
+    assert body["protocol_execution_id"] is None
+    assert body["guardrail_state"]["toolkit"]["preset_id"] == "multiplex"
+    assert body["primer_set"]["profile"]["preset_id"] == "multiplex"
+    assert "multiplex_risk" in body["guardrail_state"]["primers"]
+    assert body["restriction_digest"]["strategy_scores"]
     session_id = uuid.UUID(body["id"])
 
     db = TestingSessionLocal()
@@ -55,6 +115,8 @@ def test_create_cloning_planner_session_persists_inputs(client):
         assert record.stage_timings["intake"]["status"] == "intake_recorded"
         assert "primers" in record.stage_timings
         assert record.primer_set["summary"]["primer_count"] >= 1
+        assert record.guardrail_state["toolkit"]["preset_id"] == "multiplex"
+        assert record.guardrail_state["primers"]["preset_id"] == "multiplex"
         assert record.stage_history
         assert any(entry.stage == "primers" for entry in record.stage_history)
     finally:
@@ -66,7 +128,7 @@ def test_record_cloning_planner_stage_updates_payload(client):
     session_id = body["id"]
 
     stage_payload = {
-        "payload": {"product_size_range": [90, 110], "target_tm": 62},
+        "payload": {"product_size_range": [90, 110], "target_tm": 62, "preset_id": "high_gc"},
     }
     update_resp = client.post(
         f"/api/cloning-planner/sessions/{session_id}/steps/primers",
@@ -77,10 +139,14 @@ def test_record_cloning_planner_stage_updates_payload(client):
     updated = update_resp.json()
     assert updated["current_step"] == "restriction"
     assert updated["primer_set"]["primers"][0]["status"] == "ok"
-    assert updated["guardrail_state"]["primers"]["primer_state"] in {"ok", "review"}
+    assert updated["guardrail_state"]["primers"]["primer_state"] in {"ok", "review", "blocked"}
+    assert updated["guardrail_state"]["primers"]["preset_id"] == "high_gc"
+    assert updated["guardrail_state"]["toolkit"]["preset_id"] == "high_gc"
+    assert updated["primer_set"]["profile"]["preset_id"] == "high_gc"
     tags = updated["guardrail_state"]["primers"]["metadata_tags"]
     assert tags
     assert any(tag.startswith("primer_source:") for tag in tags)
+    assert "multiplex_risk" in updated["guardrail_state"]["primers"]
     assert any(entry["stage"] == "primers" for entry in updated["stage_history"])
 
 
@@ -105,6 +171,7 @@ def test_finalize_cloning_planner_session_sets_completion(client):
     assert data["guardrail_state"]["qc"]["qc_checks"] >= 1
     assert "buffers" in data["guardrail_state"]["restriction"]
     assert "ligation_profiles" in data["guardrail_state"]["assembly"]
+    assert data["guardrail_state"]["toolkit"]["preset_id"]
     assert any(entry["status"] == "finalized" for entry in data["stage_history"] if entry["stage"] == "finalize")
 
 
@@ -119,7 +186,7 @@ def test_resume_cloning_planner_session_requeues_stages(client):
         headers=headers,
     )
     assert rerun_resp.status_code == 200, rerun_resp.text
-    resume_payload = {"overrides": {"enzymes": ["EcoRI"]}}
+    resume_payload = {"overrides": {"enzymes": ["EcoRI"], "preset_id": "qpcr"}}
     resume_resp = client.post(
         f"/api/cloning-planner/sessions/{session_id}/resume",
         json=resume_payload,
@@ -130,6 +197,7 @@ def test_resume_cloning_planner_session_requeues_stages(client):
     assert resumed["status"] == "ready_for_finalize"
     assert resumed["stage_timings"]["restriction"]["status"].startswith("restriction")
     assert resumed["stage_timings"]["restriction"]["task_id"]
+    assert resumed["guardrail_state"]["toolkit"]["preset_id"] == "qpcr"
 
 
 def test_qc_guardrail_blocked_state_exposed(client):
@@ -178,6 +246,41 @@ def test_cancel_cloning_planner_session_marks_checkpoint(client):
     cancel_data = cancel_resp.json()
     assert cancel_data["status"] == "cancelled"
     assert cancel_data["stage_timings"][cancel_data["current_step"]]["status"] == "cancelled"
+
+
+def test_protocol_guardrail_backpressure_blocks_pipeline(client):
+    headers, user_id = admin_headers()
+    _, execution_id = _seed_protocol_with_guardrail(user_id)
+
+    payload = {
+        "assembly_strategy": "gibson",
+        "protocol_execution_id": str(execution_id),
+        "input_sequences": [
+            {
+                "name": "vector",
+                "sequence": "ATGC" * 20,
+                "metadata": {"length": 80},
+            }
+        ],
+    }
+    resp = client.post("/api/cloning-planner/sessions", json=payload, headers=headers)
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    assert data["protocol_execution_id"] == str(execution_id)
+    assert data["guardrail_gate"]["active"] is True
+    assert "qc_backpressure" in data["guardrail_state"].get("custody", {}) or data["guardrail_state"]["qc_backpressure"]
+    primers_timing = data["stage_timings"].get("primers")
+    assert primers_timing and primers_timing["status"] == "primers_guardrail_hold"
+
+    guardrail_resp = client.get(
+        f"/api/cloning-planner/sessions/{data['id']}/guardrails",
+        headers=headers,
+    )
+    assert guardrail_resp.status_code == 200, guardrail_resp.text
+    guardrail_payload = guardrail_resp.json()
+    assert guardrail_payload["guardrail_gate"]["active"] is True
+    custody_state = guardrail_payload["guardrail_state"].get("custody", {})
+    assert custody_state.get("open_escalations") >= 1
 
 
 @pytest.mark.asyncio
