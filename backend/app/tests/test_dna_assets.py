@@ -52,6 +52,11 @@ def test_create_and_list_assets(client, auth_headers):
     latest = asset["latest_version"]
     assert latest["sequence_length"] == 100
     assert latest["gc_content"] > 0
+    kinetics_summary = latest["kinetics_summary"]
+    assert {"enzymes", "buffers", "ligation_profiles", "metadata_tags"} <= kinetics_summary.keys()
+    guardrails = latest["guardrail_heuristics"]
+    assert guardrails["primers"]["primer_state"] in {"ok", "review"}
+    assert latest["assembly_presets"]
 
     list_resp = client.get("/api/dna-assets", headers=headers)
     assert list_resp.status_code == 200

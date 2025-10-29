@@ -63,6 +63,8 @@ def test_design_primers_includes_thermodynamics():
     assert reverse["thermodynamics"]["tm"] > 40
     assert "thermodynamics" in forward
     assert "warnings" in record
+    assert "metadata_tags" in record
+    assert any(tag.startswith("primer_source:") for tag in record["metadata_tags"])
 
 
 def test_digest_reports_include_buffer_alerts():
@@ -95,6 +97,8 @@ def test_digest_reports_include_buffer_alerts():
         rel=1e-2,
     )
     assert "model:high_fidelity" in digest["metadata_tags"]
+    assert digest["kinetics_profiles"]
+    assert any(profile["name"] == "EcoRI" for profile in digest["kinetics_profiles"])
 
 
 def test_simulate_assembly_includes_strategy_metrics():
@@ -163,8 +167,13 @@ def test_simulate_assembly_includes_strategy_metrics():
     assert "kinetics_modifier" in step["heuristics"]
     assert step["metadata_tags"], "Metadata tags should be populated"
     assert "ligation_profile" in step["heuristics"]
+    assert step["ligation_profile"]["strategy"] == "golden_gate"
+    assert step["buffer"]["name"] == "CutSmart"
+    assert step["kinetics_profiles"]
+    assert any(profile["name"] == "BsaI" for profile in step["kinetics_profiles"])
     assert plan["payload_contract"]["schema_version"] == "1.1"
     assert "strategy:golden_gate" in plan["payload_contract"]["metadata_tags"]
+    assert plan["metadata_tags"] == plan["payload_contract"]["metadata_tags"]
     assert plan["average_success"] == pytest.approx(
         step["junction_success"],
         rel=1e-6,

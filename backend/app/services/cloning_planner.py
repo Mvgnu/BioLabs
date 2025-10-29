@@ -39,10 +39,28 @@ def _primer_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
 
     primers = [p for p in result.get("primers", []) if p.get("status") == "ok"]
     warning_count = sum(len(p.get("warnings", [])) for p in primers)
+    tm_values = [
+        p.get("forward", {}).get("thermodynamics", {}).get("tm")
+        for p in primers
+        if p.get("forward")
+    ] + [
+        p.get("reverse", {}).get("thermodynamics", {}).get("tm")
+        for p in primers
+        if p.get("reverse")
+    ]
+    tm_values = [value for value in tm_values if isinstance(value, (int, float))]
+    tm_span = max(tm_values) - min(tm_values) if tm_values else 0.0
+    metadata_tags = sorted({
+        tag
+        for primer in primers
+        for tag in primer.get("metadata_tags", [])
+    })
     return {
         "primer_sets": len(primers),
         "primer_warnings": warning_count,
         "primer_state": "review" if warning_count else "ok",
+        "metadata_tags": metadata_tags,
+        "tm_span": tm_span,
     }
 
 
@@ -50,9 +68,29 @@ def _restriction_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
     """Summarise restriction digest compatibility for guardrail tracking."""
 
     alerts = result.get("alerts", [])
+    digests = result.get("digests", [])
+    metadata_tags = sorted({
+        tag
+        for digest in digests
+        for tag in digest.get("metadata_tags", [])
+    })
+    buffers = sorted({
+        (digest.get("buffer") or {}).get("name")
+        for digest in digests
+        if (digest.get("buffer") or {}).get("name")
+    })
+    kinetics = sorted({
+        profile.get("name")
+        for digest in digests
+        for profile in digest.get("kinetics_profiles", [])
+        if profile.get("name")
+    })
     return {
         "restriction_alerts": alerts,
         "restriction_state": "review" if alerts else "ok",
+        "metadata_tags": metadata_tags,
+        "buffers": buffers,
+        "kinetics": kinetics,
     }
 
 
@@ -61,9 +99,35 @@ def _assembly_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
 
     success = result.get("average_success", 0.0)
     state = "ok" if success >= 0.7 else "review"
+    steps = result.get("steps", [])
+    metadata_tags = sorted({
+        tag
+        for step in steps
+        for tag in step.get("metadata_tags", [])
+    })
+    ligation_profiles = sorted({
+        (step.get("ligation_profile") or {}).get("strategy")
+        for step in steps
+        if (step.get("ligation_profile") or {}).get("strategy")
+    })
+    buffers = sorted({
+        (step.get("buffer") or {}).get("name")
+        for step in steps
+        if (step.get("buffer") or {}).get("name")
+    })
+    kinetics = sorted({
+        profile.get("name")
+        for step in steps
+        for profile in step.get("kinetics_profiles", [])
+        if profile.get("name")
+    })
     return {
         "assembly_success": success,
         "assembly_state": state,
+        "metadata_tags": metadata_tags,
+        "ligation_profiles": ligation_profiles,
+        "buffers": buffers,
+        "kinetics": kinetics,
     }
 
 

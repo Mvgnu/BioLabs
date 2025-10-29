@@ -57,6 +57,25 @@ class DNAAnnotationOut(DNAAnnotationPayload):
     id: UUID
 
 
+class DNAAssetKineticsSummary(BaseModel):
+    """Aggregated kinetics descriptors for DNA asset versions."""
+
+    # purpose: expose enzyme, buffer, and ligation tags surfaced by toolkit analyses
+    enzymes: List[str] = Field(default_factory=list)
+    buffers: List[str] = Field(default_factory=list)
+    ligation_profiles: List[str] = Field(default_factory=list)
+    metadata_tags: List[str] = Field(default_factory=list)
+
+
+class DNAAssetGuardrailHeuristics(BaseModel):
+    """Guardrail heuristics derived from toolkit simulations."""
+
+    # purpose: align DNA asset views with planner guardrail summaries
+    primers: dict[str, Any] = Field(default_factory=dict)
+    restriction: dict[str, Any] = Field(default_factory=dict)
+    assembly: dict[str, Any] = Field(default_factory=dict)
+
+
 class DNAAssetVersionOut(BaseModel):
     """Serialized view of a DNA asset version."""
 
@@ -68,6 +87,9 @@ class DNAAssetVersionOut(BaseModel):
     created_by_id: Optional[UUID]
     metadata: dict[str, Any]
     annotations: List[DNAAnnotationOut]
+    kinetics_summary: DNAAssetKineticsSummary = Field(default_factory=DNAAssetKineticsSummary)
+    assembly_presets: List[str] = Field(default_factory=list)
+    guardrail_heuristics: DNAAssetGuardrailHeuristics = Field(default_factory=DNAAssetGuardrailHeuristics)
 
 
 class DNAAssetSummary(BaseModel):
