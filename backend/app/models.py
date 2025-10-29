@@ -1274,6 +1274,105 @@ class GovernanceSampleCustodyLog(Base):
     team = relationship("Team", foreign_keys=[performed_for_team_id])
 
 
+class GovernanceCustodyEscalation(Base):
+    __tablename__ = "governance_custody_escalations"
+
+    # purpose: persist custody escalation lifecycle for freezer governance
+    # status: pilot
+    # depends_on: governance_sample_custody_logs, governance_freezer_units, governance_freezer_compartments, dna_asset_versions, users
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    log_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_sample_custody_logs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    freezer_unit_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_freezer_units.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    compartment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_freezer_compartments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    asset_version_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_asset_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    severity = Column(String, nullable=False, default="warning")
+    status = Column(String, nullable=False, default="open")
+    reason = Column(String, nullable=False)
+    due_at = Column(DateTime, nullable=True)
+    acknowledged_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    assigned_to_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    guardrail_flags = Column(JSON, default=list)
+    notifications = Column(JSON, default=list)
+    meta = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    log = relationship("GovernanceSampleCustodyLog")
+    freezer = relationship("GovernanceFreezerUnit")
+    compartment = relationship("GovernanceFreezerCompartment")
+    asset_version = relationship("DNAAssetVersion")
+    assignee = relationship("User", foreign_keys=[assigned_to_id])
+
+
+class GovernanceFreezerFault(Base):
+    __tablename__ = "governance_freezer_faults"
+
+    # purpose: track freezer health incidents driving custody escalations and mitigation actions
+    # status: pilot
+    # depends_on: governance_freezer_units, governance_freezer_compartments
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    freezer_unit_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_freezer_units.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    compartment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_freezer_compartments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    fault_type = Column(String, nullable=False)
+    severity = Column(String, nullable=False, default="warning")
+    guardrail_flag = Column(String, nullable=True)
+    occurred_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    resolved_at = Column(DateTime, nullable=True)
+    meta = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    freezer = relationship("GovernanceFreezerUnit")
+    compartment = relationship("GovernanceFreezerCompartment")
+
+
 class ExecutionNarrativeExportAttachment(Base):
     __tablename__ = "execution_narrative_export_attachments"
 

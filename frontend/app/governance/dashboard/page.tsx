@@ -1,11 +1,20 @@
 'use client'
 
 import React, { useMemo } from 'react'
+import CustodyEscalationPanel from '../../components/governance/CustodyEscalationPanel'
 import CustodyFreezerMap from '../../components/governance/CustodyFreezerMap'
 import CustodyLedgerPanel from '../../components/governance/CustodyLedgerPanel'
 import GuardrailHealthDashboard from '../../components/governance/GuardrailHealthDashboard'
 import OverdueDashboard from '../../components/governance/OverdueDashboard'
-import { useCustodyFreezers, useCustodyLogs } from '../../hooks/useCustodyGovernance'
+import {
+  useAcknowledgeCustodyEscalation,
+  useCustodyEscalations,
+  useCustodyFreezers,
+  useCustodyLogs,
+  useFreezerFaults,
+  useResolveCustodyEscalation,
+  useTriggerCustodyEscalationNotification,
+} from '../../hooks/useCustodyGovernance'
 import { useGovernanceAnalytics, useGuardrailHealth } from '../../hooks/useExperimentConsole'
 import type { GovernanceStageMetrics } from '../../types'
 
@@ -18,6 +27,11 @@ export default function GovernanceOverdueDashboardPage() {
   const guardrailHealthQuery = useGuardrailHealth({ limit: 25 })
   const custodyFreezersQuery = useCustodyFreezers()
   const custodyLogsQuery = useCustodyLogs({ limit: 25 })
+  const custodyEscalationsQuery = useCustodyEscalations()
+  const freezerFaultsQuery = useFreezerFaults()
+  const acknowledgeEscalation = useAcknowledgeCustodyEscalation()
+  const resolveEscalation = useResolveCustodyEscalation()
+  const notifyEscalation = useTriggerCustodyEscalationNotification()
 
   const summary = analyticsQuery.data?.meta.overdue_stage_summary
   const stageMetrics = useMemo<Record<string, GovernanceStageMetrics> | undefined>(() => {
@@ -25,6 +39,30 @@ export default function GovernanceOverdueDashboardPage() {
     if (!metrics) return undefined
     return metrics
   }, [analyticsQuery.data?.meta.approval_stage_metrics])
+
+  const busyEscalations = useMemo(() => {
+    const ids = new Set<string>()
+    const ackId = acknowledgeEscalation.variables as string | undefined
+    if (acknowledgeEscalation.isPending && ackId) {
+      ids.add(ackId)
+    }
+    const resolveId = resolveEscalation.variables as string | undefined
+    if (resolveEscalation.isPending && resolveId) {
+      ids.add(resolveId)
+    }
+    const notifyId = notifyEscalation.variables as string | undefined
+    if (notifyEscalation.isPending && notifyId) {
+      ids.add(notifyId)
+    }
+    return ids
+  }, [
+    acknowledgeEscalation.isPending,
+    acknowledgeEscalation.variables,
+    resolveEscalation.isPending,
+    resolveEscalation.variables,
+    notifyEscalation.isPending,
+    notifyEscalation.variables,
+  ])
 
   return (
     <div className="space-y-10">
@@ -43,6 +81,18 @@ export default function GovernanceOverdueDashboardPage() {
         units={custodyFreezersQuery.data}
         isLoading={custodyFreezersQuery.isLoading}
         error={custodyFreezersQuery.error as Error | null}
+      />
+      <CustodyEscalationPanel
+        escalations={custodyEscalationsQuery.data}
+        faults={freezerFaultsQuery.data}
+        isEscalationLoading={custodyEscalationsQuery.isLoading}
+        isFaultLoading={freezerFaultsQuery.isLoading}
+        escalationError={custodyEscalationsQuery.error as Error | null}
+        faultError={freezerFaultsQuery.error as Error | null}
+        onAcknowledge={(id) => acknowledgeEscalation.mutate(id)}
+        onResolve={(id) => resolveEscalation.mutate(id)}
+        onNotify={(id) => notifyEscalation.mutate(id)}
+        busyIds={busyEscalations}
       />
       <CustodyLedgerPanel
         logs={custodyLogsQuery.data}

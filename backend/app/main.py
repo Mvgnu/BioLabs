@@ -54,6 +54,7 @@ from .routes import (
     experiment_console,
     external,
     data_analysis,
+    sample_governance,
     knowledge,
     workflows,
 )
@@ -141,6 +142,7 @@ app.include_router(experiment_console.router)
 app.include_router(experiment_console.preview_router)
 app.include_router(external.router)
 app.include_router(data_analysis.router)
+app.include_router(sample_governance.router)
 app.include_router(knowledge.router)
 app.include_router(workflows.router)
 

@@ -1161,6 +1161,61 @@ export interface CustodyLogCreate {
   meta?: Record<string, any>
 }
 
+export interface CustodyEscalation {
+  // purpose: represent custody escalation queue items with SLA and notification metadata
+  // status: pilot
+  id: string
+  status: 'open' | 'acknowledged' | 'resolved'
+  severity: 'critical' | 'warning' | 'info'
+  reason: string
+  due_at: string | null
+  acknowledged_at: string | null
+  resolved_at: string | null
+  assigned_to_id: string | null
+  guardrail_flags: string[]
+  notifications: Array<{ recipient?: string | null; channel?: string | null; sent_at?: string | null }>
+  meta: Record<string, any>
+  log_id: string | null
+  freezer_unit_id: string | null
+  compartment_id: string | null
+  asset_version_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CustodyEscalationAck {
+  // purpose: acknowledgement payload returned when an operator accepts ownership of an escalation
+  // status: pilot
+  acknowledged_at: string
+  status: 'acknowledged'
+}
+
+export interface FreezerFaultRecord {
+  // purpose: freezer health incident record for governance dashboards
+  // status: pilot
+  id: string
+  freezer_unit_id: string
+  compartment_id: string | null
+  fault_type: string
+  severity: 'critical' | 'warning' | string
+  guardrail_flag: string | null
+  occurred_at: string
+  resolved_at: string | null
+  meta: Record<string, any>
+  created_at: string
+  updated_at: string
+}
+
+export interface FreezerFaultCreate {
+  // purpose: freezer fault creation payload triggered by governance operators
+  // status: pilot
+  compartment_id?: string | null
+  fault_type: string
+  severity: string
+  guardrail_flag?: string | null
+  meta?: Record<string, any>
+}
+
 export interface BaselineLifecycleLabel {
   key: string
   value: string

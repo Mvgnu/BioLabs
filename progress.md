@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2025-07-14
+- Hardened custody governance by introducing SLA-tracked escalation queues, freezer fault modeling, notification hooks, and RBAC-aware API surfaces with pytest coverage.
+- Delivered custody escalation dashboard panel aggregating queues and freezer incidents with acknowledge/notify/resolve affordances plus Vitest coverage and updated governance docs.
+- Refreshed custody governance playbook, services README, and routes index to document new escalations, fault endpoints, and SOP guidance.
+
 ## 2025-07-13
 - Delivered frontend cloning planner intake and wizard surfaces (`frontend/app/planner`) wired to `useCloningPlanner`, SSE progress, guardrail badges, and QC artifact previews with comprehensive Vitest coverage.
 - Introduced shared guardrail component library (`frontend/app/components/guardrails`) powering DNA viewer overlays and planner escalations, including badge, escalation prompt, reviewer handoff, and QC decision loop primitives.
