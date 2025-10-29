@@ -1,0 +1,16 @@
+LOCUS       TESTPLASMID     60 bp    DNA     circular SYN 01-JAN-2024
+DEFINITION  Example plasmid for importer tests.
+ACCESSION   TEST0001
+VERSION     TEST0001.1
+SOURCE      Synthetic construct
+  ORGANISM  Synthetic construct
+FEATURES             Location/Qualifiers
+     source          1..60
+                     /organism="Synthetic construct"
+     CDS             1..30
+                     /label="example_cds"
+     primer_bind     31..60
+                     /label="primer_site"
+ORIGIN
+        1 atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc atgcatgcat gcatgcatgc
+//

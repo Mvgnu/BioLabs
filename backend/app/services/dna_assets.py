@@ -30,6 +30,10 @@ from ..schemas import (
     DNAAssetVersionCreate,
     DNAAssetVersionOut,
     SequenceToolkitProfile,
+    DNAViewerFeature,
+    DNAViewerPayload,
+    DNAViewerTrack,
+    DNAViewerTranslation,
 )
 from . import sequence_toolkit
 
@@ -65,6 +69,92 @@ def _apply_tags(asset: models.DNAAsset, tags: Sequence[str]) -> None:
 
 def _sequence_checksum(sequence: str) -> str:
     return hashlib.sha256(sequence.encode("utf-8")).hexdigest()
+
+
+_CODON_TABLE: dict[str, str] = {
+    "TTT": "F",
+    "TTC": "F",
+    "TTA": "L",
+    "TTG": "L",
+    "CTT": "L",
+    "CTC": "L",
+    "CTA": "L",
+    "CTG": "L",
+    "ATT": "I",
+    "ATC": "I",
+    "ATA": "I",
+    "ATG": "M",
+    "GTT": "V",
+    "GTC": "V",
+    "GTA": "V",
+    "GTG": "V",
+    "TCT": "S",
+    "TCC": "S",
+    "TCA": "S",
+    "TCG": "S",
+    "CCT": "P",
+    "CCC": "P",
+    "CCA": "P",
+    "CCG": "P",
+    "ACT": "T",
+    "ACC": "T",
+    "ACA": "T",
+    "ACG": "T",
+    "GCT": "A",
+    "GCC": "A",
+    "GCA": "A",
+    "GCG": "A",
+    "TAT": "Y",
+    "TAC": "Y",
+    "TAA": "*",
+    "TAG": "*",
+    "CAT": "H",
+    "CAC": "H",
+    "CAA": "Q",
+    "CAG": "Q",
+    "AAT": "N",
+    "AAC": "N",
+    "AAA": "K",
+    "AAG": "K",
+    "GAT": "D",
+    "GAC": "D",
+    "GAA": "E",
+    "GAG": "E",
+    "TGT": "C",
+    "TGC": "C",
+    "TGA": "*",
+    "TGG": "W",
+    "CGT": "R",
+    "CGC": "R",
+    "CGA": "R",
+    "CGG": "R",
+    "AGT": "S",
+    "AGC": "S",
+    "AGA": "R",
+    "AGG": "R",
+    "GGT": "G",
+    "GGC": "G",
+    "GGA": "G",
+    "GGG": "G",
+}
+
+
+def _normalize_sequence(sequence: str) -> str:
+    return (sequence or "").upper().replace("U", "T")
+
+
+def _reverse_complement(sequence: str) -> str:
+    table = str.maketrans("ACGTN", "TGCAN")
+    return _normalize_sequence(sequence).translate(table)[::-1]
+
+
+def _translate_codons(sequence: str) -> str:
+    normalised = _normalize_sequence(sequence)
+    amino_acids: list[str] = []
+    for idx in range(0, len(normalised) - 2, 3):
+        codon = normalised[idx : idx + 3]
+        amino_acids.append(_CODON_TABLE.get(codon, "X"))
+    return "".join(amino_acids)
 
 
 def _primer_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
@@ -643,5 +733,159 @@ def diff_versions(
         insertions=diff["insertions"],
         deletions=diff["deletions"],
         gc_delta=metrics_b["gc_content"] - metrics_a["gc_content"],
+    )
+
+
+def _annotation_guardrail_badges(
+    guardrails: DNAAssetGuardrailHeuristics, annotation: DNAAnnotationOut
+) -> list[str]:
+    badges: set[str] = set()
+    feature_type = (annotation.feature_type or "").lower()
+    label = (annotation.label or "").lower()
+    primers = guardrails.primers or {}
+    restriction = guardrails.restriction or {}
+    assembly = guardrails.assembly or {}
+    if primers.get("primer_state") == "review" and (
+        "primer" in feature_type or "primer" in label
+    ):
+        badges.add("primer-review")
+    for tag in primers.get("metadata_tags", []):
+        if tag:
+            badges.add(f"primer-tag:{tag}")
+    if restriction.get("restriction_state") == "review" and (
+        "restriction" in feature_type or "cut" in label
+    ):
+        badges.add("restriction-review")
+    for tag in restriction.get("metadata_tags", []):
+        if tag:
+            badges.add(f"restriction-tag:{tag}")
+    if assembly.get("assembly_state") == "review" and (
+        "assembly" in feature_type or "cds" in feature_type
+    ):
+        badges.add("assembly-review")
+    for tag in assembly.get("metadata_tags", []):
+        if tag:
+            badges.add(f"assembly-tag:{tag}")
+    return sorted(badges)
+
+
+def _guardrail_summary_features(
+    guardrails: DNAAssetGuardrailHeuristics, *, length: int
+) -> list[DNAViewerFeature]:
+    features: list[DNAViewerFeature] = []
+    guardrail_segments = [
+        ("Primer Guardrails", "guardrail.primer", guardrails.primers or {}),
+        ("Restriction Guardrails", "guardrail.restriction", guardrails.restriction or {}),
+        ("Assembly Guardrails", "guardrail.assembly", guardrails.assembly or {}),
+    ]
+    for label, feature_type, payload in guardrail_segments:
+        if not payload:
+            continue
+        badges = [
+            str(value)
+            for key, value in payload.items()
+            if key.endswith("state") and value
+        ]
+        features.append(
+            DNAViewerFeature(
+                label=label,
+                feature_type=feature_type,
+                start=1,
+                end=max(1, length),
+                strand=None,
+                qualifiers=dict(payload),
+                guardrail_badges=sorted({badge for badge in badges if badge}),
+            )
+        )
+    return features
+
+
+def _build_viewer_tracks(
+    version_out: DNAAssetVersionOut,
+    guardrails: DNAAssetGuardrailHeuristics,
+) -> list[DNAViewerTrack]:
+    feature_track = DNAViewerTrack(name="Annotations")
+    for annotation in version_out.annotations:
+        feature_track.features.append(
+            DNAViewerFeature(
+                label=annotation.label,
+                feature_type=annotation.feature_type,
+                start=annotation.start,
+                end=annotation.end,
+                strand=annotation.strand,
+                qualifiers=dict(annotation.qualifiers or {}),
+                guardrail_badges=_annotation_guardrail_badges(guardrails, annotation),
+            )
+        )
+    guardrail_track = DNAViewerTrack(
+        name="Guardrails",
+        features=_guardrail_summary_features(guardrails, length=version_out.sequence_length),
+    )
+    return [feature_track, guardrail_track]
+
+
+def _generate_translations(
+    sequence: str, features: list[DNAViewerFeature]
+) -> list[DNAViewerTranslation]:
+    translations: list[DNAViewerTranslation] = []
+    for feature in features:
+        feature_type = (feature.feature_type or "").lower()
+        if feature_type not in {"cds", "gene"} and "translation" not in feature.qualifiers:
+            continue
+        start = max(1, feature.start)
+        end = max(start, feature.end)
+        subseq = sequence[start - 1 : end]
+        strand = feature.strand or 1
+        if strand < 0:
+            subseq = _reverse_complement(subseq)
+        amino_acids = feature.qualifiers.get("translation") or _translate_codons(subseq)
+        frame_base = ((start - 1) % 3) + 1
+        frame = frame_base if strand >= 0 else -frame_base
+        translations.append(
+            DNAViewerTranslation(
+                label=feature.label,
+                frame=frame,
+                sequence=subseq,
+                amino_acids=amino_acids,
+            )
+        )
+    return translations
+
+
+def build_viewer_payload(
+    asset: models.DNAAsset,
+    *,
+    compare_to: models.DNAAssetVersion | None = None,
+) -> DNAViewerPayload:
+    """Generate a viewer-ready payload for the provided DNA asset."""
+
+    # purpose: supply frontend viewers with annotations, guardrails, and diffs
+    latest = asset.latest_version
+    if latest is None:
+        raise ValueError("Asset has no versions to visualise")
+    asset_summary = serialize_asset(asset)
+    version_out = serialize_version(latest)
+    guardrails = version_out.guardrail_heuristics
+    tracks = _build_viewer_tracks(version_out, guardrails)
+    translations = _generate_translations(latest.sequence, tracks[0].features)
+    topology = (
+        (asset.meta or {}).get("topology")
+        or (latest.meta or {}).get("topology")
+        or version_out.metadata.get("topology")
+        or ("circular" if "circular" in asset_summary.tags else "linear")
+    )
+    diff = None
+    if compare_to is not None:
+        diff = diff_versions(compare_to, latest)
+    return DNAViewerPayload(
+        asset=asset_summary,
+        version=version_out,
+        sequence=latest.sequence,
+        topology=topology,
+        tracks=tracks,
+        translations=translations,
+        kinetics_summary=version_out.kinetics_summary,
+        guardrails=guardrails,
+        diff=diff,
     )
 

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:sbol="http://sbols.org/v2#">
+  <sbol:ComponentDefinition rdf:about="http://example.com/ExampleComponent">
+    <sbol:displayId>ExampleComponent</sbol:displayId>
+    <sbol:description>Example SBOL component.</sbol:description>
+    <sbol:role rdf:resource="http://identifiers.org/so/SO:0000316"/>
+    <sbol:sequence rdf:resource="http://example.com/ExampleSequence"/>
+  </sbol:ComponentDefinition>
+  <sbol:Sequence rdf:about="http://example.com/ExampleSequence">
+    <sbol:displayId>ExampleSequence</sbol:displayId>
+    <sbol:elements>ATGCATGCATGC</sbol:elements>
+  </sbol:Sequence>
+  <sbol:SequenceAnnotation rdf:about="http://example.com/ExampleAnnotation">
+    <sbol:displayId>ExampleAnnotation</sbol:displayId>
+    <sbol:role>SO:0000167</sbol:role>
+    <sbol:location>
+      <sbol:Location>
+        <sbol:start>1</sbol:start>
+        <sbol:end>12</sbol:end>
+        <sbol:orientation>inline</sbol:orientation>
+      </sbol:Location>
+    </sbol:location>
+  </sbol:SequenceAnnotation>
+</rdf:RDF>

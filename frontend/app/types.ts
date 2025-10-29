@@ -179,6 +179,206 @@ export interface SequenceJob {
   updated_at: string
 }
 
+export interface DNAAnnotation {
+  id: string
+  label: string
+  feature_type: string
+  start: number
+  end: number
+  strand: number | null
+  qualifiers: Record<string, any>
+}
+
+export interface DNAKineticsSummary {
+  enzymes: string[]
+  buffers: string[]
+  ligation_profiles: string[]
+  metadata_tags: string[]
+}
+
+export interface DNAAssetGuardrailHeuristics {
+  primers: Record<string, any>
+  restriction: Record<string, any>
+  assembly: Record<string, any>
+}
+
+export interface DNAAssetVersion {
+  id: string
+  version_index: number
+  sequence_length: number
+  gc_content: number
+  created_at: string
+  created_by_id: string | null
+  metadata: Record<string, any>
+  annotations: DNAAnnotation[]
+  kinetics_summary: DNAKineticsSummary
+  assembly_presets: string[]
+  guardrail_heuristics: DNAAssetGuardrailHeuristics
+}
+
+export interface DNAAssetSummary {
+  id: string
+  name: string
+  status: string
+  team_id: string | null
+  created_by_id: string | null
+  created_at: string
+  updated_at: string
+  tags: string[]
+  latest_version: DNAAssetVersion | null
+}
+
+export interface DNAAssetDiff {
+  from_version: DNAAssetVersion
+  to_version: DNAAssetVersion
+  substitutions: number
+  insertions: number
+  deletions: number
+  gc_delta: number
+}
+
+export interface DNAViewerFeature {
+  label: string
+  feature_type: string
+  start: number
+  end: number
+  strand: number | null
+  qualifiers: Record<string, any>
+  guardrail_badges: string[]
+}
+
+export interface DNAViewerTrack {
+  name: string
+  features: DNAViewerFeature[]
+}
+
+export interface DNAViewerTranslation {
+  label: string
+  frame: number
+  sequence: string
+  amino_acids: string
+}
+
+export interface DNAViewerPayload {
+  asset: DNAAssetSummary
+  version: DNAAssetVersion
+  sequence: string
+  topology: string
+  tracks: DNAViewerTrack[]
+  translations: DNAViewerTranslation[]
+  kinetics_summary: DNAKineticsSummary
+  guardrails: DNAAssetGuardrailHeuristics
+  diff: DNAAssetDiff | null
+}
+
+export interface CloningPlannerSequenceInput {
+  name: string
+  sequence: string
+  metadata?: Record<string, any> | null
+}
+
+export interface CloningPlannerStageTiming {
+  status: string
+  task_id?: string | null
+  retries?: number | null
+  started_at?: string | null
+  completed_at?: string | null
+  next_step?: string | null
+  error?: string | null
+  [key: string]: any
+}
+
+export interface CloningPlannerStageRecord {
+  id: string
+  stage: string
+  attempt: number
+  retry_count: number
+  status: string
+  task_id?: string | null
+  payload_path?: string | null
+  payload_metadata: Record<string, any>
+  guardrail_snapshot: Record<string, any>
+  metrics: Record<string, any>
+  review_state: Record<string, any>
+  started_at?: string | null
+  completed_at?: string | null
+  error?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface CloningPlannerQCArtifact {
+  id: string
+  artifact_name?: string | null
+  sample_id?: string | null
+  trace_path?: string | null
+  storage_path?: string | null
+  metrics: Record<string, any>
+  thresholds: Record<string, any>
+  stage_record_id?: string | null
+  reviewer_id?: string | null
+  reviewer_decision?: string | null
+  reviewer_notes?: string | null
+  reviewed_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface CloningPlannerSession {
+  id: string
+  created_by_id?: string | null
+  status: string
+  assembly_strategy: string
+  input_sequences: Record<string, any>[]
+  primer_set: Record<string, any>
+  restriction_digest: Record<string, any>
+  assembly_plan: Record<string, any>
+  qc_reports: Record<string, any>
+  inventory_reservations: Record<string, any>[]
+  guardrail_state: Record<string, any>
+  stage_timings: Record<string, CloningPlannerStageTiming>
+  current_step?: string | null
+  celery_task_id?: string | null
+  last_error?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+  completed_at?: string | null
+  stage_history: CloningPlannerStageRecord[]
+  qc_artifacts: CloningPlannerQCArtifact[]
+}
+
+export interface CloningPlannerStagePayload {
+  payload: Record<string, any>
+  next_step?: string | null
+  status?: string | null
+  guardrail_state?: Record<string, any> | null
+  task_id?: string | null
+  error?: string | null
+}
+
+export interface CloningPlannerResumePayload {
+  step?: string | null
+  overrides?: Record<string, any> | null
+}
+
+export interface CloningPlannerFinalizePayload {
+  guardrail_state?: Record<string, any> | null
+}
+
+export interface CloningPlannerCancelPayload {
+  reason?: string | null
+}
+
+export interface CloningPlannerEventPayload {
+  type: string
+  session_id: string
+  status: string
+  current_step?: string | null
+  guardrail_state?: Record<string, any>
+  payload?: Record<string, any>
+  timestamp: string
+}
+
 export interface AssistantMessage {
   id: string
   is_user: boolean

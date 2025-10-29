@@ -1,5 +1,10 @@
 # Progress Log
 
+## 2025-07-13
+- Delivered frontend cloning planner intake and wizard surfaces (`frontend/app/planner`) wired to `useCloningPlanner`, SSE progress, guardrail badges, and QC artifact previews with comprehensive Vitest coverage.
+- Introduced shared guardrail component library (`frontend/app/components/guardrails`) powering DNA viewer overlays and planner escalations, including badge, escalation prompt, reviewer handoff, and QC decision loop primitives.
+- Expanded DNA viewer guardrail presentation to reuse shared components and documented importer + viewer payload contracts in `docs/dna_assets.md`.
+
 ## 2025-07-12
 - Productionised cloning planner orchestration with durable stage history via `cloning_planner_stage_records`, QC artifact persistence, and Redis-backed streaming events.
 - Added QC ingestion storage and reviewer loop helpers that persist chromatogram traces, thresholds, and reviewer metadata linked to planner checkpoints.
@@ -796,3 +801,17 @@ This implementation establishes BioLab as a data-driven laboratory management pl
 - Exposed resume and cancel REST endpoints, expanded Pydantic schemas, and enriched documentation to cover recovery flows and cancellation checkpoints.
 - Enhanced DNA asset guardrail events to invalidate governance analytics when severe breaches are recorded, aligning cloning planner guardrails with broader governance dashboards.
 - Extended pytest coverage for resume flows, guardrail blocking, and cancellation checkpoints to ensure the orchestration contract remains stable under retries.
+
+## 2025-07-08 - DNA Import Suite & Viewer Surface
+
+- Added importer adapters under `backend/app/services/importers/` to normalize GenBank, SBOL, and SnapGene uploads into `DNAImportResult` payloads with provenance attachments and guardrail-ready annotations.
+- Extended `dna_assets` with `build_viewer_payload`, codon translation helpers, and a `/api/dna-assets/{asset_id}/viewer` route producing feature tracks, guardrail summaries, and optional diffs.
+- Documented workflows in `docs/dna_assets.md` and refreshed services README plus routes overview to reference the new viewer contract.
+- Scaffolding React DNA viewer experience with circular/linear renderers, guardrail badges, comparison controls, and React Query hook coverage; updated frontend README and added targeted Vitest suites.
+- Seeded importer fixtures and pytest coverage to validate format fidelity while expanding Vitest to assert viewer rendering and hook behaviours.
+
+## 2025-07-09 - Cloning Planner Hook Typing Hardening
+
+- Tightened `useCloningPlanner` mutation typings by adopting `UseMutationResult` generics and removing `any` casts so downstream consumers receive precise stage payload contracts.
+- Propagated the mutation typing into the hook result to improve IDE hints for planner wizard integrations and future guardrail-aware flows.
+- Revalidated Vitest suites to ensure hook behaviour remains stable after the typing refinements.

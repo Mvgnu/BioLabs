@@ -1,0 +1,22 @@
+{
+  "name": "SnapGene JSON Fixture",
+  "sequence": "ATGCATGCATGCATGCATGCATGC",
+  "topology": "circular",
+  "features": [
+    {
+      "label": "example_cds",
+      "type": "CDS",
+      "start": 1,
+      "end": 12,
+      "strand": 1,
+      "qualifiers": {
+        "product": "Example protein"
+      }
+    }
+  ],
+  "metadata": {
+    "topology": "circular",
+    "source_format": "snapgene",
+    "comments": "Fixture payload for importer tests"
+  }
+}
