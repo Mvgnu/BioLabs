@@ -101,6 +101,7 @@ class DNAAssetVersionOut(BaseModel):
     kinetics_summary: DNAAssetKineticsSummary = Field(default_factory=DNAAssetKineticsSummary)
     assembly_presets: List[str] = Field(default_factory=list)
     guardrail_heuristics: DNAAssetGuardrailHeuristics = Field(default_factory=DNAAssetGuardrailHeuristics)
+    toolkit_recommendations: dict[str, Any] = Field(default_factory=dict)
 
 
 class DNAAssetSummary(BaseModel):
@@ -194,6 +195,56 @@ class DNAViewerGuardrailTimelineEvent(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class DNAViewerCustodyLedgerEntry(BaseModel):
+    """Custody ledger snapshot aligned with viewer governance overlays."""
+
+    # purpose: expose custody actions with guardrail annotations for DNA viewer narratives
+    id: UUID
+    performed_at: datetime
+    custody_action: str
+    quantity: Optional[int] = None
+    quantity_units: Optional[str] = None
+    compartment_label: Optional[str] = None
+    guardrail_flags: List[str] = Field(default_factory=list)
+    planner_session_id: Optional[UUID] = None
+    branch_id: Optional[str] = None
+    performed_by_id: Optional[UUID] = None
+    performed_for_team_id: Optional[UUID] = None
+    notes: Optional[str] = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DNAViewerCustodyEscalation(BaseModel):
+    """Active custody escalation surfaced for DNA viewer guardrail context."""
+
+    # purpose: communicate custody escalations linked to the DNA asset lineage
+    id: UUID
+    severity: str
+    status: str
+    reason: str
+    created_at: datetime
+    due_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = None
+    resolved_at: Optional[datetime] = None
+    assigned_to_id: Optional[UUID] = None
+    planner_session_id: Optional[UUID] = None
+    asset_version_id: Optional[UUID] = None
+    guardrail_flags: List[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DNAViewerGovernanceTimelineEntry(BaseModel):
+    """Unified governance timeline entry for DNA viewer overlays."""
+
+    # purpose: stitch guardrail, custody, and planner checkpoints into viewer narratives
+    id: str
+    timestamp: datetime
+    source: str
+    title: str
+    severity: Optional[str] = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
 class DNAViewerLineageBreadcrumb(BaseModel):
     """Lightweight lineage descriptor for DNA asset versions."""
 
@@ -206,6 +257,21 @@ class DNAViewerLineageBreadcrumb(BaseModel):
     comment: Optional[str] = None
 
 
+class DNAViewerPlannerContext(BaseModel):
+    """Planner checkpoint summary aligned with DNA viewer governance overlays."""
+
+    # purpose: expose planner branch and recovery state linked to DNA assets
+    session_id: UUID
+    status: str
+    guardrail_gate: Optional[str] = None
+    custody_status: Optional[str] = None
+    active_branch_id: Optional[str] = None
+    branch_order: List[str] = Field(default_factory=list)
+    replay_window: dict[str, Any] = Field(default_factory=dict)
+    recovery_context: dict[str, Any] = Field(default_factory=dict)
+    updated_at: Optional[datetime] = None
+
+
 class DNAViewerGovernanceContext(BaseModel):
     """Governance-centric overlays emitted with viewer payloads."""
 
@@ -214,6 +280,11 @@ class DNAViewerGovernanceContext(BaseModel):
     guardrail_history: List[DNAViewerGuardrailTimelineEvent] = Field(default_factory=list)
     regulatory_feature_density: Optional[float] = None
     mitigation_playbooks: List[str] = Field(default_factory=list)
+    custody_ledger: List[DNAViewerCustodyLedgerEntry] = Field(default_factory=list)
+    custody_escalations: List[DNAViewerCustodyEscalation] = Field(default_factory=list)
+    timeline: List[DNAViewerGovernanceTimelineEntry] = Field(default_factory=list)
+    planner_sessions: List[DNAViewerPlannerContext] = Field(default_factory=list)
+    sop_links: List[str] = Field(default_factory=list)
 
 
 class DNAViewerTranslation(BaseModel):
@@ -241,4 +312,5 @@ class DNAViewerPayload(BaseModel):
     analytics: DNAViewerAnalytics
     diff: Optional[DNAAssetDiffResponse] = None
     governance_context: DNAViewerGovernanceContext = Field(default_factory=DNAViewerGovernanceContext)
+    toolkit_recommendations: dict[str, Any] = Field(default_factory=dict)
 

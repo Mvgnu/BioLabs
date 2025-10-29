@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 
 
@@ -167,6 +168,15 @@ class SequenceToolkitProfile(BaseModel):
         )
 
 
+class SequenceToolkitPresetCatalog(BaseModel):
+    """Catalog response for toolkit presets exposed via the public API."""
+
+    # purpose: deliver preset metadata bundles to planner and DNA viewer clients
+    presets: List[SequenceToolkitPreset] = Field(default_factory=list)
+    count: int = Field(default=0, ge=0)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class EnzymeMetadata(BaseModel):
     """Structured metadata for restriction enzymes."""
 
@@ -229,6 +239,7 @@ class RestrictionDigestResponse(BaseModel):
     alerts: List[str] = Field(default_factory=list)
     strategy_scores: List["RestrictionStrategyEvaluation"] = Field(default_factory=list)
     profile: Optional[SequenceToolkitProfile] = None
+    recommendations: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PrimerCrossDimerFlag(BaseModel):
@@ -310,6 +321,7 @@ class PrimerDesignResponse(BaseModel):
     summary: PrimerDesignSummary
     multiplex: Optional[PrimerMultiplexCompatibility] = None
     profile: Optional[SequenceToolkitProfile] = None
+    recommendations: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AssemblyStepMetrics(BaseModel):
@@ -342,6 +354,7 @@ class AssemblySimulationResult(BaseModel):
     payload_contract: Dict[str, Any] = Field(default_factory=dict)
     metadata_tags: List[str] = Field(default_factory=list)
     profile: Optional[SequenceToolkitProfile] = None
+    recommendations: Dict[str, Any] = Field(default_factory=dict)
 
 
 class QCReport(BaseModel):
@@ -360,4 +373,5 @@ class QCReportResponse(BaseModel):
     # purpose: allow API responses to provide typed QC payloads
     reports: List[QCReport]
     profile: Optional[SequenceToolkitProfile] = None
+    recommendations: Dict[str, Any] = Field(default_factory=dict)
 

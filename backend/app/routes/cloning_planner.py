@@ -120,6 +120,9 @@ async def stream_cloning_planner_events(
     user: models.User = Depends(get_current_user),
     branch: UUID | None = None,
     since: str | None = None,
+    stage: str | None = None,
+    gate: str | None = None,
+    compare_branch: UUID | None = None,
 ) -> StreamingResponse:
     """Stream cloning planner orchestration events for the UI."""
 
@@ -137,8 +140,37 @@ async def stream_cloning_planner_events(
     branch_filter = str(branch) if branch else None
     since_cursor = since
     seen_since = since_cursor is None
+    replay_window = cloning_planner.compose_replay_window(
+        planner,
+        branch_id=branch_filter,
+        stage_filter=stage,
+        guardrail_gate=gate,
+    )
+    comparison_branch = str(compare_branch) if compare_branch else None
+    comparison_window = (
+        cloning_planner.compose_replay_window(
+            planner,
+            branch_id=comparison_branch,
+            stage_filter=stage,
+            guardrail_gate=gate,
+        )
+        if comparison_branch
+        else []
+    )
+    branch_comparison = (
+        cloning_planner.compose_branch_comparison(
+            planner,
+            branch_id=branch_filter,
+            reference_branch_id=comparison_branch,
+            stage_filter=stage,
+            guardrail_gate=gate,
+        )
+        if comparison_branch or comparison_window
+        else None
+    )
 
     async def event_iterator():
+        nonlocal seen_since, replay_window, comparison_window, branch_comparison
         initial_event = {
             "id": snapshot.get("timeline_cursor") or str(uuid4()),
             "type": "snapshot",
@@ -151,7 +183,12 @@ async def stream_cloning_planner_events(
                 "previous": snapshot.get("guardrail_gate"),
                 "current": snapshot.get("guardrail_gate"),
             },
-            "payload": {"snapshot": True},
+            "payload": {
+                "snapshot": True,
+                "toolkit_recommendations": snapshot.get("toolkit_recommendations"),
+                "recovery_context": snapshot.get("recovery_context")
+                or snapshot.get("guardrail_state", {}).get("recovery"),
+            },
             "branch": {
                 "active": str(snapshot.get("active_branch_id")) if snapshot.get("active_branch_id") else None,
                 "state": snapshot.get("branch_state"),
@@ -164,11 +201,30 @@ async def stream_cloning_planner_events(
                 },
             },
             "timeline_cursor": snapshot.get("timeline_cursor"),
+            "resume_token": {
+                "session_id": str(planner.id),
+                "checkpoint": "snapshot",
+                "branch_id": branch_filter,
+                "timeline_cursor": snapshot.get("timeline_cursor"),
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            "branch_lineage_delta": {
+                "branch_id": branch_filter,
+                "stage": None,
+                "history_length": len(replay_window),
+            },
+            "mitigation_hints": snapshot.get("guardrail_state", {}).get("mitigation_hints", []),
+            "recovery_context": snapshot.get("recovery_context")
+            or snapshot.get("guardrail_state", {}).get("recovery"),
+            "recovery_bundle": snapshot.get("recovery_bundle"),
+            "drill_summaries": snapshot.get("drill_summaries", []),
+            "replay_window": replay_window,
+            "comparison_window": comparison_window,
+            "branch_comparison": branch_comparison,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         if not branch_filter or initial_event["branch"].get("active") == branch_filter:
             yield f"data: {json.dumps(initial_event)}\n\n"
-        nonlocal seen_since
         if not seen_since and initial_event.get("timeline_cursor") == since_cursor:
             seen_since = True
         async for message in pubsub.iter_planner_events(str(planner.id)):
@@ -178,11 +234,61 @@ async def stream_cloning_planner_events(
                 continue
             if branch_filter and (event.get("branch") or {}).get("active") != branch_filter:
                 continue
+            event_stage = (event.get("payload") or {}).get("stage") or (event.get("checkpoint") or {}).get("key")
+            if stage and event_stage != stage:
+                continue
+            if gate:
+                current_gate = ((event.get("guardrail_gate") or {}).get("state")) or (
+                    (event.get("guardrail_transition") or {}).get("current") or {}
+                ).get("state")
+                if current_gate != gate:
+                    continue
             if not seen_since:
                 if event.get("timeline_cursor") == since_cursor or event.get("id") == since_cursor:
                     seen_since = True
                 else:
                     continue
+            if comparison_branch:
+                lineage = event.get("branch_lineage_delta") or {}
+                refreshed = (
+                    db.query(models.CloningPlannerSession)
+                    .filter(models.CloningPlannerSession.id == planner.id)
+                    .first()
+                )
+                if refreshed:
+                    planner_obj = refreshed
+                    replay_window = cloning_planner.compose_replay_window(
+                        planner_obj,
+                        branch_id=branch_filter,
+                        stage_filter=stage,
+                        guardrail_gate=gate,
+                    )
+                    comparison_window = cloning_planner.compose_replay_window(
+                        planner_obj,
+                        branch_id=comparison_branch,
+                        stage_filter=stage,
+                        guardrail_gate=gate,
+                    )
+                    branch_comparison = cloning_planner.compose_branch_comparison(
+                        planner_obj,
+                        branch_id=branch_filter,
+                        reference_branch_id=comparison_branch,
+                        stage_filter=stage,
+                        guardrail_gate=gate,
+                    )
+                    planner = planner_obj
+                    event["replay_window"] = replay_window
+                    event["comparison_window"] = comparison_window
+                    event["branch_comparison"] = branch_comparison
+                else:
+                    event["branch_comparison"] = {
+                        "reference_branch_id": comparison_branch,
+                        "reference_history_length": len(comparison_window),
+                        "history_delta": (lineage.get("history_length") or 0) - len(comparison_window),
+                        "ahead_checkpoints": [],
+                        "missing_checkpoints": [],
+                        "divergent_stages": [],
+                    }
             yield f"data: {json.dumps(event)}\n\n"
             if await request.is_disconnected():
                 break

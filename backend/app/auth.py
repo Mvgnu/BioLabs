@@ -16,7 +16,14 @@ if not SECRET_KEY:
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
+# biolab: purpose: configure password hashing context without optional C backends
+# biolab: hashing_scheme: pbkdf2_sha256
+# biolab: rationale: passlib bcrypt backends unavailable in CI; pbkdf2_sha256 is pure python and FIPS-aligned
+pwd_context = CryptContext(
+    schemes=["pbkdf2_sha256"],
+    deprecated="auto",
+    pbkdf2_sha256__default_rounds=320000,
+)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 def verify_password(plain_password, hashed_password):

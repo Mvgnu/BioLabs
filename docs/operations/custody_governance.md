@@ -23,6 +23,8 @@ The custody governance service provides end-to-end oversight for DNA asset stora
 - `GET /api/governance/custody/freezers` returns freezer units with nested compartments, occupancy counts, and guardrail summaries for dashboard overlays.
 - `GET /api/governance/custody/logs` exposes custody history filtered by DNA asset, planner session, protocol execution, execution events, or compartment identifiers to support audits and investigations.
 - `POST /api/governance/custody/logs` persists guardrail-evaluated custody actions, automatically stamping provenance metadata and generating escalation cues.
+- `GET /api/inventory/samples` returns custody-linked inventory samples with guardrail badges, lineage overlays, and open escalation counts so operations teams can triage workload across teams.
+- `GET /api/inventory/items/{id}/custody` aggregates a sample’s custody ledger, escalation records, and linked planner/DNA asset references for the new frontend dashboard.
 - `GET /api/governance/custody/escalations` surfaces SLA-tracked escalation queue entries with severity, due times, guardrail context, and protocol execution metadata for RBAC-hardened operators. Filters allow operators to zero in on specific protocol runs or execution steps.
 - `GET /api/governance/custody/protocols` streams protocol execution guardrail snapshots, including aggregated escalation counts, recovery drill status, mitigation checklists by execution event, and QC backpressure signals. Filters support guardrail status selection, drill gating, severity-specific triage, team membership scoping, template identifiers, and explicit execution targeting.
 - `GET /api/cloning-planner/sessions/{session_id}/guardrails` returns the custody-aware guardrail snapshot for a cloning planner session. Access control mirrors the protocol guardrail endpoint: administrators always succeed, while non-admins must either own the planner session or hold a team role on the linked protocol template. The response includes the aggregated `guardrail_state`, derived `guardrail_gate`, and QC backpressure indicator used by planner orchestration.
@@ -32,6 +34,8 @@ The custody governance service provides end-to-end oversight for DNA asset stora
 - `GET /api/governance/custody/faults` lists active and resolved freezer faults for dashboard overlays.
 - `POST /api/governance/custody/freezers/{freezer_id}/faults` enables operations teams to log manual incidents tied to SOP drills.
 - `POST /api/governance/custody/faults/{fault_id}/resolve` closes fault records once mitigation steps finish.
+- Guardrail outcomes automatically sync with the guarded DNA sharing workspace (`/api/sharing/*`), propagating custody clearance status into repository release guardrail snapshots so publication workflows remain blocked until escalations resolve.
+- Custody ledger updates publish `sample.custody_log.created` team events so React Query dashboards and lifecycle SSE consumers can refresh summary panes without polling.
 
 ## Standard Operating Procedure
 1. Governance operators model freezer units and compartments via Alembic migrations or admin tooling, ensuring guardrail thresholds mirror facility SOPs.
@@ -47,6 +51,7 @@ The custody governance service provides end-to-end oversight for DNA asset stora
 - Cloning planner sessions now persist `protocol_execution_id` references so custody guardrail overlays flow directly into planner guardrail snapshots. The backend recomputes guardrail state via `services.cloning_planner.refresh_planner_guardrails`, merging primer/restriction/assembly/QC summaries with protocol execution guardrails and propagating derived flags (`custody_status`, `qc_backpressure`, escalation tallies) into planner stage records.
 - When `_sync_protocol_escalation_state` flags open drills, critical severities, or QC backpressure, the cloning planner pipeline records a `guardrail_gate` and pauses stage execution (`{stage}_guardrail_hold`). Celery workers raise a retryable `GuardrailBackpressureError`, and SSE payloads (`guardrail_hold` events) include the active gate metadata so UI clients can surface custody holds in real time.
 - Planner API responses and SSE events now ship both `guardrail_state` and `guardrail_gate`. Frontend orchestration disables stage controls whenever the gate is active, displaying custody badges that mirror governance dashboards. Operators must resolve escalations (or trigger recovery drills) through custody workflows before planner stages resume.
+- Once escalations resolve and custody recovery gates fall, `services.sample_governance._sync_protocol_escalation_state` calls `cloning_planner.propagate_custody_recovery`, which refreshes guardrail snapshots, emits `guardrail_sync` SSE events containing `recovery_context`, stamps stage history with hold release timestamps, and automatically re-enqueues halted Celery stages.
 
 ## Documentation Expectations
 - Service-level details live in `backend/app/services/sample_governance.py` with structured metadata tags.

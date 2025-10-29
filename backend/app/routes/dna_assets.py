@@ -134,7 +134,7 @@ def get_dna_asset_viewer(
         compare = db.get(models.DNAAssetVersion, compare_version)
         if not compare or compare.asset_id != asset.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comparison version not found")
-    return dna_assets.build_viewer_payload(asset, compare_to=compare)
+    return dna_assets.build_viewer_payload(asset, compare_to=compare, db=db)
 
 
 @router.post("/{asset_id}/guardrails", response_model=schemas.DNAAssetGuardrailEventOut, status_code=status.HTTP_201_CREATED)

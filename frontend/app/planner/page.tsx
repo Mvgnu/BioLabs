@@ -3,10 +3,11 @@
 // purpose: cloning planner intake form bootstrapping new sessions
 // status: experimental
 
-import React, { useState } from 'react'
+import React, { useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 
 import { createCloningPlannerSession } from '../api/cloningPlanner'
+import { useSequenceToolkitPresets } from '../hooks/useSequenceToolkitPresets'
 
 const PlannerIntakePage = () => {
   const router = useRouter()
@@ -14,8 +15,21 @@ const PlannerIntakePage = () => {
   const [sequenceName, setSequenceName] = useState('vector')
   const [sequence, setSequence] = useState('ATGC'.repeat(30))
   const [metadataNotes, setMetadataNotes] = useState('Guardrail intake: primer-review')
+  const [toolkitPreset, setToolkitPreset] = useState('auto')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { data: presetCatalog } = useSequenceToolkitPresets()
+  const presetOptions = useMemo(
+    () => [
+      { value: 'auto', label: 'Auto detect' },
+      ...((presetCatalog?.presets ?? []).map((preset) => ({ value: preset.preset_id, label: preset.name }))),
+    ],
+    [presetCatalog?.presets],
+  )
+  const selectedPreset = useMemo(
+    () => (presetCatalog?.presets ?? []).find((preset) => preset.preset_id === toolkitPreset) ?? null,
+    [presetCatalog?.presets, toolkitPreset],
+  )
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -37,6 +51,7 @@ const PlannerIntakePage = () => {
             primers: { state: 'intake' },
           },
         },
+        toolkit_preset: toolkitPreset === 'auto' ? null : toolkitPreset,
       })
       router.push(`/planner/${session.id}`)
     } catch (exc) {
@@ -94,6 +109,23 @@ const PlannerIntakePage = () => {
             rows={3}
             className="mt-1 rounded border border-slate-300 px-3 py-2 text-sm"
           />
+        </label>
+        <label className="flex flex-col text-sm text-slate-700">
+          Toolkit preset
+          <select
+            value={toolkitPreset}
+            onChange={(event) => setToolkitPreset(event.target.value)}
+            className="mt-1 rounded border border-slate-300 px-3 py-2 text-sm"
+          >
+            {presetOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          {selectedPreset?.description && (
+            <span className="mt-1 text-xs text-slate-500">{selectedPreset.description}</span>
+          )}
         </label>
         <button
           type="submit"

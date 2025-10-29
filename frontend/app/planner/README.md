@@ -7,12 +7,12 @@ Expose a multi-stage cloning planner console that mirrors backend orchestration,
 experimental
 
 ## architecture
-- `page.tsx` renders the intake form for bootstrapping planner sessions and redirects into the wizard surface.
+- `page.tsx` renders the intake form for bootstrapping planner sessions, including toolkit preset selection sourced from `/api/sequence-toolkit/presets`, and redirects into the wizard surface.
 - `components/PlannerWizard.tsx` binds the `useCloningPlanner` hook with shared guardrail components, stage stepper UI, and QC artifact previews.
 - `[sessionId]/page.tsx` loads the client wizard for a specific session, wiring resumable state, SSE event stream, and retry affordances.
 
 ## integration notes
-- Planner actions delegate to `/api/cloning-planner` endpoints via the shared `api/cloningPlanner.ts` client.
+- Planner actions delegate to `/api/cloning-planner` endpoints via the shared `api/cloningPlanner.ts` client while toolkit presets hydrate through `useSequenceToolkitPresets`.
 - SSE progress streams are sourced from `/api/cloning-planner/sessions/{sessionId}/events` using the `useCloningPlanner` hook.
 - Guardrail components from `app/components/guardrails` provide consistent escalation prompts and QC loops across planner, governance, and DNA viewer surfaces.
 - Custody guardrail gates are surfaced through the new `guardrail_gate` payload on sessions and SSE events. When `active` is `true`, the wizard disables stage controls, shows custody badges, and emits explanatory copy listing the gate reasons (e.g., `custody_status:halted`, `qc_backpressure`).

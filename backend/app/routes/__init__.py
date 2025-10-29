@@ -15,6 +15,7 @@ modules = [
     'notifications',
     'schedule',
     'sequence',
+    'sequence_toolkit',
     'dna_assets',
     'cloning_planner',
     'projects',
@@ -45,6 +46,8 @@ modules = [
     'governance_notes',
     'sample_governance',
     'workflows',
+    'sharing',
+    'lifecycle',
 ]
 
 for m in modules:

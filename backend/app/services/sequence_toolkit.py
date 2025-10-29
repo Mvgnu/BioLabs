@@ -237,6 +237,129 @@ def get_sequence_toolkit_presets() -> dict[str, SequenceToolkitPreset]:
     return {entry.preset_id.lower(): entry for entry in _PRESET_DEFINITIONS}
 
 
+def build_strategy_recommendations(
+    template_sequences: Sequence[dict[str, Any]],
+    *,
+    preset_id: str | None = None,
+    primer_payload: dict[str, Any] | None = None,
+    restriction_payload: dict[str, Any] | None = None,
+    assembly_payload: dict[str, Any] | None = None,
+    qc_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assemble a scored strategy bundle for toolkit presets."""
+
+    # purpose: expose aggregated strategy scoring for planner and DNA viewer flows
+    # inputs: template descriptors plus optional precomputed stage payloads
+    # outputs: dict containing profile metadata, stage previews, and scorecards
+    provided_profile: dict[str, Any] | None = None
+    for payload in (primer_payload, restriction_payload, assembly_payload, qc_payload):
+        if payload and isinstance(payload.get("profile"), dict):
+            provided_profile = payload["profile"]
+            break
+    base_profile = SequenceToolkitProfile()
+    if provided_profile:
+        try:
+            base_profile = SequenceToolkitProfile(**provided_profile)
+        except Exception:  # pragma: no cover - defensive parsing for legacy payloads
+            base_profile = SequenceToolkitProfile()
+    resolved_profile = _resolve_profile(base_profile, preset_id=preset_id)
+    target_preset = resolved_profile.preset_id or preset_id
+
+    primer_result = primer_payload or design_primers(
+        template_sequences,
+        config=resolved_profile,
+        preset_id=target_preset,
+    )
+    restriction_result = restriction_payload or analyze_restriction_digest(
+        template_sequences,
+        config=resolved_profile,
+        preset_id=target_preset,
+    )
+    assembly_result = assembly_payload or simulate_assembly(
+        primer_result,
+        restriction_result,
+        config=resolved_profile,
+        strategy=(assembly_payload or {}).get("strategy")
+        or resolved_profile.assembly.strategy,
+        preset_id=target_preset,
+    )
+    qc_result = qc_payload or evaluate_qc_reports(
+        assembly_result,
+        config=resolved_profile,
+    )
+
+    primer_summary = (primer_result.get("summary") or {}).copy()
+    primer_window = {
+        "min_tm": primer_summary.get("min_tm"),
+        "max_tm": primer_summary.get("max_tm"),
+        "target_tm": (primer_result.get("profile") or {}).get("primer", {}).get("target_tm"),
+    }
+    tm_span = None
+    if primer_window["min_tm"] is not None and primer_window["max_tm"] is not None:
+        tm_span = round(primer_window["max_tm"] - primer_window["min_tm"], 3)
+
+    strategy_scores: list[dict[str, Any]] = list(
+        restriction_result.get("strategy_scores", [])
+    )
+    best_strategy = None
+    compatibility_index = None
+    if strategy_scores:
+        sorted_scores = sorted(
+            strategy_scores,
+            key=lambda entry: entry.get("compatibility", 0.0),
+            reverse=True,
+        )
+        best_strategy = sorted_scores[0]
+        compatibility_index = round(
+            sum(entry.get("compatibility", 0.0) for entry in sorted_scores[:3])
+            / min(3, len(sorted_scores)),
+            3,
+        )
+
+    qc_reports = qc_result.get("reports", []) if isinstance(qc_result, dict) else []
+    qc_pass = sum(1 for report in qc_reports if report.get("status") == "pass")
+    qc_rate = None
+    if qc_reports:
+        qc_rate = round(qc_pass / len(qc_reports), 3)
+
+    preset_ref = (
+        (primer_result.get("profile") or {}).get("preset_id")
+        or target_preset
+        or resolved_profile.preset_id
+        or "default"
+    )
+    scorecard = {
+        "preset_id": preset_ref,
+        "preset_name": (primer_result.get("profile") or {}).get("preset_name"),
+        "primer_window": primer_window,
+        "tm_span": tm_span,
+        "primer_count": primer_summary.get("primer_count"),
+        "multiplex_risk": (primer_result.get("multiplex") or {}).get("risk_level"),
+        "best_strategy": (best_strategy or {}).get("strategy"),
+        "best_strategy_score": (best_strategy or {}).get("compatibility"),
+        "recommended_buffers": (best_strategy or {}).get("buffer_recommendations", []),
+        "compatibility_index": compatibility_index,
+        "assembly_success": assembly_result.get("average_success"),
+        "qc_pass_rate": qc_rate,
+    }
+
+    profile_dump = (
+        (primer_result.get("profile") or {})
+        or (restriction_result.get("profile") or {})
+        or resolved_profile.model_dump()
+    )
+    recommendations = {
+        "profile": profile_dump,
+        "primer": primer_result,
+        "restriction": restriction_result,
+        "assembly": assembly_result,
+        "qc": qc_result,
+        "scorecard": scorecard,
+        "strategy_scores": strategy_scores,
+    }
+    return recommendations
+
+
 def _normalize_sequence(seq: str) -> str:
     """Return uppercase DNA sequence replacing U with T."""
 

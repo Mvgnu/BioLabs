@@ -5,7 +5,7 @@ alembic
 psycopg2-binary
 pydantic[email]
 python-jose[cryptography]
-passlib[bcrypt]
+passlib
 python-multipart
 minio
 pytest
