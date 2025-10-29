@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Iterable
+from datetime import datetime, timedelta, timezone
+from typing import Iterable, Sequence
 from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import models, notify, schemas
 
 # purpose: orchestrate freezer custody governance analytics and lifecycle actions
 # status: pilot
@@ -19,6 +19,13 @@ from .. import models, schemas
 
 _DEPOSIT_ACTIONS = {"deposit", "placed", "returned", "received", "moved_in"}
 _WITHDRAW_ACTIONS = {"withdrawn", "removed", "consumed", "disposed", "moved_out", "shipped"}
+
+_ESCALATION_DEFAULT_SLA_MINUTES = {
+    "critical": 15,
+    "warning": 60,
+    "info": 240,
+}
+
 
 
 def list_freezer_topology(
@@ -107,6 +114,8 @@ def record_custody_event(
     log.guardrail_flags = _evaluate_guardrails_for_log(db, log)
     db.add(log)
     db.flush()
+    db.refresh(log)
+    _synchronize_custody_escalations(db, log)
     return log
 
 
@@ -200,6 +209,405 @@ def _evaluate_guardrail_thresholds(
     return flags
 
 
+def list_custody_escalations(
+    db: Session,
+    *,
+    team_id: UUID | None = None,
+    statuses: Sequence[str] | None = None,
+) -> list[models.GovernanceCustodyEscalation]:
+    """Return custody escalations filtered by team and status."""
+
+    query = db.query(models.GovernanceCustodyEscalation)
+    query = query.outerjoin(
+        models.GovernanceFreezerUnit,
+        models.GovernanceFreezerUnit.id
+        == models.GovernanceCustodyEscalation.freezer_unit_id,
+    ).outerjoin(
+        models.GovernanceSampleCustodyLog,
+        models.GovernanceSampleCustodyLog.id
+        == models.GovernanceCustodyEscalation.log_id,
+    )
+    if statuses:
+        query = query.filter(models.GovernanceCustodyEscalation.status.in_(statuses))
+    if team_id:
+        query = query.filter(
+            sa.or_(
+                models.GovernanceFreezerUnit.team_id == team_id,
+                models.GovernanceSampleCustodyLog.performed_for_team_id == team_id,
+            )
+        )
+    return (
+        query.order_by(models.GovernanceCustodyEscalation.due_at.asc()).all()
+    )
+
+
+def acknowledge_custody_escalation(
+    db: Session,
+    escalation_id: UUID,
+    *,
+    actor_id: UUID,
+) -> models.GovernanceCustodyEscalation | None:
+    """Mark a custody escalation as acknowledged by an operator."""
+
+    escalation = db.get(models.GovernanceCustodyEscalation, escalation_id)
+    if not escalation:
+        return None
+    now = datetime.now(timezone.utc)
+    escalation.status = "acknowledged"
+    escalation.acknowledged_at = now
+    escalation.assigned_to_id = actor_id
+    escalation.updated_at = now
+    db.add(escalation)
+    db.flush()
+    return escalation
+
+
+def resolve_custody_escalation(
+    db: Session,
+    escalation_id: UUID,
+    *,
+    actor_id: UUID | None = None,
+) -> models.GovernanceCustodyEscalation | None:
+    """Resolve an open custody escalation."""
+
+    escalation = db.get(models.GovernanceCustodyEscalation, escalation_id)
+    if not escalation:
+        return None
+    now = datetime.now(timezone.utc)
+    escalation.status = "resolved"
+    escalation.resolved_at = now
+    if actor_id:
+        escalation.assigned_to_id = actor_id
+    escalation.updated_at = now
+    db.add(escalation)
+    db.flush()
+    return escalation
+
+
+def trigger_custody_escalation_notifications(
+    db: Session,
+    escalation_id: UUID,
+) -> models.GovernanceCustodyEscalation | None:
+    """Dispatch notification hooks for the supplied escalation."""
+
+    escalation = db.get(models.GovernanceCustodyEscalation, escalation_id)
+    if not escalation:
+        return None
+    _dispatch_custody_escalation_notifications(db, escalation)
+    return escalation
+
+
+def list_freezer_faults(
+    db: Session,
+    *,
+    team_id: UUID | None = None,
+    include_resolved: bool = False,
+) -> list[models.GovernanceFreezerFault]:
+    """Return freezer faults to power governance dashboards."""
+
+    query = db.query(models.GovernanceFreezerFault).join(
+        models.GovernanceFreezerUnit,
+        models.GovernanceFreezerUnit.id == models.GovernanceFreezerFault.freezer_unit_id,
+    )
+    if team_id:
+        query = query.filter(models.GovernanceFreezerUnit.team_id == team_id)
+    if not include_resolved:
+        query = query.filter(models.GovernanceFreezerFault.resolved_at.is_(None))
+    return (
+        query.order_by(models.GovernanceFreezerFault.occurred_at.desc()).all()
+    )
+
+
+def record_freezer_fault(
+    db: Session,
+    freezer: models.GovernanceFreezerUnit,
+    *,
+    compartment_id: UUID | None,
+    fault_type: str,
+    severity: str,
+    guardrail_flag: str | None = None,
+    meta: dict[str, object] | None = None,
+) -> models.GovernanceFreezerFault:
+    """Persist a freezer fault entry."""
+
+    now = datetime.now(timezone.utc)
+    fault = models.GovernanceFreezerFault(
+        freezer_unit_id=freezer.id,
+        compartment_id=compartment_id,
+        fault_type=fault_type,
+        severity=severity,
+        guardrail_flag=guardrail_flag,
+        occurred_at=now,
+        meta=meta or {},
+        created_at=now,
+    )
+    db.add(fault)
+    db.flush()
+    return fault
+
+
+def resolve_freezer_fault(
+    db: Session,
+    fault_id: UUID,
+) -> models.GovernanceFreezerFault | None:
+    """Mark a freezer fault as resolved."""
+
+    fault = db.get(models.GovernanceFreezerFault, fault_id)
+    if not fault:
+        return None
+    fault.resolved_at = datetime.now(timezone.utc)
+    db.add(fault)
+    db.flush()
+    return fault
+
+
+def _synchronize_custody_escalations(
+    db: Session,
+    log: models.GovernanceSampleCustodyLog,
+) -> None:
+    guardrail_flags = log.guardrail_flags or []
+    if guardrail_flags:
+        _upsert_custody_escalation(db, log, guardrail_flags)
+        _record_faults_from_log(db, log, guardrail_flags)
+    else:
+        _resolve_existing_escalations(db, log)
+
+
+def _upsert_custody_escalation(
+    db: Session,
+    log: models.GovernanceSampleCustodyLog,
+    guardrail_flags: Sequence[str],
+) -> None:
+    severity = _determine_escalation_severity(guardrail_flags)
+    if severity is None:
+        return
+    reason = _build_escalation_reason(log, guardrail_flags)
+    due_at = _compute_sla_due_at(log, severity)
+    existing = (
+        db.query(models.GovernanceCustodyEscalation)
+        .filter(models.GovernanceCustodyEscalation.status == "open")
+        .filter(models.GovernanceCustodyEscalation.compartment_id == log.compartment_id)
+        .filter(models.GovernanceCustodyEscalation.severity == severity)
+        .order_by(models.GovernanceCustodyEscalation.created_at.desc())
+        .first()
+    )
+    now = datetime.now(timezone.utc)
+    flags = sorted(set(guardrail_flags))
+    if existing:
+        existing.reason = reason
+        existing.guardrail_flags = flags
+        existing.due_at = due_at
+        existing.meta = {
+            **(existing.meta or {}),
+            "last_log_id": str(log.id),
+        }
+        existing.updated_at = now
+        escalation = existing
+    else:
+        escalation = models.GovernanceCustodyEscalation(
+            log_id=log.id,
+            freezer_unit_id=log.compartment.freezer_id if log.compartment else None,
+            compartment_id=log.compartment_id,
+            asset_version_id=log.asset_version_id,
+            severity=severity,
+            status="open",
+            reason=reason,
+            due_at=due_at,
+            guardrail_flags=flags,
+            meta={
+                "last_log_id": str(log.id),
+                "team_id": str(log.performed_for_team_id)
+                if log.performed_for_team_id
+                else None,
+            },
+            created_at=now,
+        )
+        db.add(escalation)
+    db.flush()
+    _dispatch_custody_escalation_notifications(db, escalation)
+
+
+def _resolve_existing_escalations(
+    db: Session,
+    log: models.GovernanceSampleCustodyLog,
+) -> None:
+    query = (
+        db.query(models.GovernanceCustodyEscalation)
+        .filter(models.GovernanceCustodyEscalation.status == "open")
+        .filter(models.GovernanceCustodyEscalation.compartment_id == log.compartment_id)
+    )
+    now = datetime.now(timezone.utc)
+    for escalation in query:
+        escalation.status = "resolved"
+        escalation.resolved_at = now
+        escalation.meta = {
+            **(escalation.meta or {}),
+            "resolved_by_log_id": str(log.id),
+        }
+        escalation.updated_at = now
+        db.add(escalation)
+    db.flush()
+
+
+def _determine_escalation_severity(flags: Sequence[str]) -> str | None:
+    if not flags:
+        return None
+    if any(flag.startswith("capacity.") for flag in flags):
+        return "critical"
+    if any(flag.startswith("compartment.") for flag in flags):
+        return "critical"
+    if any(flag in {"occupancy.stale", "lineage.required"} for flag in flags):
+        return "warning"
+    if any(flag == "lineage.unlinked" for flag in flags):
+        return "info"
+    return "warning"
+
+
+def _compute_sla_due_at(
+    log: models.GovernanceSampleCustodyLog,
+    severity: str,
+) -> datetime:
+    now = datetime.now(timezone.utc)
+    minutes = _ESCALATION_DEFAULT_SLA_MINUTES.get(severity, 240)
+    freezer_config = {}
+    if log.compartment and log.compartment.freezer:
+        freezer_config = log.compartment.freezer.guardrail_config or {}
+    compartment_config = log.compartment.guardrail_thresholds if log.compartment else {}
+    escalation_config = {}
+    if freezer_config:
+        escalation_config.update(freezer_config.get("escalation", {}))
+    if compartment_config:
+        compartment_escalation = compartment_config.get("escalation", {})
+        if isinstance(compartment_escalation, dict):
+            escalation_config.update(compartment_escalation)
+        minutes = compartment_config.get(f"{severity}_sla_minutes", minutes)
+    minutes = escalation_config.get(f"{severity}_sla_minutes", minutes)
+    return now + timedelta(minutes=minutes)
+
+
+def _build_escalation_reason(
+    log: models.GovernanceSampleCustodyLog,
+    flags: Sequence[str],
+) -> str:
+    flag_summary = ", ".join(sorted(flags))
+    base = f"Guardrail escalation detected: {flag_summary}"
+    if log.compartment:
+        return f"{base} in compartment {log.compartment.label}"
+    return base
+
+
+def _dispatch_custody_escalation_notifications(
+    db: Session,
+    escalation: models.GovernanceCustodyEscalation,
+) -> None:
+    recipients = _resolve_escalation_recipients(db, escalation)
+    if not recipients:
+        return
+    existing = {
+        entry.get("recipient")
+        for entry in (escalation.notifications or [])
+        if entry.get("recipient")
+    }
+    severity = escalation.severity or "warning"
+    sent_records = list(escalation.notifications or [])
+    now = datetime.now(timezone.utc)
+    for user in recipients:
+        if not user.email or user.email in existing:
+            continue
+        subject = f"Custody escalation: {escalation.reason}"
+        message = (
+            f"A custody escalation ({severity}) is pending for compartment"
+            f" {escalation.compartment_id or 'unassigned'} with due"
+            f" at {escalation.due_at.isoformat() if escalation.due_at else 'unspecified'}."
+        )
+        notify.send_email(user.email, subject, message)
+        sent_records.append(
+            {
+                "recipient": user.email,
+                "channel": "email",
+                "sent_at": now.isoformat(),
+            }
+        )
+        notification = models.Notification(
+            user_id=user.id,
+            title="Custody escalation",
+            message=escalation.reason,
+            category="governance",
+            priority="urgent" if severity == "critical" else "high",
+            meta={
+                "escalation_id": str(escalation.id),
+                "due_at": escalation.due_at.isoformat()
+                if escalation.due_at
+                else None,
+            },
+        )
+        db.add(notification)
+    escalation.notifications = sent_records
+    escalation.updated_at = now
+    db.add(escalation)
+    db.flush()
+
+
+def _resolve_escalation_recipients(
+    db: Session,
+    escalation: models.GovernanceCustodyEscalation,
+) -> list[models.User]:
+    recipients: dict[UUID, models.User] = {}
+    freezer = escalation.freezer
+    if not freezer and escalation.freezer_unit_id:
+        freezer = db.get(models.GovernanceFreezerUnit, escalation.freezer_unit_id)
+    if freezer and freezer.team_id:
+        members = (
+            db.query(models.TeamMember)
+            .filter(models.TeamMember.team_id == freezer.team_id)
+            .all()
+        )
+        for member in members:
+            if member.user and member.user.email:
+                recipients[member.user.id] = member.user
+    if escalation.log and escalation.log.actor and escalation.log.actor.email:
+        recipients[escalation.log.actor.id] = escalation.log.actor
+    return list(recipients.values())
+
+
+def _record_faults_from_log(
+    db: Session,
+    log: models.GovernanceSampleCustodyLog,
+    guardrail_flags: Sequence[str],
+) -> None:
+    if not log.compartment or not log.compartment.freezer:
+        return
+    freezer = log.compartment.freezer
+    fault_flags = [flag for flag in guardrail_flags if flag.startswith("fault.")]
+    if log.meta:
+        fault_meta = log.meta.get("fault_flags") or []
+        fault_flags.extend(flag for flag in fault_meta if isinstance(flag, str))
+    recorded = set()
+    for flag in fault_flags:
+        fault_type = flag.split(".", 1)[-1] if "." in flag else flag
+        key = (fault_type, log.compartment_id)
+        if key in recorded:
+            continue
+        recorded.add(key)
+        record_freezer_fault(
+            db,
+            freezer,
+            compartment_id=log.compartment_id,
+            fault_type=fault_type,
+            severity="critical"
+            if "critical" in fault_type or "temperature" in fault_type
+            else "warning",
+            guardrail_flag=flag,
+            meta={
+                "log_id": str(log.id),
+                "asset_version_id": str(log.asset_version_id)
+                if log.asset_version_id
+                else None,
+            },
+        )
+
+
+
 def _evaluate_guardrails_for_log(
     db: Session,
     log: models.GovernanceSampleCustodyLog,
@@ -218,6 +626,22 @@ def _evaluate_guardrails_for_log(
     occupancy = sum(_resolve_quantity_delta(entry) for entry in existing_logs)
     occupancy += _resolve_quantity_delta(log)
     flags = _evaluate_guardrail_thresholds(compartment, occupancy)
+    thresholds = compartment.guardrail_thresholds or {}
     if log.asset_version_id is None and log.planner_session_id is None:
         flags.append("lineage.unlinked")
+    if thresholds.get("lineage_required") and (
+        log.asset_version_id is None or log.planner_session_id is None
+    ):
+        flags.append("lineage.required")
+    if thresholds.get("stale_minutes") and existing_logs:
+        latest_activity = existing_logs[-1].performed_at
+        delta = log.performed_at - latest_activity
+        if delta.total_seconds() / 60 > thresholds["stale_minutes"]:
+            flags.append("occupancy.stale")
+    meta_flags: Sequence[str] = ()
+    if log.meta:
+        meta_flags = log.meta.get("guardrail_flags", []) or []
+    for flag in meta_flags:
+        if flag not in flags:
+            flags.append(flag)
     return flags

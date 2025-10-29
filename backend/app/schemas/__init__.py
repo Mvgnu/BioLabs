@@ -43,8 +43,12 @@ from .sequence_toolkit import (
     SequenceToolkitProfile,
 )
 from .sample_governance import (
+    CustodyEscalation,
+    CustodyEscalationAck,
     FreezerCompartmentNode,
     FreezerUnitTopology,
+    FreezerFault,
+    FreezerFaultCreate,
     SampleCustodyLogCreate,
     SampleCustodyLogOut,
 )

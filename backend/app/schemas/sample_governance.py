@@ -60,3 +60,54 @@ class SampleCustodyLogOut(SampleCustodyLogBase):
     performed_by_id: UUID | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CustodyEscalation(BaseModel):
+    id: UUID
+    status: str
+    severity: str
+    reason: str
+    due_at: datetime | None = None
+    acknowledged_at: datetime | None = None
+    resolved_at: datetime | None = None
+    assigned_to_id: UUID | None = None
+    guardrail_flags: list[str]
+    notifications: list[dict[str, Any]]
+    meta: dict[str, Any]
+    log_id: UUID | None = None
+    freezer_unit_id: UUID | None = None
+    compartment_id: UUID | None = None
+    asset_version_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CustodyEscalationAck(BaseModel):
+    acknowledged_at: datetime
+    status: str
+
+
+class FreezerFault(BaseModel):
+    id: UUID
+    freezer_unit_id: UUID
+    compartment_id: UUID | None = None
+    fault_type: str
+    severity: str
+    guardrail_flag: str | None = None
+    occurred_at: datetime
+    resolved_at: datetime | None = None
+    meta: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class FreezerFaultCreate(BaseModel):
+    compartment_id: UUID | None = None
+    fault_type: str
+    severity: str = Field(min_length=1)
+    guardrail_flag: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)

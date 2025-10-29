@@ -36,6 +36,10 @@ import type {
   CustodyFreezerUnit,
   CustodyLogEntry,
   CustodyLogCreate,
+  CustodyEscalation,
+  CustodyEscalationAck,
+  FreezerFaultRecord,
+  FreezerFaultCreate,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -281,6 +285,67 @@ export const governanceApi = {
         ...payload,
         meta: payload.meta ?? {},
       },
+    )
+    return response.data
+  },
+  async listCustodyEscalations(params?: { team_id?: string | null; status?: string[] | null }) {
+    const response = await api.get<CustodyEscalation[]>(
+      '/api/governance/custody/escalations',
+      {
+        params: {
+          team_id: params?.team_id ?? undefined,
+          status: params?.status ?? undefined,
+        },
+      },
+    )
+    return response.data
+  },
+  async acknowledgeCustodyEscalation(escalationId: string) {
+    const response = await api.post<CustodyEscalationAck>(
+      `/api/governance/custody/escalations/${escalationId}/acknowledge`,
+    )
+    return response.data
+  },
+  async resolveCustodyEscalation(escalationId: string) {
+    const response = await api.post<CustodyEscalation>(
+      `/api/governance/custody/escalations/${escalationId}/resolve`,
+    )
+    return response.data
+  },
+  async notifyCustodyEscalation(escalationId: string) {
+    const response = await api.post<CustodyEscalation>(
+      `/api/governance/custody/escalations/${escalationId}/notify`,
+    )
+    return response.data
+  },
+  async listFreezerFaults(params?: { team_id?: string | null; include_resolved?: boolean }) {
+    const response = await api.get<FreezerFaultRecord[]>(
+      '/api/governance/custody/faults',
+      {
+        params: {
+          team_id: params?.team_id ?? undefined,
+          include_resolved: params?.include_resolved ?? undefined,
+        },
+      },
+    )
+    return response.data
+  },
+  async createFreezerFault(freezerId: string, payload: FreezerFaultCreate) {
+    const response = await api.post<FreezerFaultRecord>(
+      `/api/governance/custody/freezers/${freezerId}/faults`,
+      {
+        compartment_id: payload.compartment_id ?? undefined,
+        fault_type: payload.fault_type,
+        severity: payload.severity,
+        guardrail_flag: payload.guardrail_flag ?? undefined,
+        meta: payload.meta ?? {},
+      },
+    )
+    return response.data
+  },
+  async resolveFreezerFault(faultId: string) {
+    const response = await api.post<FreezerFaultRecord>(
+      `/api/governance/custody/faults/${faultId}/resolve`,
     )
     return response.data
   },
