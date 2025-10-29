@@ -29,6 +29,10 @@ _ESCALATION_DEFAULT_SLA_MINUTES = {
 # severity_rank: convert severity strings into comparable weights
 _SEVERITY_RANK = {"critical": 3, "warning": 2, "info": 1}
 
+# escalation_statuses: classify escalation lifecycle states for guardrail gating logic
+_ACTIVE_ESCALATION_STATUSES = {"open", "acknowledged"}
+_RESOLVED_ESCALATION_STATUSES = {"resolved", "closed"}
+
 # mitigation_guidance: default guardrail flag -> operator checklist prompts
 _GUARDRAIL_MITIGATION_GUIDANCE = {
     "capacity.exceeded": "Relocate or thaw samples to restore compartment capacity.",
@@ -322,18 +326,33 @@ def list_protocol_guardrail_executions(
     guardrail_statuses: Sequence[str] | None = None,
     has_open_drill: bool | None = None,
     severity: str | None = None,
+    team_id: UUID | None = None,
+    template_id: UUID | None = None,
+    execution_ids: Sequence[UUID] | None = None,
     limit: int = 50,
 ) -> list[schemas.CustodyProtocolExecution]:
     """Return protocol executions decorated with custody guardrail state."""
 
-    query = db.query(models.ProtocolExecution).options(
-        joinedload(models.ProtocolExecution.template)
+    query = (
+        db.query(models.ProtocolExecution)
+        .options(joinedload(models.ProtocolExecution.template))
+        .join(
+            models.ProtocolTemplate,
+            models.ProtocolExecution.template,
+            isouter=True,
+        )
     )
     if guardrail_statuses:
         lowered = [status.lower() for status in guardrail_statuses]
         query = query.filter(
             sa.func.lower(models.ProtocolExecution.guardrail_status).in_(lowered)
         )
+    if team_id:
+        query = query.filter(models.ProtocolTemplate.team_id == team_id)
+    if template_id:
+        query = query.filter(models.ProtocolExecution.template_id == template_id)
+    if execution_ids:
+        query = query.filter(models.ProtocolExecution.id.in_(list(execution_ids)))
     executions: list[models.ProtocolExecution] = (
         query.order_by(models.ProtocolExecution.updated_at.desc())
         .limit(limit)
@@ -364,6 +383,7 @@ def list_protocol_guardrail_executions(
                 guardrail_state=state,
                 template_id=execution.template_id,
                 template_name=execution.template_name,
+                template_team_id=execution.template.team_id if execution.template else None,
                 run_by=execution.run_by,
                 open_escalations=open_escalations,
                 open_drill_count=open_drill_count,
@@ -758,7 +778,8 @@ def _build_execution_event_overlays(
         severity_rank = _SEVERITY_RANK.get(severity, 0)
         if severity_rank >= current_rank:
             overlay["max_severity"] = severity
-        if (details.get("status") or "").lower() == "open":
+        status = (details.get("status") or "").lower()
+        if status in _ACTIVE_ESCALATION_STATUSES:
             overlay["open_escalation_ids"].append(escalation_id)
             if details.get("recovery_drill_open"):
                 overlay["open_drill_count"] += 1
@@ -777,10 +798,12 @@ def _count_open_severity(
 
     counts = {"critical": 0, "warning": 0, "info": 0}
     for details in escalation_map.values():
-        if (details.get("status") or "").lower() != "open":
+        status = (details.get("status") or "").lower()
+        if status in _RESOLVED_ESCALATION_STATUSES:
             continue
         severity = (details.get("severity") or "info").lower()
-        counts[severity] = counts.get(severity, 0) + 1
+        severity_key = severity if severity in counts else "info"
+        counts[severity_key] += 1
     return counts
 
 

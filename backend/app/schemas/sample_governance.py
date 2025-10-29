@@ -115,6 +115,7 @@ class CustodyProtocolExecution(BaseModel):
     guardrail_state: dict[str, Any]
     template_id: UUID | None = None
     template_name: str | None = None
+    template_team_id: UUID | None = None
     run_by: UUID | None = None
     open_escalations: int = 0
     open_drill_count: int = 0

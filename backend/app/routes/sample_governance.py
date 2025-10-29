@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from .. import models, schemas
 from ..auth import get_current_user
 from ..database import get_db
+from ..rbac import check_team_role
 from ..services import sample_governance
 
 # purpose: expose custody governance endpoints for freezer topology and ledger actions
@@ -111,16 +112,24 @@ def list_protocol_guardrail_snapshots(
     guardrail_status: list[str] | None = Query(default=None, alias="status"),
     has_open_drill: bool | None = Query(default=None),
     severity: str | None = Query(default=None),
+    team_id: UUID | None = Query(default=None),
+    template_id: UUID | None = Query(default=None),
+    execution_id: list[UUID] | None = Query(default=None, alias="execution_id"),
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
     _require_operator(user)
+    if team_id:
+        check_team_role(db, user, team_id, ["owner", "manager", "member"])
     executions = sample_governance.list_protocol_guardrail_executions(
         db,
         guardrail_statuses=guardrail_status,
         has_open_drill=has_open_drill,
         severity=severity,
+        team_id=team_id,
+        template_id=template_id,
+        execution_ids=execution_id,
         limit=limit,
     )
     return executions
