@@ -116,6 +116,27 @@ def diff_dna_asset_versions(
     return dna_assets.diff_versions(version_a, version_b)
 
 
+@router.get("/{asset_id}/viewer", response_model=schemas.DNAViewerPayload)
+def get_dna_asset_viewer(
+    asset_id: UUID,
+    compare_version: UUID | None = Query(default=None, description="Optional version to diff against latest"),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> schemas.DNAViewerPayload:
+    """Build a viewer payload for the requested asset."""
+
+    asset = dna_assets.get_asset(db, asset_id)
+    if not asset:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="DNA asset not found")
+    _assert_access(user, asset)
+    compare = None
+    if compare_version:
+        compare = db.get(models.DNAAssetVersion, compare_version)
+        if not compare or compare.asset_id != asset.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comparison version not found")
+    return dna_assets.build_viewer_payload(asset, compare_to=compare)
+
+
 @router.post("/{asset_id}/guardrails", response_model=schemas.DNAAssetGuardrailEventOut, status_code=status.HTTP_201_CREATED)
 def record_dna_asset_guardrail_event(
     asset_id: UUID,

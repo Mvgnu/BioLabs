@@ -21,6 +21,10 @@ from .dna_assets import (
     DNAAssetSummary,
     DNAAssetVersionCreate,
     DNAAssetVersionOut,
+    DNAViewerFeature,
+    DNAViewerPayload,
+    DNAViewerTrack,
+    DNAViewerTranslation,
 )
 from .sequence_toolkit import (
     AssemblySimulationConfig,

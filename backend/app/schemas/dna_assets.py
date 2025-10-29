@@ -135,3 +135,49 @@ class DNAAssetGovernanceUpdate(BaseModel):
     event_type: str
     details: dict[str, Any] = Field(default_factory=dict)
 
+
+class DNAViewerFeature(BaseModel):
+    """Feature element displayed within viewer tracks."""
+
+    # purpose: provide viewer-ready annotation descriptors with guardrail badges
+    label: str
+    feature_type: str
+    start: int
+    end: int
+    strand: Optional[int] = None
+    qualifiers: dict[str, Any] = Field(default_factory=dict)
+    guardrail_badges: List[str] = Field(default_factory=list)
+
+
+class DNAViewerTrack(BaseModel):
+    """Logical grouping of viewer features."""
+
+    # purpose: cluster annotations into viewer tracks (e.g., features, guardrails)
+    name: str
+    features: List[DNAViewerFeature] = Field(default_factory=list)
+
+
+class DNAViewerTranslation(BaseModel):
+    """Translated reading frame snippet for viewer overlays."""
+
+    # purpose: surface amino acid translations for CDS annotations
+    label: str
+    frame: int
+    sequence: str
+    amino_acids: str
+
+
+class DNAViewerPayload(BaseModel):
+    """Viewer-ready payload bundling tracks, guardrails, and kinetics."""
+
+    # purpose: transmit DNA asset viewer state to frontend components
+    asset: DNAAssetSummary
+    version: DNAAssetVersionOut
+    sequence: str
+    topology: str
+    tracks: List[DNAViewerTrack]
+    translations: List[DNAViewerTranslation] = Field(default_factory=list)
+    kinetics_summary: DNAAssetKineticsSummary
+    guardrails: DNAAssetGuardrailHeuristics
+    diff: Optional[DNAAssetDiffResponse] = None
+

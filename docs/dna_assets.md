@@ -12,7 +12,21 @@ experimental
 - DNA asset serialization now bundles kinetics summaries, assembly preset lineage, and planner-aligned guardrail heuristics so operator consoles surface ligation, buffer, and kinetics context without recomputing toolkit stages.
 - FastAPI router `backend/app/routes/dna_assets.py` exposes CRUD, diff, and governance endpoints for frontend viewers and governance dashboards.
 - Sequence toolkit now offers reusable configuration schemas plus sequence metrics and diff utilities powering both planner and DNA asset flows.
-- Pytest coverage (`backend/app/tests/test_dna_assets.py`) exercises creation, versioning, diffing, and guardrail event APIs to anchor future enhancements.
+- Importer suite under `backend/app/services/importers/` normalises GenBank, SBOL, and SnapGene uploads into `DNAImportResult` payloads before invoking `dna_assets.create_asset`, preserving topology, annotations, source metadata, and original attachments for governance provenance.
+- Viewer payload builder `dna_assets.build_viewer_payload` assembles feature tracks, guardrail overlays, translated CDS frames, kinetics summaries, and optional version diffs for frontend consumption using the new `DNAViewerPayload` schema family.
+- Pytest coverage (`backend/app/tests/test_dna_assets.py`, `backend/app/tests/test_dna_importers.py`) exercises asset lifecycle APIs, importer fidelity, and viewer payload construction using representative fixture files stored under `backend/app/tests/data/importers/`.
+
+## importer workflows
+
+- Uploads flow through `services/importers/{genbank,sbol,snapgene}.py` which emit canonical `DNAImportResult` objects encapsulating sequence topology, annotations, provenance, tags, and attachments (including the original upload under a media-type specific wrapper).
+- `DNAImportResult.to_asset_payload` hydrates a `DNAAssetCreate` schema, ensuring importer metadata propagates into persistent asset records while normalising qualifiers for viewer contracts.
+- Representative fixtures (`backend/app/tests/data/importers/`) cover plasmid, SBOL XML, and SnapGene JSON/binary scenarios validating annotations, topology, and attachment fidelity via pytest fixtures.
+
+## viewer payload contract
+
+- `dna_assets.build_viewer_payload` returns `DNAViewerPayload` combining latest asset metadata, sequence, guardrail heuristics, kinetics, translations, and diff summaries for optional comparison.
+- Feature tracks embed guardrail badges derived from `guardrail_heuristics` so frontend components (e.g., `GuardrailBadge`, `LinearTrack`) surface planner-aligned alerts without recomputation.
+- Frontend surfaces at `/dna-viewer/[assetId]` and the cloning planner wizard reuse guardrail primitives to present consistent escalation and QC loops sourced directly from the viewer payload and planner SSE events.
 
 ## follow-up considerations
 - Expand RBAC beyond creator/admin gating to honour team-level permissions once team ownership semantics are formalised.
