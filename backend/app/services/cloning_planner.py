@@ -12,7 +12,7 @@ import json
 from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from celery import chain
 from sqlalchemy import func
@@ -185,6 +185,11 @@ def _persist_stage_record(
     payload: Any,
     task_id: str | None,
     error: str | None,
+    branch_id: UUID | None = None,
+    checkpoint_key: str | None = None,
+    checkpoint_payload: dict[str, Any] | None = None,
+    guardrail_transition: dict[str, Any] | None = None,
+    timeline_position: str | None = None,
 ) -> models.CloningPlannerStageRecord:
     """Persist history entries for planner stages."""
 
@@ -217,6 +222,11 @@ def _persist_stage_record(
         started_at=_parse_stage_timestamp(timing_entry, "started_at"),
         completed_at=_parse_stage_timestamp(timing_entry, "completed_at"),
         error=error,
+        branch_id=branch_id,
+        checkpoint_key=checkpoint_key,
+        checkpoint_payload=checkpoint_payload or {},
+        guardrail_transition=guardrail_transition or {},
+        timeline_position=timeline_position,
     )
     db.add(record)
     db.flush()
@@ -227,27 +237,50 @@ def _dispatch_planner_event(
     planner: models.CloningPlannerSession,
     event_type: str,
     payload: dict[str, Any],
-) -> None:
+    *,
+    previous_guardrail_gate: dict[str, Any] | None = None,
+    branch_id: UUID | None = None,
+    checkpoint: dict[str, Any] | None = None,
+    event_id: str | None = None,
+) -> str:
     """Publish planner orchestration updates over the pub/sub channel."""
 
     # purpose: expose real-time orchestration state to UI clients via Redis pub/sub
+    active_branch, branch_state = _ensure_branch_state(planner)
     guardrail_state = compose_guardrail_state(planner)
+    guardrail_gate = _evaluate_guardrail_gate(guardrail_state)
+    event_identifier = event_id or str(uuid4())
+    planner.timeline_cursor = event_identifier
+    branch_ref = branch_id or active_branch
+    guardrail_transition = {
+        "previous": previous_guardrail_gate,
+        "current": guardrail_gate,
+    }
     message = {
+        "id": event_identifier,
         "type": event_type,
         "session_id": str(planner.id),
         "status": planner.status,
         "current_step": planner.current_step,
         "guardrail_state": guardrail_state,
-        "guardrail_gate": _evaluate_guardrail_gate(guardrail_state),
+        "guardrail_gate": guardrail_gate,
+        "guardrail_transition": guardrail_transition,
         "payload": payload,
+        "branch": {
+            "active": str(branch_ref) if branch_ref else None,
+            "state": branch_state,
+        },
+        "checkpoint": checkpoint,
+        "timeline_cursor": event_identifier,
         "timestamp": _utcnow().isoformat(),
     }
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         asyncio.run(pubsub.publish_planner_event(str(planner.id), message))
-        return
+        return event_identifier
     loop.create_task(pubsub.publish_planner_event(str(planner.id), message))
+    return event_identifier
 
 def _merge_guardrail_state(
     planner: models.CloningPlannerSession, updates: dict[str, Any]
@@ -281,6 +314,44 @@ def _merge_with_defaults(
     if isinstance(payload, dict):
         merged.update(payload)
     return merged
+
+
+def _ensure_branch_state(
+    planner: models.CloningPlannerSession,
+) -> tuple[UUID, dict[str, Any]]:
+    """Ensure planner branch metadata has an active branch entry."""
+
+    # purpose: guarantee branch metadata exists for SSE and stage history mapping
+    branch_state = dict(planner.branch_state or {})
+    branches = branch_state.get("branches")
+    if not isinstance(branches, dict):
+        branches = {}
+    active_branch_id = planner.active_branch_id or planner.id
+    if isinstance(active_branch_id, str):
+        try:
+            active_branch_id = UUID(active_branch_id)
+        except (ValueError, TypeError):  # pragma: no cover - defensive parsing
+            active_branch_id = planner.id
+    branch_key = str(active_branch_id)
+    if branch_key not in branches:
+        created_at = (planner.created_at or _utcnow()).isoformat()
+        branches[branch_key] = {
+            "id": branch_key,
+            "label": "main",
+            "status": "active",
+            "parent_id": None,
+            "created_at": created_at,
+        }
+    branch_state["branches"] = branches
+    order = branch_state.get("order")
+    if not isinstance(order, list):
+        order = []
+    if branch_key not in order:
+        order.append(branch_key)
+    branch_state["order"] = order
+    planner.branch_state = branch_state
+    planner.active_branch_id = active_branch_id
+    return active_branch_id, branch_state
 
 
 def _primer_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
@@ -615,7 +686,9 @@ def _record_guardrail_hold(
 ) -> None:
     """Persist guardrail hold metadata and emit orchestration events."""
 
+    active_branch_id, _ = _ensure_branch_state(planner)
     hold_gate = json.loads(json.dumps(gate, default=_json_default))
+    previous_gate = _evaluate_guardrail_gate(planner.guardrail_state or {})
     now = _utcnow()
     timings = dict(planner.stage_timings or {})
     entry = dict(timings.get(stage) or {})
@@ -626,6 +699,7 @@ def _record_guardrail_hold(
             "hold_reason": hold_gate,
             "task_id": task_id,
             "error": None,
+            "branch_id": str(active_branch_id) if active_branch_id else None,
         }
     )
     timings[stage] = entry
@@ -637,10 +711,15 @@ def _record_guardrail_hold(
         planner.celery_task_id = task_id
     db.add(planner)
     db.flush()
+    event_id = str(uuid4())
     _dispatch_planner_event(
         planner,
         "guardrail_hold",
         {"stage": stage, "gate": hold_gate, "task_id": task_id},
+        previous_guardrail_gate=previous_gate,
+        branch_id=active_branch_id,
+        checkpoint={"key": stage, "payload": entry},
+        event_id=event_id,
     )
 
 
@@ -686,6 +765,7 @@ def create_session(
                 "notes": [],
             }
         )
+    branch_identifier = uuid4()
     record = models.CloningPlannerSession(
         created_by_id=getattr(created_by, "id", None),
         assembly_strategy=assembly_strategy,
@@ -698,19 +778,41 @@ def create_session(
                 "status": "intake_recorded",
                 "task_id": None,
                 "next_step": "primers",
+                "branch_id": str(branch_identifier),
             }
         },
         current_step="intake",
+        branch_state={
+            "branches": {
+                str(branch_identifier): {
+                    "id": str(branch_identifier),
+                    "label": "main",
+                    "status": "active",
+                    "parent_id": None,
+                    "created_at": now.isoformat(),
+                }
+            },
+            "order": [str(branch_identifier)],
+        },
+        active_branch_id=branch_identifier,
+        timeline_cursor=None,
         created_at=now,
         updated_at=now,
     )
     db.add(record)
     db.flush()
     db.refresh(record)
+    _ensure_branch_state(record)
+    checkpoint_payload = record.stage_timings.get("intake", {})
+    event_id = str(uuid4())
     _dispatch_planner_event(
         record,
         "session_created",
         {"stage": "intake", "status": "intake_recorded"},
+        previous_guardrail_gate=_evaluate_guardrail_gate(record.guardrail_state or {}),
+        branch_id=record.active_branch_id,
+        checkpoint={"key": "intake", "payload": checkpoint_payload},
+        event_id=event_id,
     )
     return record
 
@@ -961,6 +1063,8 @@ def _mark_stage_started(
 
     # purpose: capture resumable checkpoint metadata before stage execution
     now = _utcnow()
+    active_branch_id, _ = _ensure_branch_state(planner)
+    previous_gate = _evaluate_guardrail_gate(planner.guardrail_state or {})
     timings = dict(planner.stage_timings or {})
     entry = dict(timings.get(stage) or {})
     previous_runs = entry.get("retries", 0)
@@ -972,6 +1076,7 @@ def _mark_stage_started(
             "status": f"{stage}_running",
             "retries": previous_runs,
             "error": None,
+            "branch_id": str(active_branch_id) if active_branch_id else None,
         }
     )
     if task_id is not None:
@@ -987,10 +1092,15 @@ def _mark_stage_started(
     planner.updated_at = now
     db.add(planner)
     db.flush()
+    event_id = str(uuid4())
     _dispatch_planner_event(
         planner,
         "stage_started",
         {"stage": stage, "task_id": task_id},
+        previous_guardrail_gate=previous_gate,
+        branch_id=active_branch_id,
+        checkpoint={"key": stage, "payload": entry},
+        event_id=event_id,
     )
     return planner
 
@@ -1006,6 +1116,8 @@ def _record_stage_failure(
     """Persist failure metadata when a stage errors during execution."""
 
     now = _utcnow()
+    active_branch_id, _ = _ensure_branch_state(planner)
+    previous_gate = _evaluate_guardrail_gate(planner.guardrail_state or {})
     timings = dict(planner.stage_timings or {})
     entry = dict(timings.get(stage) or {})
     entry.update(
@@ -1013,6 +1125,7 @@ def _record_stage_failure(
             "status": f"{stage}_errored",
             "error": str(exc),
             "completed_at": now.isoformat(),
+            "branch_id": str(active_branch_id) if active_branch_id else None,
         }
     )
     if task_id is not None:
@@ -1025,6 +1138,8 @@ def _record_stage_failure(
     if task_id is not None:
         planner.celery_task_id = task_id
     db.add(planner)
+    event_id = str(uuid4())
+    current_gate = _evaluate_guardrail_gate(planner.guardrail_state or {})
     record = _persist_stage_record(
         db,
         planner,
@@ -1034,12 +1149,21 @@ def _record_stage_failure(
         payload={},
         task_id=task_id,
         error=str(exc),
+        branch_id=active_branch_id,
+        checkpoint_key=stage,
+        checkpoint_payload=entry,
+        guardrail_transition={"previous": previous_gate, "current": current_gate},
+        timeline_position=event_id,
     )
     db.commit()
     _dispatch_planner_event(
         planner,
         "stage_failed",
         {"stage": stage, "error": str(exc), "record_id": str(record.id)},
+        previous_guardrail_gate=previous_gate,
+        branch_id=active_branch_id,
+        checkpoint={"key": stage, "payload": entry},
+        event_id=event_id,
     )
 
 
@@ -1051,6 +1175,8 @@ def _complete_pipeline_stage(
 ) -> models.CloningPlannerSession:
     """Summarise guardrail state and mark pipeline completion checkpoint."""
 
+    active_branch_id, _ = _ensure_branch_state(planner)
+    previous_gate = _evaluate_guardrail_gate(planner.guardrail_state or {})
     guardrails = refresh_planner_guardrails(db, planner)
     qc_breaches = guardrails.get("qc", {}).get("breaches", [])
     status = "qc_guardrail_blocked" if qc_breaches else "ready_for_finalize"
@@ -1065,6 +1191,7 @@ def _complete_pipeline_stage(
             "guardrail": guardrails.get("qc"),
             "guardrail_gate": _evaluate_guardrail_gate(guardrails),
             "error": None,
+            "branch_id": str(active_branch_id) if active_branch_id else None,
         }
     )
     timings["finalize"] = entry
@@ -1077,6 +1204,8 @@ def _complete_pipeline_stage(
     if status == "qc_guardrail_blocked":
         invalidate_governance_analytics_cache(execution_ids=[planner.id])
     db.add(planner)
+    event_id = str(uuid4())
+    current_gate = _evaluate_guardrail_gate(guardrails)
     record = _persist_stage_record(
         db,
         planner,
@@ -1086,6 +1215,11 @@ def _complete_pipeline_stage(
         payload=guardrails,
         task_id=task_id,
         error=None,
+        branch_id=active_branch_id,
+        checkpoint_key="finalize",
+        checkpoint_payload=entry,
+        guardrail_transition={"previous": previous_gate, "current": current_gate},
+        timeline_position=event_id,
     )
     db.flush()
     db.refresh(planner)
@@ -1093,6 +1227,10 @@ def _complete_pipeline_stage(
         planner,
         "stage_completed",
         {"stage": "finalize", "record_id": str(record.id), "status": status},
+        previous_guardrail_gate=previous_gate,
+        branch_id=active_branch_id,
+        checkpoint={"key": "finalize", "payload": entry},
+        event_id=event_id,
     )
     return planner
 
@@ -1414,6 +1552,8 @@ def record_stage_progress(
     # outputs: updated CloningPlannerSession instance with refreshed metadata
     # status: experimental
     now = _utcnow()
+    active_branch_id, _ = _ensure_branch_state(planner)
+    previous_gate = _evaluate_guardrail_gate(planner.guardrail_state or {})
     step_map = {
         "primers": "primer_set",
         "restriction": "restriction_digest",
@@ -1460,6 +1600,7 @@ def record_stage_progress(
             "task_id": task_id,
             "next_step": next_step,
             "error": error,
+            "branch_id": str(active_branch_id) if active_branch_id else None,
         }
     )
     gate_state = _evaluate_guardrail_gate(guardrail_snapshot)
@@ -1482,9 +1623,10 @@ def record_stage_progress(
     resolved_status = status or f"{step}_completed"
     planner.status = resolved_status
     if resolved_status in {"finalized", "completed"}:
-            planner.completed_at = now
+        planner.completed_at = now
     db.add(planner)
     stage_guardrail_payload = json.loads(json.dumps(stage_guardrail, default=_json_default)) if stage_guardrail else {}
+    event_id = str(uuid4())
     record = _persist_stage_record(
         db,
         planner,
@@ -1494,6 +1636,14 @@ def record_stage_progress(
         payload=payload,
         task_id=task_id,
         error=error,
+        branch_id=active_branch_id,
+        checkpoint_key=step,
+        checkpoint_payload=checkpoint_payload,
+        guardrail_transition={
+            "previous": previous_gate,
+            "current": gate_state,
+        },
+        timeline_position=event_id,
     )
     if artifacts:
         qc_ingestion.attach_artifacts_to_stage(db, artifacts, record)
@@ -1508,6 +1658,10 @@ def record_stage_progress(
             "record_id": str(record.id),
             "task_id": task_id,
         },
+        previous_guardrail_gate=previous_gate,
+        branch_id=active_branch_id,
+        checkpoint={"key": step, "payload": checkpoint_payload},
+        event_id=event_id,
     )
     return planner
 
@@ -1526,6 +1680,8 @@ def finalize_session(
     # status: experimental
     now = _utcnow()
     base_snapshot = compose_guardrail_state(planner)
+    active_branch_id, _ = _ensure_branch_state(planner)
+    previous_gate = _evaluate_guardrail_gate(base_snapshot)
     merged_guardrails = dict(base_snapshot)
     if isinstance(guardrail_state, dict):
         merged_guardrails.update(guardrail_state)
@@ -1534,7 +1690,20 @@ def finalize_session(
     planner.current_step = "finalized"
     planner.completed_at = now
     planner.updated_at = now
+    planner.stage_timings = dict(planner.stage_timings or {})
+    checkpoint_payload = {
+        "status": "finalized",
+        "completed_at": now.isoformat(),
+        "task_id": None,
+        "next_step": None,
+        "error": None,
+        "branch_id": str(active_branch_id) if active_branch_id else None,
+        "guardrail_gate": _evaluate_guardrail_gate(merged_guardrails),
+    }
+    planner.stage_timings["finalize"] = checkpoint_payload
     db.add(planner)
+    event_id = str(uuid4())
+    current_gate = checkpoint_payload["guardrail_gate"]
     record = _persist_stage_record(
         db,
         planner,
@@ -1544,6 +1713,11 @@ def finalize_session(
         payload=planner.guardrail_state or {},
         task_id=None,
         error=None,
+        branch_id=active_branch_id,
+        checkpoint_key="finalize",
+        checkpoint_payload=checkpoint_payload,
+        guardrail_transition={"previous": previous_gate, "current": current_gate},
+        timeline_position=event_id,
     )
     db.flush()
     db.refresh(planner)
@@ -1551,6 +1725,10 @@ def finalize_session(
         planner,
         "session_finalized",
         {"stage": "finalize", "record_id": str(record.id), "status": "finalized"},
+        previous_guardrail_gate=previous_gate,
+        branch_id=active_branch_id,
+        checkpoint={"key": "finalize", "payload": checkpoint_payload},
+        event_id=event_id,
     )
     return planner
 
@@ -1574,6 +1752,11 @@ def _serialise_stage_record(record: models.CloningPlannerStageRecord) -> dict[st
         "started_at": record.started_at,
         "completed_at": record.completed_at,
         "error": record.error,
+        "branch_id": record.branch_id,
+        "checkpoint_key": record.checkpoint_key,
+        "checkpoint_payload": record.checkpoint_payload,
+        "guardrail_transition": record.guardrail_transition,
+        "timeline_position": record.timeline_position,
         "created_at": record.created_at,
         "updated_at": record.updated_at,
     }
@@ -1608,6 +1791,7 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
     # inputs: CloningPlannerSession ORM instance
     # outputs: dictionary for JSON responses
     # status: experimental
+    active_branch_id, branch_state = _ensure_branch_state(planner)
     stage_history = [
         _serialise_stage_record(record)
         for record in sorted(planner.stage_history or [], key=lambda item: item.created_at or datetime.min)
@@ -1664,6 +1848,9 @@ def serialize_session(planner: models.CloningPlannerSession) -> dict[str, Any]:
         "current_step": planner.current_step,
         "celery_task_id": planner.celery_task_id,
         "last_error": planner.last_error,
+        "branch_state": branch_state,
+        "active_branch_id": active_branch_id,
+        "timeline_cursor": planner.timeline_cursor,
         "created_at": planner.created_at,
         "updated_at": planner.updated_at,
         "completed_at": planner.completed_at,

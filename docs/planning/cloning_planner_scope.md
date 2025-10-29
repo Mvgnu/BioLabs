@@ -34,8 +34,14 @@
   - `POST /api/cloning-planner/{session_id}/resume` – restart orchestration from the persisted checkpoint with optional overrides.
   - `POST /api/cloning-planner/{session_id}/cancel` – revoke outstanding tasks, capture operator reason, and freeze the timeline for review.
   - `GET /api/cloning-planner/{session_id}` – retrieve aggregated outputs and guardrail status.
-  - `POST /api/cloning-planner/{session_id}/finalize` – persist final plan, enforce guardrails, attach inventory reservations.
+- `POST /api/cloning-planner/{session_id}/finalize` – persist final plan, enforce guardrails, attach inventory reservations.
 - Schema updates in `backend/app/schemas.py` for session payloads and stage outputs.
+- Real-time events stream (`GET /api/cloning-planner/{session_id}/events`) now exposes branch-aware payloads including guardrail gate transitions, checkpoint metadata, and timeline cursors so UI clients can replay halted sessions and custody escalations without polling.
+
+## Timeline Replay & Branch Recovery
+- Persist branch metadata (`active_branch_id`, `branch_state`) on each session alongside checkpoint payloads for every stage record, ensuring resume flows understand whether operators followed the mainline or a remediation branch.
+- Emit SSE payloads with explicit `guardrail_transition` fields capturing prior and current gate states, plus `checkpoint` descriptors keyed by stage, enabling deterministic replay and governance auditing.
+- Frontend `PlannerTimeline` component consumes the enriched stream, providing a scrubber that highlights guardrail holds, custody escalations, and branch switches so operators can narrate recovery actions directly within the planner UI.
 
 ## Frontend Experience
 - Create planner UI under `frontend/app/cloning-planner/` with multi-step wizard components (sequence upload, strategy selection, reagent confirmation, assembly preview).

@@ -11,6 +11,7 @@ import { GuardrailQCDecisionLoop } from '../../components/guardrails/GuardrailQC
 import { GuardrailReviewerHandoff } from '../../components/guardrails/GuardrailReviewerHandoff'
 import type { CloningPlannerSession, CloningPlannerStageTiming } from '../../types'
 import { useCloningPlanner } from '../../hooks/useCloningPlanner'
+import { PlannerTimeline } from './PlannerTimeline'
 
 const STAGES: { key: string; label: string; description: string }[] = [
   { key: 'primers', label: 'Primer design', description: 'Design primers and validate thermodynamics' },
@@ -369,6 +370,13 @@ export const PlannerWizard: React.FC<PlannerWizardProps> = ({ sessionId }) => {
               </div>
             )}
           </div>
+        </div>
+        <div className="mt-8">
+          <PlannerTimeline
+            events={events}
+            stageHistory={session.stage_history}
+            activeBranchId={session.active_branch_id ?? null}
+          />
         </div>
       </section>
 

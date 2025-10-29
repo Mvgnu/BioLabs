@@ -14,6 +14,7 @@ import pytest
 from typing import Any
 
 from app import models, pubsub
+from app.services import cloning_planner
 from app.tests.conftest import TestingSessionLocal
 from app.tests.test_template_lifecycle import admin_headers
 
@@ -104,6 +105,9 @@ def test_create_cloning_planner_session_persists_inputs(client):
     assert body["primer_set"]["profile"]["preset_id"] == "multiplex"
     assert "multiplex_risk" in body["guardrail_state"]["primers"]
     assert body["restriction_digest"]["strategy_scores"]
+    assert body["branch_state"]["branches"]
+    assert body["active_branch_id"]
+    assert body["stage_history"][0]["checkpoint_payload"]
     session_id = uuid.UUID(body["id"])
 
     db = TestingSessionLocal()
@@ -119,6 +123,8 @@ def test_create_cloning_planner_session_persists_inputs(client):
         assert record.guardrail_state["primers"]["preset_id"] == "multiplex"
         assert record.stage_history
         assert any(entry.stage == "primers" for entry in record.stage_history)
+        assert record.active_branch_id
+        assert record.stage_history[0].checkpoint_payload
     finally:
         db.close()
 
@@ -198,6 +204,37 @@ def test_resume_cloning_planner_session_requeues_stages(client):
     assert resumed["stage_timings"]["restriction"]["status"].startswith("restriction")
     assert resumed["stage_timings"]["restriction"]["task_id"]
     assert resumed["guardrail_state"]["toolkit"]["preset_id"] == "qpcr"
+
+
+def test_cloning_planner_dispatch_event_includes_branch_metadata(client, monkeypatch):
+    headers, body = _create_session(client)
+    session_id = uuid.UUID(body["id"])
+    db = TestingSessionLocal()
+    messages: list[dict[str, Any]] = []
+
+    async def fake_publish(target_session_id: str, message: dict[str, Any]) -> None:
+        messages.append(message)
+
+    monkeypatch.setattr(pubsub, "publish_planner_event", fake_publish)
+
+    try:
+        planner = db.get(models.CloningPlannerSession, session_id)
+        assert planner is not None
+        event_id = "test-event"
+        cloning_planner._dispatch_planner_event(
+            planner,
+            "stage_started",
+            {"stage": "primers"},
+            event_id=event_id,
+        )
+    finally:
+        db.close()
+
+    assert messages, "expected dispatcher to publish at least one message"
+    payload = messages[0]
+    assert payload["id"] == "test-event"
+    assert payload["branch"]["active"] == str(body["active_branch_id"])
+    assert payload["guardrail_transition"]["current"] == payload["guardrail_gate"]
 
 
 def test_qc_guardrail_blocked_state_exposed(client):

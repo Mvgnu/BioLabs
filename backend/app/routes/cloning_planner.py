@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -118,6 +118,8 @@ async def stream_cloning_planner_events(
     request: Request,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
+    branch: UUID | None = None,
+    since: str | None = None,
 ) -> StreamingResponse:
     """Stream cloning planner orchestration events for the UI."""
 
@@ -132,19 +134,56 @@ async def stream_cloning_planner_events(
     if planner.created_by_id not in {None, user.id} and not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access to planner session denied")
     snapshot = cloning_planner.serialize_session(planner)
+    branch_filter = str(branch) if branch else None
+    since_cursor = since
+    seen_since = since_cursor is None
 
     async def event_iterator():
         initial_event = {
+            "id": snapshot.get("timeline_cursor") or str(uuid4()),
             "type": "snapshot",
             "session_id": str(planner.id),
             "status": snapshot["status"],
             "current_step": snapshot.get("current_step"),
             "guardrail_state": snapshot.get("guardrail_state"),
+            "guardrail_gate": snapshot.get("guardrail_gate"),
+            "guardrail_transition": {
+                "previous": snapshot.get("guardrail_gate"),
+                "current": snapshot.get("guardrail_gate"),
+            },
+            "payload": {"snapshot": True},
+            "branch": {
+                "active": str(snapshot.get("active_branch_id")) if snapshot.get("active_branch_id") else None,
+                "state": snapshot.get("branch_state"),
+            },
+            "checkpoint": {
+                "key": "snapshot",
+                "payload": {
+                    "status": snapshot["status"],
+                    "branch_id": str(snapshot.get("active_branch_id")) if snapshot.get("active_branch_id") else None,
+                },
+            },
+            "timeline_cursor": snapshot.get("timeline_cursor"),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        yield f"data: {json.dumps(initial_event)}\n\n"
+        if not branch_filter or initial_event["branch"].get("active") == branch_filter:
+            yield f"data: {json.dumps(initial_event)}\n\n"
+        nonlocal seen_since
+        if not seen_since and initial_event.get("timeline_cursor") == since_cursor:
+            seen_since = True
         async for message in pubsub.iter_planner_events(str(planner.id)):
-            yield f"data: {message}\n\n"
+            try:
+                event = json.loads(message)
+            except json.JSONDecodeError:
+                continue
+            if branch_filter and (event.get("branch") or {}).get("active") != branch_filter:
+                continue
+            if not seen_since:
+                if event.get("timeline_cursor") == since_cursor or event.get("id") == since_cursor:
+                    seen_since = True
+                else:
+                    continue
+            yield f"data: {json.dumps(event)}\n\n"
             if await request.is_disconnected():
                 break
 
