@@ -182,6 +182,40 @@ class DNAViewerTrack(BaseModel):
     features: List[DNAViewerFeature] = Field(default_factory=list)
 
 
+class DNAViewerGuardrailTimelineEvent(BaseModel):
+    """Serialized guardrail event for viewer governance overlays."""
+
+    # purpose: surface governance guardrail events in viewer payloads
+    id: UUID
+    event_type: str
+    severity: Optional[str] = None
+    created_at: datetime
+    created_by_id: Optional[UUID]
+    details: dict[str, Any] = Field(default_factory=dict)
+
+
+class DNAViewerLineageBreadcrumb(BaseModel):
+    """Lightweight lineage descriptor for DNA asset versions."""
+
+    # purpose: provide provenance breadcrumbs for governance dashboards
+    version_id: UUID
+    version_index: int
+    created_at: datetime
+    created_by_id: Optional[UUID]
+    sequence_length: int
+    comment: Optional[str] = None
+
+
+class DNAViewerGovernanceContext(BaseModel):
+    """Governance-centric overlays emitted with viewer payloads."""
+
+    # purpose: bundle guardrail history, lineage breadcrumbs, and risk metrics
+    lineage: List[DNAViewerLineageBreadcrumb] = Field(default_factory=list)
+    guardrail_history: List[DNAViewerGuardrailTimelineEvent] = Field(default_factory=list)
+    regulatory_feature_density: Optional[float] = None
+    mitigation_playbooks: List[str] = Field(default_factory=list)
+
+
 class DNAViewerTranslation(BaseModel):
     """Translated reading frame snippet for viewer overlays."""
 
@@ -206,4 +240,5 @@ class DNAViewerPayload(BaseModel):
     guardrails: DNAAssetGuardrailHeuristics
     analytics: DNAViewerAnalytics
     diff: Optional[DNAAssetDiffResponse] = None
+    governance_context: DNAViewerGovernanceContext = Field(default_factory=DNAViewerGovernanceContext)
 

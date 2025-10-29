@@ -1166,6 +1166,114 @@ class GovernanceGuardrailSimulation(Base):
     actor = relationship("User")
 
 
+class GovernanceFreezerUnit(Base):
+    __tablename__ = "governance_freezer_units"
+
+    # purpose: model physical freezer units and governance metadata for custody oversight
+    # status: pilot
+    # depends_on: locations, teams
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    facility_code = Column(String, nullable=True)
+    location_id = Column(UUID(as_uuid=True), ForeignKey("locations.id", ondelete="SET NULL"), nullable=True)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    status = Column(String, default="active", nullable=False)
+    guardrail_config = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
+
+    location = relationship("Location")
+    team = relationship("Team")
+    compartments = relationship(
+        "GovernanceFreezerCompartment",
+        back_populates="freezer",
+        cascade="all, delete-orphan",
+        order_by="GovernanceFreezerCompartment.position_index",
+    )
+
+
+class GovernanceFreezerCompartment(Base):
+    __tablename__ = "governance_freezer_compartments"
+
+    # purpose: represent hierarchical freezer slots for custody mapping and guardrail escalation
+    # status: pilot
+    # depends_on: governance_freezer_units
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    freezer_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_freezer_units.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    parent_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_freezer_compartments.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    label = Column(String, nullable=False)
+    position_index = Column(Integer, nullable=False, default=0)
+    capacity = Column(Integer, nullable=True)
+    guardrail_thresholds = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
+
+    freezer = relationship("GovernanceFreezerUnit", back_populates="compartments")
+    parent = relationship("GovernanceFreezerCompartment", remote_side=[id], backref="children")
+    custody_logs = relationship(
+        "GovernanceSampleCustodyLog",
+        back_populates="compartment",
+        cascade="all, delete-orphan",
+        order_by="GovernanceSampleCustodyLog.performed_at.desc()",
+    )
+
+
+class GovernanceSampleCustodyLog(Base):
+    __tablename__ = "governance_sample_custody_logs"
+
+    # purpose: track freezer custody lifecycle for dna assets and planner outputs
+    # status: pilot
+    # depends_on: dna_asset_versions, governance_freezer_compartments, cloning_planner_sessions, users, teams
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_version_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_asset_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    planner_session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("cloning_planner_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    compartment_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("governance_freezer_compartments.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    custody_action = Column(String, nullable=False)
+    quantity = Column(Integer, nullable=True)
+    quantity_units = Column(String, nullable=True)
+    performed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    performed_for_team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    guardrail_flags = Column(JSON, default=list)
+    meta = Column("metadata", JSON, default=dict)
+    notes = Column(Text, nullable=True)
+    performed_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    asset_version = relationship("DNAAssetVersion", backref="custody_logs")
+    planner_session = relationship("CloningPlannerSession", backref="custody_logs")
+    compartment = relationship("GovernanceFreezerCompartment", back_populates="custody_logs")
+    actor = relationship("User", foreign_keys=[performed_by_id])
+    team = relationship("Team", foreign_keys=[performed_for_team_id])
+
+
 class ExecutionNarrativeExportAttachment(Base):
     __tablename__ = "execution_narrative_export_attachments"
 

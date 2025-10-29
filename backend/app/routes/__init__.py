@@ -43,6 +43,7 @@ modules = [
     'community',
     'governance',
     'governance_notes',
+    'sample_governance',
     'workflows',
 ]
 

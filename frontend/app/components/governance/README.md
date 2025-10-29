@@ -13,5 +13,7 @@
 - `LadderSimulationWidget`: Scientist-facing sandbox that calls the preview API using draft ladder data for scenario comparisons and surfaces persisted guardrail simulations beside ad-hoc previews.
 - `OverdueDashboard`: Operator dashboard summarising overdue ladder analytics with escalation affordances powered by governance meta payloads.
 - `GuardrailHealthDashboard`: Surfaces sanitized packaging queue telemetry, blocked export counts, and pending stage context so governance operators can monitor guardrail enforcement health without querying raw events.
+- `CustodyFreezerMap`: Visualises freezer units and compartment occupancy with guardrail badges to drive custody oversight dashboards.
+- `CustodyLedgerPanel`: Renders custody ledger timelines with lineage cues and guardrail annotations for audit triage.
 
 Each component embeds machine-readable metadata comments to satisfy Biolab documentation standards.

@@ -33,6 +33,9 @@ import type {
   GovernanceGuardrailHealthReport,
   GovernanceGuardrailHealthTotals,
   GovernanceGuardrailQueueEntry,
+  CustodyFreezerUnit,
+  CustodyLogEntry,
+  CustodyLogCreate,
 } from '../types'
 
 export interface GovernanceTemplateListParams {
@@ -236,6 +239,48 @@ export const governanceApi = {
     const response = await api.post<GovernanceBaselineVersion>(
       `/api/governance/baselines/${baselineId}/rollback`,
       payload,
+    )
+    return response.data
+  },
+  async getCustodyFreezers(params?: { team_id?: string | null }) {
+    const response = await api.get<CustodyFreezerUnit[]>(
+      '/api/governance/custody/freezers',
+      {
+        params: {
+          team_id: params?.team_id ?? undefined,
+        },
+      },
+    )
+    return response.data
+  },
+  async listCustodyLogs(params?: {
+    asset_id?: string | null
+    asset_version_id?: string | null
+    planner_session_id?: string | null
+    compartment_id?: string | null
+    limit?: number | null
+  }) {
+    const response = await api.get<CustodyLogEntry[]>(
+      '/api/governance/custody/logs',
+      {
+        params: {
+          asset_id: params?.asset_id ?? undefined,
+          asset_version_id: params?.asset_version_id ?? undefined,
+          planner_session_id: params?.planner_session_id ?? undefined,
+          compartment_id: params?.compartment_id ?? undefined,
+          limit: params?.limit ?? undefined,
+        },
+      },
+    )
+    return response.data
+  },
+  async createCustodyLog(payload: CustodyLogCreate) {
+    const response = await api.post<CustodyLogEntry>(
+      '/api/governance/custody/logs',
+      {
+        ...payload,
+        meta: payload.meta ?? {},
+      },
     )
     return response.data
   },

@@ -267,6 +267,37 @@ export interface DNAViewerTranslation {
   amino_acids: string
 }
 
+export interface DNAViewerGuardrailEvent {
+  // purpose: governance guardrail event timeline entry for DNA viewer overlays
+  // status: pilot
+  id: string
+  event_type: string
+  severity?: string | null
+  created_at: string
+  created_by_id?: string | null
+  details: Record<string, any>
+}
+
+export interface DNAViewerLineageBreadcrumb {
+  // purpose: provenance breadcrumb linking DNA versions to custody dashboards
+  // status: pilot
+  version_id: string
+  version_index: number
+  created_at: string
+  created_by_id?: string | null
+  sequence_length: number
+  comment?: string | null
+}
+
+export interface DNAViewerGovernanceContext {
+  // purpose: governance overlays appended to DNA viewer payloads
+  // status: pilot
+  lineage: DNAViewerLineageBreadcrumb[]
+  guardrail_history: DNAViewerGuardrailEvent[]
+  regulatory_feature_density?: number | null
+  mitigation_playbooks: string[]
+}
+
 export interface DNAViewerAnalytics {
   codon_usage: Record<string, number>
   gc_skew: number[]
@@ -296,6 +327,7 @@ export interface DNAViewerPayload {
   guardrails: DNAAssetGuardrailHeuristics
   analytics: DNAViewerAnalytics
   diff: DNAAssetDiff | null
+  governance_context: DNAViewerGovernanceContext
 }
 
 export interface CloningPlannerSequenceInput {
@@ -1066,6 +1098,67 @@ export interface GovernanceGuardrailHealthReport {
   totals: GovernanceGuardrailHealthTotals
   state_breakdown: Record<string, number>
   queue: GovernanceGuardrailQueueEntry[]
+}
+
+export interface CustodyCompartmentNode {
+  // purpose: represent nested freezer compartment occupancy nodes
+  // status: pilot
+  id: string
+  label: string
+  position_index: number
+  capacity: number | null
+  guardrail_thresholds: Record<string, any>
+  occupancy: number
+  guardrail_flags: string[]
+  latest_activity_at: string | null
+  children: CustodyCompartmentNode[]
+}
+
+export interface CustodyFreezerUnit {
+  // purpose: describe freezer units and top-level guardrail settings for custody dashboards
+  // status: pilot
+  id: string
+  name: string
+  status: string
+  facility_code: string | null
+  guardrail_config: Record<string, any>
+  created_at: string
+  updated_at: string
+  compartments: CustodyCompartmentNode[]
+}
+
+export interface CustodyLogEntry {
+  // purpose: custody ledger row powering governance audit timelines
+  // status: pilot
+  id: string
+  asset_version_id: string | null
+  planner_session_id: string | null
+  compartment_id: string | null
+  custody_action: string
+  quantity: number | null
+  quantity_units: string | null
+  performed_for_team_id: string | null
+  performed_by_id: string | null
+  performed_at: string
+  created_at: string
+  notes: string | null
+  guardrail_flags: string[]
+  meta: Record<string, any>
+}
+
+export interface CustodyLogCreate {
+  // purpose: custody ledger creation payload for governance operators
+  // status: pilot
+  asset_version_id?: string | null
+  planner_session_id?: string | null
+  compartment_id?: string | null
+  custody_action: string
+  quantity?: number | null
+  quantity_units?: string | null
+  performed_for_team_id?: string | null
+  performed_at?: string | null
+  notes?: string | null
+  meta?: Record<string, any>
 }
 
 export interface BaselineLifecycleLabel {

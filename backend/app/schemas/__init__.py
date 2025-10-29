@@ -23,6 +23,9 @@ from .dna_assets import (
     DNAAssetVersionCreate,
     DNAAssetVersionOut,
     DNAViewerAnalytics,
+    DNAViewerGovernanceContext,
+    DNAViewerGuardrailTimelineEvent,
+    DNAViewerLineageBreadcrumb,
     DNAViewerFeature,
     DNAViewerPayload,
     DNAViewerTrack,
@@ -38,6 +41,12 @@ from .sequence_toolkit import (
     RestrictionDigestConfig,
     RestrictionDigestResponse,
     SequenceToolkitProfile,
+)
+from .sample_governance import (
+    FreezerCompartmentNode,
+    FreezerUnitTopology,
+    SampleCustodyLogCreate,
+    SampleCustodyLogOut,
 )
 
 
