@@ -2792,6 +2792,11 @@ class CloningPlannerStageRecordOut(BaseModel):
     started_at: datetime | None = None
     completed_at: datetime | None = None
     error: str | None = None
+    branch_id: UUID | None = None
+    checkpoint_key: str | None = None
+    checkpoint_payload: dict[str, Any]
+    guardrail_transition: dict[str, Any]
+    timeline_position: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -2837,6 +2842,9 @@ class CloningPlannerSessionOut(BaseModel):
     current_step: str | None = None
     celery_task_id: str | None = None
     last_error: str | None = None
+    branch_state: dict[str, Any]
+    active_branch_id: UUID | None = None
+    timeline_cursor: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None

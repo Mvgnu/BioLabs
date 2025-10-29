@@ -362,6 +362,11 @@ export interface CloningPlannerStageRecord {
   started_at?: string | null
   completed_at?: string | null
   error?: string | null
+  branch_id?: string | null
+  checkpoint_key?: string | null
+  checkpoint_payload: Record<string, any>
+  guardrail_transition: Record<string, any>
+  timeline_position?: string | null
   created_at?: string | null
   updated_at?: string | null
 }
@@ -401,6 +406,9 @@ export interface CloningPlannerSession {
   current_step?: string | null
   celery_task_id?: string | null
   last_error?: string | null
+  branch_state: Record<string, any>
+  active_branch_id?: string | null
+  timeline_cursor?: string | null
   created_at?: string | null
   updated_at?: string | null
   completed_at?: string | null
@@ -437,7 +445,12 @@ export interface CloningPlannerEventPayload {
   current_step?: string | null
   guardrail_state?: Record<string, any>
   guardrail_gate?: Record<string, any>
+  guardrail_transition?: Record<string, any>
   payload?: Record<string, any>
+  branch?: Record<string, any>
+  checkpoint?: Record<string, any>
+  timeline_cursor?: string | null
+  id?: string
   timestamp: string
 }
 

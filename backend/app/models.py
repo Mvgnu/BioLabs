@@ -1616,6 +1616,9 @@ class CloningPlannerSession(Base):
     current_step = Column(String)
     celery_task_id = Column(String)
     last_error = Column(Text)
+    branch_state = Column(JSON, default=dict, nullable=False)
+    active_branch_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    timeline_cursor = Column(String)
     created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
     updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc), nullable=False)
     completed_at = Column(DateTime)
@@ -1662,6 +1665,11 @@ class CloningPlannerStageRecord(Base):
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
     error = Column(Text)
+    branch_id = Column(UUID(as_uuid=True), index=True)
+    checkpoint_key = Column(String)
+    checkpoint_payload = Column(JSON, default=dict, nullable=False)
+    guardrail_transition = Column(JSON, default=dict, nullable=False)
+    timeline_position = Column(String)
     created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
     updated_at = Column(
         DateTime,

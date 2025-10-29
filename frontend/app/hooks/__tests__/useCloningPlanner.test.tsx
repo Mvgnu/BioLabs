@@ -71,6 +71,10 @@ const sessionFixture = (): CloningPlannerSession => ({
   qc_reports: { reports: [] },
   inventory_reservations: [],
   guardrail_state: { primers: { primer_state: 'review' } },
+  guardrail_gate: { active: false, reasons: [] },
+  branch_state: { branches: { 'branch-main': { id: 'branch-main', label: 'main' } }, order: ['branch-main'] },
+  active_branch_id: 'branch-main',
+  timeline_cursor: 'cursor-initial',
   stage_timings: {
     intake: { status: 'intake_recorded', completed_at: '2024-01-01T00:00:00.000Z' },
     primers: { status: 'primers_running', retries: 0 },

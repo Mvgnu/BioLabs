@@ -29,6 +29,9 @@ const sessionFixture = (): CloningPlannerSession => ({
     qc: { qc_state: 'review', breaches: [{ metric: 'snr', value: 9.4 }], metadata_tags: [] },
   },
   guardrail_gate: { active: false, reasons: [] },
+  branch_state: { branches: { 'branch-main': { id: 'branch-main', label: 'main' } }, order: ['branch-main'] },
+  active_branch_id: 'branch-main',
+  timeline_cursor: 'cursor-1',
   stage_timings: {
     primers: { status: 'primers_complete', retries: 1 },
     restriction: { status: 'restriction_running' },
@@ -55,6 +58,11 @@ const sessionFixture = (): CloningPlannerSession => ({
       started_at: null,
       completed_at: '2024-01-01T00:00:00.000Z',
       error: null,
+      branch_id: 'branch-main',
+      checkpoint_key: 'primers',
+      checkpoint_payload: { status: 'primers_complete', branch_id: 'branch-main' },
+      guardrail_transition: { current: { active: false, reasons: [] }, previous: { active: false, reasons: [] } },
+      timeline_position: 'cursor-1',
       created_at: '2024-01-01T00:00:00.000Z',
       updated_at: '2024-01-01T00:00:00.000Z',
     },
@@ -97,6 +105,10 @@ const createHookReturn = () => {
         current_step: 'restriction',
         payload: { stage: 'primers' },
         guardrail_gate: session.guardrail_gate,
+        guardrail_transition: { current: { active: false, reasons: [] }, previous: { active: false, reasons: [] } },
+        branch: { active: 'branch-main' },
+        timeline_cursor: 'cursor-1',
+        id: 'cursor-1',
         timestamp: '2024-01-01T00:00:00.000Z',
       },
     ],
@@ -129,7 +141,7 @@ describe('PlannerWizard', () => {
     expect(screen.getByText('Cloning planner')).toBeTruthy()
     expect(screen.getAllByText('Primer design').length).toBeGreaterThan(0)
     expect(screen.getByText(/Planner guardrails require review before finalization/)).toBeTruthy()
-    expect(screen.getByTestId('planner-event-log')).toBeTruthy()
+    expect(screen.getByTestId('planner-timeline')).toBeTruthy()
   })
 
   it('submits stage forms with expected payloads', () => {
@@ -169,6 +181,7 @@ describe('PlannerWizard', () => {
       ...session.stage_timings,
       primers: { status: 'primers_guardrail_hold' },
     }
+    session.branch_state = { branches: { 'branch-main': { id: 'branch-main', label: 'main' } }, order: ['branch-main'] }
     const runStage = vi.fn()
     mockedUseCloningPlanner.mockReturnValue({
       data: session,
