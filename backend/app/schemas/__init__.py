@@ -2748,6 +2748,48 @@ class CloningPlannerFinalizeRequest(BaseModel):
     guardrail_state: dict[str, Any] | None = None
 
 
+class CloningPlannerStageRecordOut(BaseModel):
+    """Response schema for durable cloning planner stage records."""
+
+    # purpose: expose checkpoint lineage, guardrail snapshots, and retry metadata
+    id: UUID
+    stage: str
+    attempt: int
+    retry_count: int
+    status: str
+    task_id: str | None = None
+    payload_path: str | None = None
+    payload_metadata: dict[str, Any]
+    guardrail_snapshot: dict[str, Any]
+    metrics: dict[str, Any]
+    review_state: dict[str, Any]
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class CloningPlannerQCArtifactOut(BaseModel):
+    """Response schema for QC artifacts stored for cloning planner sessions."""
+
+    # purpose: surface chromatogram storage metadata, thresholds, and reviewer decisions
+    id: UUID
+    artifact_name: str | None = None
+    sample_id: str | None = None
+    trace_path: str | None = None
+    storage_path: str | None = None
+    metrics: dict[str, Any]
+    thresholds: dict[str, Any]
+    stage_record_id: UUID | None = None
+    reviewer_id: UUID | None = None
+    reviewer_decision: str | None = None
+    reviewer_notes: str | None = None
+    reviewed_at: datetime | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class CloningPlannerSessionOut(BaseModel):
     """Response schema for cloning planner sessions."""
 
@@ -2770,6 +2812,8 @@ class CloningPlannerSessionOut(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     completed_at: datetime | None = None
+    stage_history: list[CloningPlannerStageRecordOut]
+    qc_artifacts: list[CloningPlannerQCArtifactOut]
 
 
 EquipmentTelemetryChannel.model_rebuild()

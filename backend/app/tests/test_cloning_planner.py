@@ -6,9 +6,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import uuid
 
-from app import models
+import pytest
+from typing import Any
+
+from app import models, pubsub
 from app.tests.conftest import TestingSessionLocal
 from app.tests.test_template_lifecycle import admin_headers
 
@@ -36,6 +41,9 @@ def test_create_cloning_planner_session_persists_inputs(client):
     assert body["assembly_strategy"] == "gibson"
     assert body["status"] == "ready_for_finalize"
     assert body["input_sequences"][0]["metadata"]["length"] == 120
+    assert isinstance(body["stage_history"], list)
+    assert body["stage_history"], body["stage_history"]
+    assert isinstance(body["qc_artifacts"], list)
     session_id = uuid.UUID(body["id"])
 
     db = TestingSessionLocal()
@@ -47,6 +55,8 @@ def test_create_cloning_planner_session_persists_inputs(client):
         assert record.stage_timings["intake"]["status"] == "intake_recorded"
         assert "primers" in record.stage_timings
         assert record.primer_set["summary"]["primer_count"] >= 1
+        assert record.stage_history
+        assert any(entry.stage == "primers" for entry in record.stage_history)
     finally:
         db.close()
 
@@ -71,6 +81,7 @@ def test_record_cloning_planner_stage_updates_payload(client):
     tags = updated["guardrail_state"]["primers"]["metadata_tags"]
     assert tags
     assert any(tag.startswith("primer_source:") for tag in tags)
+    assert any(entry["stage"] == "primers" for entry in updated["stage_history"])
 
 
 def test_finalize_cloning_planner_session_sets_completion(client):
@@ -94,6 +105,7 @@ def test_finalize_cloning_planner_session_sets_completion(client):
     assert data["guardrail_state"]["qc"]["qc_checks"] >= 1
     assert "buffers" in data["guardrail_state"]["restriction"]
     assert "ligation_profiles" in data["guardrail_state"]["assembly"]
+    assert any(entry["status"] == "finalized" for entry in data["stage_history"] if entry["stage"] == "finalize")
 
 
 def test_resume_cloning_planner_session_requeues_stages(client):
@@ -140,6 +152,11 @@ def test_qc_guardrail_blocked_state_exposed(client):
     qc_data = qc_resp.json()
     assert qc_data["status"] == "qc_guardrail_blocked"
     assert qc_data["guardrail_state"]["qc"]["breaches"], qc_data["guardrail_state"]["qc"]
+    assert qc_data["qc_artifacts"]
+    first_artifact = qc_data["qc_artifacts"][0]
+    assert first_artifact["metrics"]["signal_to_noise"] < 15
+    assert first_artifact["stage_record_id"]
+    assert any(entry["stage"] == "qc" for entry in qc_data["stage_history"])
 
 
 def test_cancel_cloning_planner_session_marks_checkpoint(client):
@@ -161,3 +178,37 @@ def test_cancel_cloning_planner_session_marks_checkpoint(client):
     cancel_data = cancel_resp.json()
     assert cancel_data["status"] == "cancelled"
     assert cancel_data["stage_timings"][cancel_data["current_step"]]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_planner_event_published_on_stage_update(client):
+    headers, body = _create_session(client)
+    session_id = body["id"]
+    redis = await pubsub.get_redis()
+    channel = f"planner:{session_id}"
+    listener = redis.pubsub()
+    await listener.subscribe(channel)
+    try:
+        stage_payload = {"payload": {"target_tm": 64}}
+        update_resp = client.post(
+            f"/api/cloning-planner/sessions/{session_id}/steps/primers",
+            json=stage_payload,
+            headers=headers,
+        )
+        assert update_resp.status_code == 200
+
+        async def _receive_message() -> dict[str, Any]:
+            while True:
+                message = await listener.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                if message:
+                    return message
+                await asyncio.sleep(0.05)
+
+        raw = await asyncio.wait_for(_receive_message(), timeout=5.0)
+        assert raw["type"] == "message"
+        event = json.loads(raw["data"])  # type: ignore[arg-type]
+        assert event["type"] == "stage_completed"
+        assert event["payload"]["stage"] == "primers"
+    finally:
+        await listener.unsubscribe(channel)
+        await listener.aclose()

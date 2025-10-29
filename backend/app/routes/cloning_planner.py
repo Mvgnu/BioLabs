@@ -8,11 +8,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from uuid import UUID
+import json
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from .. import models, schemas
+from .. import models, schemas, pubsub
 from ..auth import get_current_user
 from ..database import get_db
 from ..services import cloning_planner
@@ -64,6 +66,45 @@ def get_cloning_planner_session(
     if planner.created_by_id not in {None, user.id} and not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access to planner session denied")
     return schemas.CloningPlannerSessionOut(**cloning_planner.serialize_session(planner))
+
+
+@router.get("/sessions/{session_id}/events", response_class=StreamingResponse)
+async def stream_cloning_planner_events(
+    session_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> StreamingResponse:
+    """Stream cloning planner orchestration events for the UI."""
+
+    # purpose: deliver real-time planner progress without polling
+    planner = (
+        db.query(models.CloningPlannerSession)
+        .filter(models.CloningPlannerSession.id == session_id)
+        .first()
+    )
+    if not planner:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Planner session not found")
+    if planner.created_by_id not in {None, user.id} and not user.is_admin:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access to planner session denied")
+    snapshot = cloning_planner.serialize_session(planner)
+
+    async def event_iterator():
+        initial_event = {
+            "type": "snapshot",
+            "session_id": str(planner.id),
+            "status": snapshot["status"],
+            "current_step": snapshot.get("current_step"),
+            "guardrail_state": snapshot.get("guardrail_state"),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        yield f"data: {json.dumps(initial_event)}\n\n"
+        async for message in pubsub.iter_planner_events(str(planner.id)):
+            yield f"data: {message}\n\n"
+            if await request.is_disconnected():
+                break
+
+    return StreamingResponse(event_iterator(), media_type="text/event-stream")
 
 
 @router.post("/sessions/{session_id}/resume", response_model=schemas.CloningPlannerSessionOut)
