@@ -45,10 +45,12 @@ from .sequence_toolkit import (
 from .sample_governance import (
     CustodyEscalation,
     CustodyEscalationAck,
+    CustodyProtocolExecution,
     FreezerCompartmentNode,
     FreezerUnitTopology,
     FreezerFault,
     FreezerFaultCreate,
+    ProtocolExecutionContext,
     SampleCustodyLogCreate,
     SampleCustodyLogOut,
 )

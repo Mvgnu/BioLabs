@@ -66,6 +66,7 @@ export const useCreateCustodyLog = () => {
       qc.invalidateQueries({ queryKey: ['governance', 'custody', 'freezers'] })
       qc.invalidateQueries({ queryKey: ['governance', 'custody', 'escalations'] })
       qc.invalidateQueries({ queryKey: ['governance', 'custody', 'faults'] })
+      qc.invalidateQueries({ queryKey: ['governance', 'custody', 'protocols'] })
     },
   })
 }
@@ -100,12 +101,43 @@ export const useCustodyEscalations = (filters?: CustodyEscalationFilters) => {
   })
 }
 
+export interface CustodyProtocolFilters {
+  status?: string[] | null
+  hasOpenDrill?: boolean | null
+  severity?: string | null
+  limit?: number | null
+}
+
+export const useCustodyProtocols = (filters?: CustodyProtocolFilters) => {
+  const key = [
+    'governance',
+    'custody',
+    'protocols',
+    filters?.status ? filters.status.join(',') : null,
+    filters?.hasOpenDrill ?? null,
+    filters?.severity ?? null,
+    filters?.limit ?? null,
+  ]
+  return useQuery({
+    queryKey: key,
+    queryFn: () =>
+      governanceApi.listCustodyProtocols({
+        status: filters?.status ?? undefined,
+        has_open_drill: filters?.hasOpenDrill ?? undefined,
+        severity: filters?.severity ?? undefined,
+        limit: filters?.limit ?? undefined,
+      }),
+    staleTime: 15 * 1000,
+  })
+}
+
 export const useAcknowledgeCustodyEscalation = () => {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (escalationId: string) => governanceApi.acknowledgeCustodyEscalation(escalationId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['governance', 'custody', 'escalations'] })
+      qc.invalidateQueries({ queryKey: ['governance', 'custody', 'protocols'] })
     },
   })
 }
@@ -116,6 +148,7 @@ export const useResolveCustodyEscalation = () => {
     mutationFn: (escalationId: string) => governanceApi.resolveCustodyEscalation(escalationId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['governance', 'custody', 'escalations'] })
+      qc.invalidateQueries({ queryKey: ['governance', 'custody', 'protocols'] })
     },
   })
 }
@@ -126,6 +159,7 @@ export const useTriggerCustodyEscalationNotification = () => {
     mutationFn: (escalationId: string) => governanceApi.notifyCustodyEscalation(escalationId),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['governance', 'custody', 'escalations'] })
+      qc.invalidateQueries({ queryKey: ['governance', 'custody', 'protocols'] })
     },
   })
 }

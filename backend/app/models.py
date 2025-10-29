@@ -156,6 +156,10 @@ class ProtocolExecution(Base):
     status = Column(String, default="pending")
     params = Column(JSON, default={})
     result = Column(JSON, default={})
+    # guardrail_status: conveys aggregated custody gating state (stable|alert|halted)
+    guardrail_status = Column(String, default="idle")
+    # guardrail_state: structured guardrail counters, drill snapshots, qc flags
+    guardrail_state = Column(JSON, default={})
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
 

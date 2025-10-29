@@ -11,6 +11,7 @@ import {
   useCustodyEscalations,
   useCustodyFreezers,
   useCustodyLogs,
+  useCustodyProtocols,
   useFreezerFaults,
   useResolveCustodyEscalation,
   useTriggerCustodyEscalationNotification,
@@ -28,6 +29,7 @@ export default function GovernanceOverdueDashboardPage() {
   const custodyFreezersQuery = useCustodyFreezers()
   const custodyLogsQuery = useCustodyLogs({ limit: 25 })
   const custodyEscalationsQuery = useCustodyEscalations()
+  const custodyProtocolsQuery = useCustodyProtocols({ limit: 10 })
   const freezerFaultsQuery = useFreezerFaults()
   const acknowledgeEscalation = useAcknowledgeCustodyEscalation()
   const resolveEscalation = useResolveCustodyEscalation()
@@ -87,8 +89,11 @@ export default function GovernanceOverdueDashboardPage() {
         faults={freezerFaultsQuery.data}
         isEscalationLoading={custodyEscalationsQuery.isLoading}
         isFaultLoading={freezerFaultsQuery.isLoading}
+        protocols={custodyProtocolsQuery.data}
+        isProtocolLoading={custodyProtocolsQuery.isLoading}
         escalationError={custodyEscalationsQuery.error as Error | null}
         faultError={freezerFaultsQuery.error as Error | null}
+        protocolError={custodyProtocolsQuery.error as Error | null}
         onAcknowledge={(id) => acknowledgeEscalation.mutate(id)}
         onResolve={(id) => resolveEscalation.mutate(id)}
         onNotify={(id) => notifyEscalation.mutate(id)}

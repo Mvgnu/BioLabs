@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from app import models, notify
 from app.auth import create_access_token
+from app.services import sample_governance as governance_service
 from app.tests.conftest import TestingSessionLocal
 
 
@@ -146,6 +148,57 @@ def test_custody_escalation_and_fault_flow(client):
     context = escalation_payload[0]["protocol_execution"]
     assert context and context["id"] == str(execution_id)
 
+    protocols = client.get(
+        "/api/governance/custody/protocols",
+        headers=headers,
+    )
+    assert protocols.status_code == 200
+    protocol_rows = protocols.json()
+    assert len(protocol_rows) == 1
+    snapshot = protocol_rows[0]
+    assert snapshot["guardrail_status"] == "halted"
+    assert snapshot["open_escalations"] == 1
+    overlays = snapshot["event_overlays"]
+    assert str(event_id) in overlays
+    overlay = overlays[str(event_id)]
+    assert str(escalation_id) in overlay["escalation_ids"]
+    assert overlay["mitigation_checklist"], "expected mitigation checklist entries"
+
+    drill_session = TestingSessionLocal()
+    try:
+        escalation_row = drill_session.get(
+            models.GovernanceCustodyEscalation, uuid.UUID(escalation_id)
+        )
+        assert escalation_row is not None
+        drill_meta = dict(escalation_row.meta or {})
+        drill_meta["recovery_drill_open"] = True
+        escalation_row.meta = drill_meta
+        escalation_row.updated_at = datetime.now(timezone.utc)
+        drill_session.add(escalation_row)
+        drill_session.commit()
+        governance_service._sync_protocol_escalation_state(
+            drill_session, escalation_row
+        )
+        drill_session.commit()
+    finally:
+        drill_session.close()
+
+    drill_filtered = client.get(
+        "/api/governance/custody/protocols",
+        params={"has_open_drill": True},
+        headers=headers,
+    )
+    assert drill_filtered.status_code == 200
+    assert drill_filtered.json()[0]["open_drill_count"] >= 1
+
+    critical_filtered = client.get(
+        "/api/governance/custody/protocols",
+        params={"severity": "critical"},
+        headers=headers,
+    )
+    assert critical_filtered.status_code == 200
+    assert critical_filtered.json()[0]["guardrail_status"] == "halted"
+
     # Notifications are issued automatically on escalation creation
     assert any("Custody escalation" in subject for _, subject, _ in notify.EMAIL_OUTBOX)
 
@@ -175,6 +228,15 @@ def test_custody_escalation_and_fault_flow(client):
         assert escalation_state[str(escalation_id)]["status"] == "resolved"
     finally:
         db_check.close()
+
+    post_resolution = client.get(
+        "/api/governance/custody/protocols",
+        headers=headers,
+    )
+    assert post_resolution.status_code == 200
+    resolved_snapshot = post_resolution.json()[0]
+    assert resolved_snapshot["open_escalations"] == 0
+    assert resolved_snapshot["guardrail_status"] in {"stabilizing", "stable"}
 
     faults = client.get("/api/governance/custody/faults", headers=headers)
     assert faults.status_code == 200
