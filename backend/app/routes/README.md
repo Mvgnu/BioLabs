@@ -52,6 +52,7 @@
 - `GET /api/governance/custody/logs` surfaces custody ledger entries filtered by asset, planner session, protocol execution, execution event, or compartment for audit timelines.
   - `POST /api/governance/custody/logs` records guardrail-evaluated custody movements, automatically flagging lineage or capacity concerns.
 - `GET /api/governance/custody/escalations` exposes SLA-tracked escalation queue entries with severity, due times, guardrail metadata, and protocol execution context for operators.
+- `GET /api/governance/custody/protocols` streams guardrail snapshots for protocol executions, including escalation overlays, drill counts, QC backpressure, and supports filtering by status, severity, drill state, team, template, or execution identifiers.
   - `POST /api/governance/custody/escalations/{id}/acknowledge|notify|resolve` manages escalation lifecycle actions, dispatching notifications and stamping audit timestamps.
   - `GET /api/governance/custody/faults` lists freezer incident telemetry, while `POST /api/governance/custody/freezers/{freezer_id}/faults` and `/faults/{fault_id}/resolve` enable manual incident capture and closure.
-- **RBAC**: Limited to administrators while custody guardrail policies stabilize; future work will introduce delegated operator roles.
+- **RBAC**: Limited to administrators while custody guardrail policies stabilize; team-scoped queries enforce membership checks when filtering by team identifiers.

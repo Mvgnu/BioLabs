@@ -1213,6 +1213,7 @@ export interface CustodyProtocolExecution {
   guardrail_state: Record<string, any>
   template_id: string | null
   template_name: string | null
+  template_team_id: string | null
   run_by: string | null
   open_escalations: number
   open_drill_count: number

@@ -316,6 +316,9 @@ export const governanceApi = {
     status?: string[] | null
     has_open_drill?: boolean
     severity?: string | null
+    team_id?: string | null
+    template_id?: string | null
+    execution_ids?: string[] | null
     limit?: number | null
   }) {
     const response = await api.get<CustodyProtocolExecution[]>(
@@ -325,6 +328,9 @@ export const governanceApi = {
           status: params?.status ?? undefined,
           has_open_drill: params?.has_open_drill ?? undefined,
           severity: params?.severity ?? undefined,
+          team_id: params?.team_id ?? undefined,
+          template_id: params?.template_id ?? undefined,
+          execution_id: params?.execution_ids ?? undefined,
           limit: params?.limit ?? undefined,
         },
       },

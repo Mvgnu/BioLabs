@@ -12,6 +12,7 @@ from app.tests.conftest import TestingSessionLocal
 def _admin_headers() -> tuple[dict[str, str], uuid.UUID]:
     email = f"custody-admin-{uuid.uuid4()}@example.com"
     token = create_access_token({"sub": email})
+    template_id: uuid.UUID | None = None
     db = TestingSessionLocal()
     try:
         user = models.User(email=email, hashed_password="placeholder", is_admin=True)
@@ -92,6 +93,7 @@ def test_custody_escalation_and_fault_flow(client):
         )
         db.add(template)
         db.flush()
+        template_id = template.id
         execution = models.ProtocolExecution(
             template_id=template.id,
             run_by=admin_id,
@@ -158,6 +160,8 @@ def test_custody_escalation_and_fault_flow(client):
     snapshot = protocol_rows[0]
     assert snapshot["guardrail_status"] == "halted"
     assert snapshot["open_escalations"] == 1
+    assert snapshot["template_team_id"] == str(team_id)
+    assert snapshot["qc_backpressure"] is True
     overlays = snapshot["event_overlays"]
     assert str(event_id) in overlays
     overlay = overlays[str(event_id)]
@@ -199,6 +203,39 @@ def test_custody_escalation_and_fault_flow(client):
     assert critical_filtered.status_code == 200
     assert critical_filtered.json()[0]["guardrail_status"] == "halted"
 
+    team_filtered = client.get(
+        "/api/governance/custody/protocols",
+        params={"team_id": str(team_id)},
+        headers=headers,
+    )
+    assert team_filtered.status_code == 200
+    assert len(team_filtered.json()) == 1
+
+    unmatched_team = client.get(
+        "/api/governance/custody/protocols",
+        params={"team_id": str(uuid.uuid4())},
+        headers=headers,
+    )
+    assert unmatched_team.status_code == 200
+    assert unmatched_team.json() == []
+
+    assert template_id is not None
+    template_filtered = client.get(
+        "/api/governance/custody/protocols",
+        params={"template_id": str(template_id)},
+        headers=headers,
+    )
+    assert template_filtered.status_code == 200
+    assert len(template_filtered.json()) == 1
+
+    execution_filtered = client.get(
+        "/api/governance/custody/protocols",
+        params={"execution_id": [str(execution_id)]},
+        headers=headers,
+    )
+    assert execution_filtered.status_code == 200
+    assert len(execution_filtered.json()) == 1
+
     # Notifications are issued automatically on escalation creation
     assert any("Custody escalation" in subject for _, subject, _ in notify.EMAIL_OUTBOX)
 
@@ -209,6 +246,15 @@ def test_custody_escalation_and_fault_flow(client):
     assert ack.status_code == 200
     ack_payload = ack.json()
     assert ack_payload["status"] == "acknowledged"
+
+    ack_snapshot = client.get(
+        "/api/governance/custody/protocols",
+        headers=headers,
+    )
+    assert ack_snapshot.status_code == 200
+    ack_state = ack_snapshot.json()[0]
+    assert ack_state["open_escalations"] == 1
+    assert ack_state["guardrail_status"] == "halted"
 
     resolved = client.post(
         f"/api/governance/custody/escalations/{escalation_id}/resolve",

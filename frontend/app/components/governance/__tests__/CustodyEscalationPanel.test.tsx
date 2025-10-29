@@ -66,6 +66,7 @@ const buildProtocolSnapshot = (
   guardrail_state: { last_synced_at: new Date().toISOString() },
   template_id: 'tpl-1',
   template_name: 'QC workflow',
+  template_team_id: 'team-1',
   run_by: 'user-1',
   open_escalations: 1,
   open_drill_count: 1,
@@ -141,5 +142,6 @@ describe('CustodyEscalationPanel', () => {
     expect(screen.getAllByText(/protocol guardrail timeline/i).length).toBeGreaterThan(0)
     expect(screen.getByText(/review sop guidance/i)).toBeTruthy()
     expect(screen.getAllByText(/recovery drill/i).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/1 open/i).length).toBeGreaterThan(0)
   })
 })
