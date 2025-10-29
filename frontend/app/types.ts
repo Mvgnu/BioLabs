@@ -237,6 +237,12 @@ export interface DNAAssetDiff {
   gc_delta: number
 }
 
+export interface DNAAnnotationSegment {
+  start: number
+  end: number
+  strand: number | null
+}
+
 export interface DNAViewerFeature {
   label: string
   feature_type: string
@@ -245,6 +251,8 @@ export interface DNAViewerFeature {
   strand: number | null
   qualifiers: Record<string, any>
   guardrail_badges: string[]
+  segments: DNAAnnotationSegment[]
+  provenance_tags: string[]
 }
 
 export interface DNAViewerTrack {
@@ -259,6 +267,12 @@ export interface DNAViewerTranslation {
   amino_acids: string
 }
 
+export interface DNAViewerAnalytics {
+  codon_usage: Record<string, number>
+  gc_skew: number[]
+  thermodynamic_risk: Record<string, any>
+}
+
 export interface DNAViewerPayload {
   asset: DNAAssetSummary
   version: DNAAssetVersion
@@ -268,6 +282,7 @@ export interface DNAViewerPayload {
   translations: DNAViewerTranslation[]
   kinetics_summary: DNAKineticsSummary
   guardrails: DNAAssetGuardrailHeuristics
+  analytics: DNAViewerAnalytics
   diff: DNAAssetDiff | null
 }
 

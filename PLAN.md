@@ -16,6 +16,7 @@
 - Added login and register pages with auth token handling
 - Built inventory listing and creation UI
 - Field definition management UI
+- Importer provenance analytics & viewer overlay expansion (2025-07-10)
 
 - Improve validation in dynamic forms and implement item editing
 - Integrated file uploads and relationship graphs in the frontend

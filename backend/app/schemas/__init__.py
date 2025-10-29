@@ -12,6 +12,7 @@ from uuid import UUID
 from .dna_assets import (
     DNAAnnotationOut,
     DNAAnnotationPayload,
+    DNAAnnotationSegment,
     DNAAssetCreate,
     DNAAssetDiffResponse,
     DNAAssetGovernanceUpdate,
@@ -21,6 +22,7 @@ from .dna_assets import (
     DNAAssetSummary,
     DNAAssetVersionCreate,
     DNAAssetVersionOut,
+    DNAViewerAnalytics,
     DNAViewerFeature,
     DNAViewerPayload,
     DNAViewerTrack,

@@ -58,6 +58,10 @@ describe('useDNAViewer', () => {
             end: 30,
             strand: 1,
             qualifiers: {},
+            segments: [
+              { start: 1, end: 30, strand: 1 },
+            ],
+            provenance_tags: ['cds'],
           },
         ],
         kinetics_summary: {
@@ -87,6 +91,8 @@ describe('useDNAViewer', () => {
               strand: 1,
               qualifiers: {},
               guardrail_badges: [],
+              segments: [{ start: 1, end: 30, strand: 1 }],
+              provenance_tags: ['cds'],
             },
           ],
         },
@@ -102,6 +108,11 @@ describe('useDNAViewer', () => {
         primers: { primer_state: 'ok' },
         restriction: { restriction_state: 'ok' },
         assembly: { assembly_state: 'ok' },
+      },
+      analytics: {
+        codon_usage: { ATG: 1 },
+        gc_skew: [0.1],
+        thermodynamic_risk: { overall_state: 'ok' },
       },
       diff: null,
     }

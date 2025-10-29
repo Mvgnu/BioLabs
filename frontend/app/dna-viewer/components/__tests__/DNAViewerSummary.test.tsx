@@ -37,6 +37,8 @@ const samplePayload = (): DNAViewerPayload => ({
         end: 30,
         strand: 1,
         qualifiers: {},
+        segments: [{ start: 1, end: 30, strand: 1 }],
+        provenance_tags: ['cds'],
       },
     ],
     kinetics_summary: {
@@ -66,6 +68,8 @@ const samplePayload = (): DNAViewerPayload => ({
           strand: 1,
           qualifiers: {},
           guardrail_badges: ['primer-review', 'primer-tag:high_tm'],
+          segments: [{ start: 1, end: 30, strand: 1 }],
+          provenance_tags: ['cds'],
         },
       ],
     },
@@ -80,6 +84,8 @@ const samplePayload = (): DNAViewerPayload => ({
           strand: null,
           qualifiers: { primer_state: 'review' },
           guardrail_badges: ['review'],
+          segments: [{ start: 1, end: 60, strand: null }],
+          provenance_tags: ['guardrail.primer'],
         },
       ],
     },
@@ -97,6 +103,11 @@ const samplePayload = (): DNAViewerPayload => ({
     primers: { primer_state: 'review' },
     restriction: { restriction_state: 'ok' },
     assembly: { assembly_state: 'ok' },
+  },
+  analytics: {
+    codon_usage: { ATG: 0.5, TTT: 0.5 },
+    gc_skew: [0.2, -0.1],
+    thermodynamic_risk: { overall_state: 'review', homopolymers: [] },
   },
   diff: {
     from_version: {
@@ -154,5 +165,6 @@ describe('DNAViewerSummary', () => {
     expect(screen.getByText(/Version diff/)).toBeTruthy()
     expect(screen.getByText('Substitutions')).toBeTruthy()
     expect(screen.getByText('2')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /analytics overlays/i })).toBeTruthy()
   })
 })

@@ -13,6 +13,15 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class DNAAnnotationSegment(BaseModel):
+    """Segment for annotations spanning multiple intervals."""
+
+    # purpose: represent joined CDS/regulatory spans for viewer overlays
+    start: int
+    end: int
+    strand: Optional[int] = None
+
+
 class DNAAnnotationPayload(BaseModel):
     """Annotation descriptor used during ingestion and serialization."""
 
@@ -23,6 +32,8 @@ class DNAAnnotationPayload(BaseModel):
     end: int
     strand: Optional[int] = None
     qualifiers: dict[str, Any] = Field(default_factory=dict)
+    segments: List[DNAAnnotationSegment] = Field(default_factory=list)
+    provenance_tags: List[str] = Field(default_factory=list)
 
     model_config = {
         "populate_by_name": True,
@@ -147,6 +158,17 @@ class DNAViewerFeature(BaseModel):
     strand: Optional[int] = None
     qualifiers: dict[str, Any] = Field(default_factory=dict)
     guardrail_badges: List[str] = Field(default_factory=list)
+    segments: List[DNAAnnotationSegment] = Field(default_factory=list)
+    provenance_tags: List[str] = Field(default_factory=list)
+
+
+class DNAViewerAnalytics(BaseModel):
+    """Aggregated analytics used for viewer overlays."""
+
+    # purpose: supply scientists with codon, GC, and thermodynamic overlays
+    codon_usage: dict[str, float] = Field(default_factory=dict)
+    gc_skew: List[float] = Field(default_factory=list)
+    thermodynamic_risk: dict[str, Any] = Field(default_factory=dict)
 
 
 class DNAViewerTrack(BaseModel):
@@ -179,5 +201,6 @@ class DNAViewerPayload(BaseModel):
     translations: List[DNAViewerTranslation] = Field(default_factory=list)
     kinetics_summary: DNAAssetKineticsSummary
     guardrails: DNAAssetGuardrailHeuristics
+    analytics: DNAViewerAnalytics
     diff: Optional[DNAAssetDiffResponse] = None
 
