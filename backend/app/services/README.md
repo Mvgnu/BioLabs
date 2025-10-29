@@ -6,7 +6,7 @@ This package contains reusable service-layer helpers shared across FastAPI route
 - `cloning_planner.py` — multi-stage cloning planner orchestration covering primer design, restriction analysis, assembly planning, QC ingestion, resumable Celery checkpoints, guardrail-aware finalization payloads, **durable stage history records persisted to `cloning_planner_stage_records`, QC artifact lineage, and Redis-backed progress events for streaming UIs**.
 - `sequence_toolkit.py` — deterministic primer, restriction, assembly, and QC utilities reused by cloning planner and DNA asset flows.
 - `qc_ingestion.py` — chromatogram normalisation, signal-to-noise heuristics, guardrail breach detection shared across planner QC gating and downstream analytics, **with durable chromatogram storage, reviewer decisions, and linkage to planner stage history**.
-- `sample_governance.py` — freezer topology and custody orchestration providing guardrail-aware ledger creation, occupancy analytics, SLA-tracked escalation queues, automated notification dispatch, and freezer fault modeling for governance operators.
+- `sample_governance.py` — freezer topology and custody orchestration providing guardrail-aware ledger creation, occupancy analytics, SLA-tracked escalation queues, automated notification dispatch, freezer fault modeling, and protocol execution linkage so custody escalations and ledger events annotate experiment lifecycles in real time.
 
 ## sequence_toolkit.py
 

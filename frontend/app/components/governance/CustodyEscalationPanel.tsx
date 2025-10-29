@@ -88,15 +88,17 @@ export default function CustodyEscalationPanel({
                       : 'border-sky-200 bg-sky-50',
                   )}
                 >
-                  <header className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <h3 className="text-sm font-semibold text-neutral-900">{_resolveEscalationTitle(escalation)}</h3>
-                      <p className="text-xs text-neutral-500">{escalation.reason}</p>
-                    </div>
-                    <span className="text-xs font-semibold uppercase tracking-wide text-neutral-600">
-                      {escalation.status}
-                    </span>
-                  </header>
+                    <header className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-sm font-semibold text-neutral-900">{_resolveEscalationTitle(escalation)}</h3>
+                        <p className="text-xs text-neutral-500">{escalation.reason}</p>
+                        {_renderProtocolContext(escalation)}
+                        {_renderRecoveryBadge(escalation)}
+                      </div>
+                      <span className="text-xs font-semibold uppercase tracking-wide text-neutral-600">
+                        {escalation.status}
+                      </span>
+                    </header>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {escalation.guardrail_flags.map((flag) => (
                       <span
@@ -214,6 +216,32 @@ export default function CustodyEscalationPanel({
 function _resolveEscalationTitle(escalation: CustodyEscalation) {
   const statusLabel = escalation.status === 'open' ? 'Action required' : escalation.status
   return `${statusLabel} · ${escalation.severity}`
+}
+
+function _renderProtocolContext(escalation: CustodyEscalation) {
+  const context = escalation.protocol_execution
+  if (!context && !escalation.protocol_execution_id) {
+    return null
+  }
+  const executionLabel = context?.template_name
+    ? `${context.template_name} · ${context.status}`
+    : `Execution ${escalation.protocol_execution_id}`
+  return (
+    <p className="mt-1 text-[11px] text-neutral-500">
+      Protocol: {executionLabel}
+    </p>
+  )
+}
+
+function _renderRecoveryBadge(escalation: CustodyEscalation) {
+  if (!escalation.meta?.recovery_drill_open) {
+    return null
+  }
+  return (
+    <p className="mt-1 inline-flex items-center rounded bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700">
+      Recovery drill active
+    </p>
+  )
 }
 
 function _formatDate(value: string | null) {

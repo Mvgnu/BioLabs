@@ -20,6 +20,17 @@ const buildEscalation = (overrides: Partial<CustodyEscalation> = {}): CustodyEsc
   freezer_unit_id: null,
   compartment_id: 'comp-1',
   asset_version_id: null,
+  protocol_execution_id: 'exec-1',
+  execution_event_id: 'event-1',
+  protocol_execution: {
+    id: 'exec-1',
+    status: 'running',
+    run_by: 'user-1',
+    template_id: 'tpl-1',
+    template_name: 'QC workflow',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  },
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
   ...overrides,
@@ -88,5 +99,6 @@ describe('CustodyEscalationPanel', () => {
     expect(resolve).toHaveBeenCalledWith('esc-1')
 
     expect(screen.getAllByText(/temperature\.high/i).length).toBeGreaterThan(0)
+    expect(screen.getByText(/protocol:/i)).toBeTruthy()
   })
 })

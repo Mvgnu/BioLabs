@@ -173,6 +173,19 @@ class ProtocolExecution(Base):
         cascade="all, delete-orphan",
         order_by="GovernanceBaselineVersion.created_at.desc()",
     )
+    custody_logs = relationship(
+        "GovernanceSampleCustodyLog",
+        back_populates="protocol_execution",
+    )
+    custody_escalations = relationship(
+        "GovernanceCustodyEscalation",
+        back_populates="protocol_execution",
+    )
+
+    @property
+    def template_name(self) -> str | None:
+        # purpose: expose template name to custody governance serializers
+        return self.template.name if self.template else None
 
 
 class ExperimentScenarioFolder(Base):
@@ -1235,7 +1248,7 @@ class GovernanceSampleCustodyLog(Base):
 
     # purpose: track freezer custody lifecycle for dna assets and planner outputs
     # status: pilot
-    # depends_on: dna_asset_versions, governance_freezer_compartments, cloning_planner_sessions, users, teams
+    # depends_on: dna_asset_versions, governance_freezer_compartments, cloning_planner_sessions, protocol_executions, execution_events, users, teams
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     asset_version_id = Column(
@@ -1247,6 +1260,18 @@ class GovernanceSampleCustodyLog(Base):
     planner_session_id = Column(
         UUID(as_uuid=True),
         ForeignKey("cloning_planner_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    protocol_execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    execution_event_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_events.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
@@ -1269,6 +1294,8 @@ class GovernanceSampleCustodyLog(Base):
 
     asset_version = relationship("DNAAssetVersion", backref="custody_logs")
     planner_session = relationship("CloningPlannerSession", backref="custody_logs")
+    protocol_execution = relationship("ProtocolExecution", back_populates="custody_logs")
+    execution_event = relationship("ExecutionEvent", backref="custody_logs")
     compartment = relationship("GovernanceFreezerCompartment", back_populates="custody_logs")
     actor = relationship("User", foreign_keys=[performed_by_id])
     team = relationship("Team", foreign_keys=[performed_for_team_id])
@@ -1279,7 +1306,7 @@ class GovernanceCustodyEscalation(Base):
 
     # purpose: persist custody escalation lifecycle for freezer governance
     # status: pilot
-    # depends_on: governance_sample_custody_logs, governance_freezer_units, governance_freezer_compartments, dna_asset_versions, users
+    # depends_on: governance_sample_custody_logs, governance_freezer_units, governance_freezer_compartments, protocol_executions, execution_events, dna_asset_versions, users
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     log_id = Column(
@@ -1306,6 +1333,18 @@ class GovernanceCustodyEscalation(Base):
         nullable=True,
         index=True,
     )
+    protocol_execution_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("protocol_executions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    execution_event_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("execution_events.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     severity = Column(String, nullable=False, default="warning")
     status = Column(String, nullable=False, default="open")
     reason = Column(String, nullable=False)
@@ -1318,6 +1357,8 @@ class GovernanceCustodyEscalation(Base):
         nullable=True,
     )
     guardrail_flags = Column(JSON, default=list)
+    protocol_execution = relationship("ProtocolExecution", back_populates="custody_escalations")
+    execution_event = relationship("ExecutionEvent", backref="custody_escalations")
     notifications = Column(JSON, default=list)
     meta = Column(JSON, default=dict)
     created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)

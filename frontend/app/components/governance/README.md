@@ -15,6 +15,6 @@
 - `GuardrailHealthDashboard`: Surfaces sanitized packaging queue telemetry, blocked export counts, and pending stage context so governance operators can monitor guardrail enforcement health without querying raw events.
 - `CustodyFreezerMap`: Visualises freezer units and compartment occupancy with guardrail badges to drive custody oversight dashboards.
 - `CustodyLedgerPanel`: Renders custody ledger timelines with lineage cues and guardrail annotations for audit triage.
-- `CustodyEscalationPanel`: Aggregates custody escalation queues, SLA timers, and freezer fault telemetry with acknowledge, notify, and resolve affordances aligned with governance RBAC rules.
+- `CustodyEscalationPanel`: Aggregates custody escalation queues, SLA timers, freezer fault telemetry, and protocol execution context with acknowledge, notify, and resolve affordances aligned with governance RBAC rules.
 
 Each component embeds machine-readable metadata comments to satisfy Biolab documentation standards.
