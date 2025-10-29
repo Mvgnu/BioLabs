@@ -11,7 +11,7 @@ import io
 from typing import Any
 
 from Bio import SeqIO
-from Bio.SeqFeature import SeqFeature
+from Bio.SeqFeature import CompoundLocation, SeqFeature
 from Bio.SeqRecord import SeqRecord
 
 from ...schemas import DNAAnnotationPayload
@@ -22,6 +22,66 @@ def _first(value: Any) -> Any:
     if isinstance(value, list):
         return value[0] if value else None
     return value
+
+
+def _segment_map(location: Any) -> list[dict[str, int]]:
+    """Normalise feature locations (including compound joins) into segments."""
+
+    # purpose: preserve multi-segment CDS/regulatory coordinates for viewer overlays
+    segments: list[dict[str, int]] = []
+    parts = []
+    if isinstance(location, CompoundLocation):
+        parts = list(location.parts)
+    elif hasattr(location, "start") and hasattr(location, "end"):
+        parts = [location]
+    for part in parts:
+        strand = getattr(part, "strand", None)
+        if strand is None and hasattr(location, "strand"):
+            strand = getattr(location, "strand")
+        segments.append(
+            {
+                "start": int(part.start) + 1,
+                "end": int(part.end),
+                "strand": strand,
+            }
+        )
+    return segments
+
+
+def _normalise_provenance_tags(feature: SeqFeature) -> list[str]:
+    """Extract provenance tags from feature qualifiers."""
+
+    # purpose: align annotation provenance with governance metadata expectations
+    tag_keys = {
+        "gene",
+        "product",
+        "note",
+        "locus_tag",
+        "experiment",
+        "regulatory_class",
+        "source",
+    }
+    tags: set[str] = set()
+    feature_type = feature.type or ""
+    if feature_type:
+        tags.add(feature_type.lower())
+    for key in tag_keys:
+        values = feature.qualifiers.get(key)
+        if not values:
+            continue
+        if not isinstance(values, list):
+            values = [values]
+        for value in values:
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            if key == "note" and ":" in text:
+                _, _, remainder = text.partition(":")
+                text = remainder.strip() or text
+            tags.add(text.lower())
+    return sorted(tags)
 
 
 def _coerce_annotation(feature: SeqFeature) -> DNAAnnotationPayload:
@@ -38,6 +98,10 @@ def _coerce_annotation(feature: SeqFeature) -> DNAAnnotationPayload:
         else:
             qualifiers[key] = values
     label = _first(feature.qualifiers.get("label")) or _first(feature.qualifiers.get("gene"))
+    segments = _segment_map(location)
+    if segments:
+        start = min(segment["start"] for segment in segments)
+        end = max(segment["end"] for segment in segments)
     return DNAAnnotationPayload(
         label=label or feature.type or "feature",
         feature_type=feature.type or "feature",
@@ -45,6 +109,8 @@ def _coerce_annotation(feature: SeqFeature) -> DNAAnnotationPayload:
         end=end,
         strand=location.strand,
         qualifiers=qualifiers,
+        segments=segments,
+        provenance_tags=_normalise_provenance_tags(feature),
     )
 
 

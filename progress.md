@@ -815,3 +815,10 @@ This implementation establishes BioLab as a data-driven laboratory management pl
 - Tightened `useCloningPlanner` mutation typings by adopting `UseMutationResult` generics and removing `any` casts so downstream consumers receive precise stage payload contracts.
 - Propagated the mutation typing into the hook result to improve IDE hints for planner wizard integrations and future guardrail-aware flows.
 - Revalidated Vitest suites to ensure hook behaviour remains stable after the typing refinements.
+
+## 2025-07-10 - Importer Provenance & Viewer Analytics Expansion
+
+- Extended GenBank importer normalisation to capture multi-segment CDS joins, regulatory qualifiers, and provenance tags while emitting structured annotation segments for viewer overlays.
+- Added analytics helpers to `dna_assets.build_viewer_payload` computing codon usage frequencies, GC skew windows, and thermodynamic risk overlays, wiring results into the viewer schema.
+- Introduced pytest fixtures and assertions covering multi-segment imports plus viewer analytics guarantees, updated frontend types, and enhanced the DNA viewer summary UI with toggleable analytics panels.
+- Documented importer QA SOPs and analytics expectations in `docs/dna_assets.md` and referenced the workflow from the DNA viewer README to keep scientist-facing guidance aligned with backend contracts.

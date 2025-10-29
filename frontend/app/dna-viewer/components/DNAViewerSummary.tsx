@@ -3,7 +3,7 @@
 // purpose: orchestrate DNA viewer layout combining circular + linear renderers
 // status: experimental
 
-import React, { type FC, useMemo } from 'react'
+import React, { type FC, useMemo, useState } from 'react'
 
 import { GuardrailBadge } from '../../components/guardrails/GuardrailBadge'
 import { GuardrailEscalationPrompt } from '../../components/guardrails/GuardrailEscalationPrompt'
@@ -19,6 +19,7 @@ export const DNAViewerSummary: FC<DNAViewerSummaryProps> = ({ payload }) => {
   const annotationsTrack = payload.tracks.find((track) => track.name === 'Annotations') ?? payload.tracks[0]
   const guardrailTrack = payload.tracks.find((track) => track.name === 'Guardrails')
   const guardrailStates = payload.guardrails
+  const [showAnalytics, setShowAnalytics] = useState(false)
 
   const primerState = useMemo(() => {
     const state = guardrailStates.primers?.primer_state ?? guardrailStates.primers?.state
@@ -78,6 +79,17 @@ export const DNAViewerSummary: FC<DNAViewerSummaryProps> = ({ payload }) => {
     }
     return undefined
   }, [guardrailStates])
+
+  const codonUsageTop = useMemo(() => {
+    const entries = Object.entries(payload.analytics?.codon_usage ?? {})
+    return entries
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([codon, value]) => ({ codon, value }))
+  }, [payload.analytics?.codon_usage])
+
+  const thermodynamicRisk = payload.analytics?.thermodynamic_risk ?? {}
+  const gcSkewValues = payload.analytics?.gc_skew ?? []
 
   return (
     <div className="space-y-8">
@@ -176,6 +188,71 @@ export const DNAViewerSummary: FC<DNAViewerSummaryProps> = ({ payload }) => {
           </div>
         </section>
       )}
+
+      <section className="rounded border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Viewer analytics</h2>
+            <p className="text-sm text-slate-500">Codon usage, GC skew, and thermodynamic overlays sourced from importer heuristics</p>
+          </div>
+          <button
+            type="button"
+            className="rounded border border-slate-300 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-100"
+            onClick={() => setShowAnalytics((value) => !value)}
+          >
+            {showAnalytics ? 'Hide analytics overlays' : 'Show analytics overlays'}
+          </button>
+        </div>
+        {showAnalytics && (
+          <div className="mt-4 grid gap-4 md:grid-cols-3">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700">Top codons</h3>
+              <ul className="mt-2 space-y-1 text-sm text-slate-600">
+                {codonUsageTop.length === 0 && <li>No codon usage data</li>}
+                {codonUsageTop.map(({ codon, value }) => (
+                  <li key={codon} className="flex items-center justify-between">
+                    <span className="font-mono">{codon}</span>
+                    <span>{(value * 100).toFixed(2)}%</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700">GC skew windows</h3>
+              <ul className="mt-2 space-y-1 text-sm text-slate-600">
+                {gcSkewValues.length === 0 && <li>No GC skew data</li>}
+                {gcSkewValues.map((value, index) => (
+                  <li key={`gc-${index}`} className="flex items-center justify-between">
+                    <span>Window {index + 1}</span>
+                    <span>{value.toFixed(3)}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <h3 className="text-sm font-semibold text-slate-700">Thermodynamic risk</h3>
+              <dl className="mt-2 space-y-1 text-sm text-slate-600">
+                <div className="flex items-center justify-between">
+                  <dt className="font-medium text-slate-700">Overall</dt>
+                  <dd className="capitalize">{thermodynamicRisk.overall_state ?? 'unknown'}</dd>
+                </div>
+                <div className="flex items-center justify-between">
+                  <dt className="font-medium text-slate-700">Primer ΔTm span</dt>
+                  <dd>
+                    {typeof thermodynamicRisk.primer_tm_span === 'number'
+                      ? thermodynamicRisk.primer_tm_span.toFixed(2)
+                      : thermodynamicRisk.primer_tm_span ?? 'N/A'}
+                  </dd>
+                </div>
+                <div className="flex items-center justify-between">
+                  <dt className="font-medium text-slate-700">Homopolymers</dt>
+                  <dd>{Array.isArray(thermodynamicRisk.homopolymers) ? thermodynamicRisk.homopolymers.length : 0}</dd>
+                </div>
+              </dl>
+            </div>
+          </div>
+        )}
+      </section>
 
       {payload.translations.length > 0 && (
         <section className="rounded border border-slate-200 bg-white p-6 shadow-sm">

@@ -21,6 +21,25 @@ def test_load_genbank_normalises_annotations():
     payload = result.to_asset_payload()
     assert payload.metadata["topology"] == "circular"
     assert any(a.label == "example_cds" for a in payload.annotations)
+    cds = next(ann for ann in payload.annotations if ann.label == "example_cds")
+    assert cds.segments
+    assert "cds" in cds.provenance_tags
+
+
+def test_load_genbank_multi_segment_and_provenance_tags():
+    content = FIXTURE_DIR.joinpath("multisegment.gb").read_bytes()
+    result = load_genbank(content)
+
+    payload = result.to_asset_payload()
+    regulatory = next(
+        ann for ann in payload.annotations if ann.feature_type.lower() == "regulatory"
+    )
+    cds = next(ann for ann in payload.annotations if ann.feature_type.lower() == "cds")
+
+    assert len(cds.segments) == 2
+    assert cds.segments[0].start == 31
+    assert "segmented protein" in cds.provenance_tags
+    assert any(tag.endswith("promoter") for tag in regulatory.provenance_tags)
 
 
 def test_load_sbol_generates_tracks():
@@ -82,3 +101,6 @@ def test_build_viewer_payload_tracks_and_translations(viewer_asset):
     assert cds_translation is not None
     assert cds_translation.amino_acids
     assert payload.guardrails.primers
+    assert payload.analytics.codon_usage
+    assert payload.analytics.gc_skew
+    assert payload.analytics.thermodynamic_risk["overall_state"] in {"ok", "review"}

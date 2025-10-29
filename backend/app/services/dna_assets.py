@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 from uuid import UUID
@@ -20,6 +21,7 @@ from ..analytics.governance import invalidate_governance_analytics_cache
 from ..schemas import (
     DNAAnnotationOut,
     DNAAnnotationPayload,
+    DNAAnnotationSegment,
     DNAAssetCreate,
     DNAAssetDiffResponse,
     DNAAssetGovernanceUpdate,
@@ -30,6 +32,7 @@ from ..schemas import (
     DNAAssetVersionCreate,
     DNAAssetVersionOut,
     SequenceToolkitProfile,
+    DNAViewerAnalytics,
     DNAViewerFeature,
     DNAViewerPayload,
     DNAViewerTrack,
@@ -155,6 +158,148 @@ def _translate_codons(sequence: str) -> str:
         codon = normalised[idx : idx + 3]
         amino_acids.append(_CODON_TABLE.get(codon, "X"))
     return "".join(amino_acids)
+
+
+def _compute_codon_usage(sequence: str) -> dict[str, float]:
+    """Compute codon utilisation frequencies across the sequence."""
+
+    # purpose: expose codon distribution overlays for viewer analytics
+    normalised = _normalize_sequence(sequence)
+    if len(normalised) < 3:
+        return {}
+    counts: Counter[str] = Counter()
+    for idx in range(0, len(normalised) - 2, 3):
+        codon = normalised[idx : idx + 3]
+        if len(codon) < 3:
+            continue
+        if codon not in _CODON_TABLE:
+            continue
+        counts[codon] += 1
+    total = sum(counts.values())
+    if not total:
+        return {}
+    return {
+        codon: round(count / total, 6)
+        for codon, count in sorted(counts.items())
+    }
+
+
+def _compute_gc_skew(sequence: str, *, window_size: int | None = None) -> list[float]:
+    """Compute GC skew values across sliding windows."""
+
+    # purpose: surface GC bias overlays supporting replication origin analysis
+    normalised = _normalize_sequence(sequence)
+    if not normalised:
+        return []
+    length = len(normalised)
+    window = window_size or max(50, length // 12)
+    window = max(25, min(window, length))
+    skews: list[float] = []
+    for index in range(0, length, window):
+        chunk = normalised[index : index + window]
+        if not chunk:
+            continue
+        g = chunk.count("G")
+        c = chunk.count("C")
+        if g + c == 0:
+            skew = 0.0
+        else:
+            skew = (g - c) / (g + c)
+        skews.append(round(skew, 4))
+    return skews
+
+
+def _find_homopolymer_runs(sequence: str, *, minimum: int = 6) -> list[dict[str, Any]]:
+    """Locate long homopolymer runs that drive thermodynamic risk."""
+
+    # purpose: identify hotspots for viewer thermodynamic overlays
+    runs: list[dict[str, Any]] = []
+    if not sequence:
+        return runs
+    current_base: str | None = None
+    current_length = 0
+    current_start = 0
+    for index, base in enumerate(sequence, start=1):
+        if base == current_base:
+            current_length += 1
+        else:
+            if current_base and current_length >= minimum:
+                runs.append(
+                    {
+                        "base": current_base,
+                        "start": current_start,
+                        "end": current_start + current_length - 1,
+                        "length": current_length,
+                    }
+                )
+            current_base = base
+            current_length = 1
+            current_start = index
+    if current_base and current_length >= minimum:
+        runs.append(
+            {
+                "base": current_base,
+                "start": current_start,
+                "end": current_start + current_length - 1,
+                "length": current_length,
+            }
+        )
+    return runs
+
+
+def _compute_gc_hotspots(sequence: str, *, threshold: float = 0.68) -> list[dict[str, Any]]:
+    """Identify GC-rich windows driving thermodynamic escalation."""
+
+    # purpose: derive overlays for GC-dense domains prone to secondary structure
+    normalised = _normalize_sequence(sequence)
+    length = len(normalised)
+    if not length:
+        return []
+    window = max(30, length // 20)
+    hotspots: list[dict[str, Any]] = []
+    for index in range(0, length, window):
+        chunk = normalised[index : index + window]
+        if not chunk:
+            continue
+        gc_fraction = (chunk.count("G") + chunk.count("C")) / len(chunk)
+        if gc_fraction >= threshold:
+            hotspots.append(
+                {
+                    "start": index + 1,
+                    "end": index + len(chunk),
+                    "gc_fraction": round(gc_fraction, 4),
+                }
+            )
+    return hotspots
+
+
+def _compute_thermodynamic_risk(
+    sequence: str,
+    guardrails: DNAAssetGuardrailHeuristics,
+    *,
+    gc_skew: list[float] | None = None,
+) -> dict[str, Any]:
+    """Derive thermodynamic risk overlays for viewer analytics."""
+
+    # purpose: tie importer guardrail heuristics to viewer-facing overlays
+    normalised = _normalize_sequence(sequence)
+    homopolymers = _find_homopolymer_runs(normalised)
+    gc_hotspots = _compute_gc_hotspots(normalised)
+    primer_summary = guardrails.primers or {}
+    tm_span = primer_summary.get("tm_span")
+    primer_warnings = primer_summary.get("primer_warnings", 0)
+    max_gc_skew = max((abs(value) for value in gc_skew or []), default=0.0)
+    overall_state = "ok"
+    if homopolymers or gc_hotspots or primer_warnings or max_gc_skew >= 0.4:
+        overall_state = "review"
+    return {
+        "homopolymers": homopolymers,
+        "gc_hotspots": gc_hotspots,
+        "primer_tm_span": tm_span,
+        "primer_warnings": primer_warnings,
+        "max_gc_skew": max_gc_skew,
+        "overall_state": overall_state,
+    }
 
 
 def _primer_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
@@ -795,6 +940,10 @@ def _guardrail_summary_features(
                 strand=None,
                 qualifiers=dict(payload),
                 guardrail_badges=sorted({badge for badge in badges if badge}),
+                segments=[
+                    DNAAnnotationSegment(start=1, end=max(1, length), strand=None)
+                ],
+                provenance_tags=[feature_type],
             )
         )
     return features
@@ -806,6 +955,12 @@ def _build_viewer_tracks(
 ) -> list[DNAViewerTrack]:
     feature_track = DNAViewerTrack(name="Annotations")
     for annotation in version_out.annotations:
+        segments: list[DNAAnnotationSegment] = []
+        for segment in annotation.segments:
+            if isinstance(segment, DNAAnnotationSegment):
+                segments.append(segment)
+            else:
+                segments.append(DNAAnnotationSegment(**segment))
         feature_track.features.append(
             DNAViewerFeature(
                 label=annotation.label,
@@ -815,6 +970,8 @@ def _build_viewer_tracks(
                 strand=annotation.strand,
                 qualifiers=dict(annotation.qualifiers or {}),
                 guardrail_badges=_annotation_guardrail_badges(guardrails, annotation),
+                segments=segments,
+                provenance_tags=list(annotation.provenance_tags or []),
             )
         )
     guardrail_track = DNAViewerTrack(
@@ -877,6 +1034,14 @@ def build_viewer_payload(
     diff = None
     if compare_to is not None:
         diff = diff_versions(compare_to, latest)
+    gc_skew = _compute_gc_skew(latest.sequence)
+    analytics = DNAViewerAnalytics(
+        codon_usage=_compute_codon_usage(latest.sequence),
+        gc_skew=gc_skew,
+        thermodynamic_risk=_compute_thermodynamic_risk(
+            latest.sequence, guardrails, gc_skew=gc_skew
+        ),
+    )
     return DNAViewerPayload(
         asset=asset_summary,
         version=version_out,
@@ -886,6 +1051,7 @@ def build_viewer_payload(
         translations=translations,
         kinetics_summary=version_out.kinetics_summary,
         guardrails=guardrails,
+        analytics=analytics,
         diff=diff,
     )
 

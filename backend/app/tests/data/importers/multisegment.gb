@@ -1,0 +1,22 @@
+LOCUS       MULTISEG        105 bp    DNA     linear   SYN 01-JAN-2024
+DEFINITION  Multi-segment CDS with regulatory provenance tags.
+ACCESSION   XYZ0001
+VERSION     XYZ0001.1
+SOURCE      synthetic DNA construct
+  ORGANISM  synthetic DNA construct
+FEATURES             Location/Qualifiers
+     source          1..105
+                     /organism="synthetic DNA construct"
+                     /mol_type="other DNA"
+     regulatory      5..30
+                     /regulatory_class="promoter"
+                     /note="Provenance:SynthLab"
+     CDS             join(31..60,81..105)
+                     /gene="multi_cds"
+                     /product="Segmented Protein"
+                     /note="Provenance:DesignTeam"
+                     /translation="MSTTESTSEQ"
+ORIGIN
+        1 atggcgatcg gatcgatcga tcgatcgatc gatcgatcga tcgatcgatc gatcgatcga
+       61 tcgatcgatc gatcgatcga tcgatcgatc gatcgatcga tcgat
+//
