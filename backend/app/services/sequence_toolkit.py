@@ -590,14 +590,18 @@ def design_primers(
         tm_values.extend([forward.tm, reverse.tm])
         warnings: list[str] = []
         notes: list[str] = []
+        metadata_tags: list[str] = [f"primer_source:{primer_source}"]
         if primer_source == "fallback":
             notes.append("Primer3 returned no candidates; deterministic fallback used.")
+            metadata_tags.append("primer_source:fallback")
         tm_delta = abs(forward.tm - reverse.tm)
         if tm_delta > 2.0:
             warnings.append(f"Primer Tm delta {tm_delta:.2f} exceeds tolerance")
+            metadata_tags.append("warning:tm_delta_high")
         gc_delta = abs(forward.gc_content - reverse.gc_content)
         if gc_delta > 10:
             warnings.append(f"Primer GC delta {gc_delta:.2f} exceeds tolerance")
+            metadata_tags.append("warning:gc_delta_high")
         forward_clamp = sum(
             1 for base in forward.sequence[-primer_config.gc_clamp_max :] if base in {"G", "C"}
         )
@@ -606,22 +610,29 @@ def design_primers(
         )
         if forward_clamp < primer_config.gc_clamp_min or reverse_clamp < primer_config.gc_clamp_min:
             warnings.append("GC clamp below configured minimum")
+            metadata_tags.append("warning:gc_clamp_low")
         if forward.hairpin_delta_g and forward.hairpin_delta_g < -6:
             warnings.append(
                 f"Forward primer predicted hairpin ΔG {forward.hairpin_delta_g:.2f} kcal/mol"
             )
+            metadata_tags.append("risk:hairpin_forward")
         if reverse.hairpin_delta_g and reverse.hairpin_delta_g < -6:
             warnings.append(
                 f"Reverse primer predicted hairpin ΔG {reverse.hairpin_delta_g:.2f} kcal/mol"
             )
+            metadata_tags.append("risk:hairpin_reverse")
         if forward.homodimer_delta_g and forward.homodimer_delta_g < -6:
             warnings.append(
                 f"Forward primer homodimer ΔG {forward.homodimer_delta_g:.2f} kcal/mol"
             )
+            metadata_tags.append("risk:homodimer_forward")
         if reverse.homodimer_delta_g and reverse.homodimer_delta_g < -6:
             warnings.append(
                 f"Reverse primer homodimer ΔG {reverse.homodimer_delta_g:.2f} kcal/mol"
             )
+            metadata_tags.append("risk:homodimer_reverse")
+        if warnings:
+            metadata_tags.append("primer_warning:present")
         records.append(
             PrimerDesignRecord(
                 name=name,
@@ -630,6 +641,7 @@ def design_primers(
                 reverse=_primer_candidate_from_result(reverse),
                 product_size=product_size,
                 warnings=warnings,
+                metadata_tags=sorted(set(metadata_tags)),
                 source=primer_source,
                 notes=notes,
             )
@@ -739,6 +751,16 @@ def analyze_restriction_digest(
                 for tag in (selected_buffer.metadata_tags or [])
                 if tag not in template_tags
             )
+        seen_kinetics: set[str] = set()
+        kinetics_profiles: list[EnzymeKineticsProfile] = []
+        for site in site_payload.values():
+            kinetics_entry = site.kinetics
+            if not kinetics_entry:
+                continue
+            key = kinetics_entry.name.lower() if kinetics_entry.name else None
+            if key and key not in seen_kinetics:
+                kinetics_profiles.append(kinetics_entry)
+                seen_kinetics.add(key)
         digest_results.append(
             RestrictionDigestResult(
                 name=name,
@@ -748,6 +770,7 @@ def analyze_restriction_digest(
                 notes=digest_notes,
                 buffer=selected_buffer,
                 metadata_tags=sorted(template_tags),
+                kinetics_profiles=kinetics_profiles,
             )
         )
         absent_enzymes = [enz for enz, positions in site_map.items() if not positions]
@@ -782,7 +805,7 @@ def simulate_assembly(
     digests = {
         item["name"]: item for item in digest_results.get("digests", [])
     }
-    contract_tags: set[str] = set()
+    contract_tags: set[str] = {f"strategy:{assembly_config.strategy}"}
     kinetics_index = _enzyme_kinetics_index()
     for entry in primers:
         name = entry.get("name")
@@ -795,6 +818,8 @@ def simulate_assembly(
         site_count = 0
         overhang_signatures: set[str] = set()
         enzyme_names: list[str] = []
+        step_kinetics_profiles: list[EnzymeKineticsProfile] = []
+        seen_step_kinetics: set[str] = set()
         step_tags: set[str] = set(digest.get("metadata_tags", []))
         for enzyme_key, site in (digest.get("sites", {}) or {}).items():
             if isinstance(site, dict):
@@ -811,16 +836,41 @@ def simulate_assembly(
                 if overhang:
                     overhang_signatures.add(str(overhang))
                 kinetics_payload = site.get("kinetics")
-                if kinetics_payload and kinetics_payload.get("metadata_tags"):
-                    step_tags.update(kinetics_payload.get("metadata_tags", []))
+                if kinetics_payload:
+                    if isinstance(kinetics_payload, dict):
+                        metadata_tags = kinetics_payload.get("metadata_tags", [])
+                        if metadata_tags:
+                            step_tags.update(metadata_tags)
+                        kinetics_name = (kinetics_payload.get("name") or "").lower()
+                        if kinetics_name and kinetics_name not in seen_step_kinetics:
+                            step_kinetics_profiles.append(EnzymeKineticsProfile(**kinetics_payload))
+                            seen_step_kinetics.add(kinetics_name)
+                    else:
+                        if kinetics_payload.metadata_tags:
+                            step_tags.update(kinetics_payload.metadata_tags)
+                        kinetics_name = (kinetics_payload.name or "").lower()
+                        if kinetics_name and kinetics_name not in seen_step_kinetics:
+                            step_kinetics_profiles.append(kinetics_payload)
+                            seen_step_kinetics.add(kinetics_name)
         overhang_diversity = len(overhang_signatures) or site_count
         enzyme_names = list(dict.fromkeys(enzyme_names))
         buffer_penalty = 0.0
         if digest.get("buffer_alerts"):
             buffer_penalty += min(0.3, 0.05 * len(digest["buffer_alerts"]))
-        buffer_meta = digest.get("buffer") or {}
+        raw_buffer = digest.get("buffer")
+        if isinstance(raw_buffer, ReactionBuffer):
+            buffer_obj = raw_buffer
+            buffer_meta = raw_buffer.model_dump()
+        elif isinstance(raw_buffer, dict):
+            buffer_meta = raw_buffer
+            buffer_obj = ReactionBuffer(**raw_buffer) if raw_buffer else None
+        else:
+            buffer_meta = {}
+            buffer_obj = None
+        if buffer_obj and buffer_obj.metadata_tags:
+            step_tags.update(buffer_obj.metadata_tags)
         compatible_strategies = buffer_meta.get("compatible_strategies", [])
-        buffer_name = buffer_meta.get("name")
+        buffer_name = buffer_obj.name if buffer_obj else buffer_meta.get("name")
         if (
             compatible_strategies
             and assembly_config.strategy not in compatible_strategies
@@ -875,13 +925,20 @@ def simulate_assembly(
                 ligation_profile.efficiency_ceiling,
             )
             step_tags.update(ligation_profile.metadata_tags)
-        kinetics_profile = None
-        for enzyme_name in enzyme_names:
-            kinetics_profile = kinetics_index.get(enzyme_name.lower())
-            if kinetics_profile:
-                break
-        if kinetics_profile and kinetics_profile.metadata_tags:
-            step_tags.update(kinetics_profile.metadata_tags)
+        kinetics_profile = step_kinetics_profiles[0] if step_kinetics_profiles else None
+        if kinetics_profile is None:
+            for enzyme_name in enzyme_names:
+                candidate = kinetics_index.get(enzyme_name.lower())
+                if candidate:
+                    kinetics_profile = candidate
+                    break
+        if kinetics_profile:
+            if kinetics_profile.metadata_tags:
+                step_tags.update(kinetics_profile.metadata_tags)
+            kinetics_name = (kinetics_profile.name or "").lower()
+            if kinetics_name and kinetics_name not in seen_step_kinetics:
+                step_kinetics_profiles.append(kinetics_profile)
+                seen_step_kinetics.add(kinetics_name)
         score *= ligation_efficiency
         kinetics_score = _kinetics_modifier(
             assembly_config.kinetics_model,
@@ -912,15 +969,19 @@ def simulate_assembly(
                 junction_success=score,
                 ligation_efficiency=ligation_efficiency,
                 kinetics_score=kinetics_score,
+                ligation_profile=ligation_profile,
+                buffer=buffer_obj,
+                kinetics_profiles=step_kinetics_profiles,
                 heuristics=heuristics,
                 warnings=warnings,
                 metadata_tags=metadata_tags,
             )
         )
+    aggregated_tags = sorted(contract_tags)
     payload_contract = {
         "schema_version": "1.1",
         "strategy": assembly_config.strategy,
-        "metadata_tags": sorted(contract_tags),
+        "metadata_tags": aggregated_tags,
         "fields": [
             "strategy",
             "steps",
@@ -937,6 +998,7 @@ def simulate_assembly(
         min_success=min(success_scores) if success_scores else 0.0,
         max_success=max(success_scores) if success_scores else 0.0,
         payload_contract=payload_contract,
+        metadata_tags=aggregated_tags,
     ).model_dump()
 
 

@@ -23,6 +23,8 @@ from ..schemas import (
     DNAAssetDiffResponse,
     DNAAssetGovernanceUpdate,
     DNAAssetGuardrailEventOut,
+    DNAAssetGuardrailHeuristics,
+    DNAAssetKineticsSummary,
     DNAAssetSummary,
     DNAAssetVersionCreate,
     DNAAssetVersionOut,
@@ -62,6 +64,354 @@ def _apply_tags(asset: models.DNAAsset, tags: Sequence[str]) -> None:
 
 def _sequence_checksum(sequence: str) -> str:
     return hashlib.sha256(sequence.encode("utf-8")).hexdigest()
+
+
+def _primer_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """Summarise primer metrics for DNA asset guardrails."""
+
+    # purpose: share planner-aligned primer heuristics with asset serialization
+    primers = [p for p in result.get("primers", []) if p.get("status") == "ok"]
+    warning_count = sum(len(p.get("warnings", [])) for p in primers)
+    tm_values = [
+        p.get("forward", {}).get("thermodynamics", {}).get("tm")
+        for p in primers
+        if p.get("forward")
+    ] + [
+        p.get("reverse", {}).get("thermodynamics", {}).get("tm")
+        for p in primers
+        if p.get("reverse")
+    ]
+    tm_values = [value for value in tm_values if isinstance(value, (int, float))]
+    tm_span = max(tm_values) - min(tm_values) if tm_values else 0.0
+    metadata_tags = sorted({
+        tag
+        for primer in primers
+        for tag in primer.get("metadata_tags", [])
+    })
+    return {
+        "primer_sets": len(primers),
+        "primer_warnings": warning_count,
+        "primer_state": "review" if warning_count else "ok",
+        "metadata_tags": metadata_tags,
+        "tm_span": tm_span,
+    }
+
+
+def _restriction_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """Summarise restriction digest guardrail metadata."""
+
+    # purpose: propagate kinetics, buffer, and tag details to asset views
+    alerts = result.get("alerts", [])
+    digests = result.get("digests", [])
+    metadata_tags = sorted({
+        tag
+        for digest in digests
+        for tag in digest.get("metadata_tags", [])
+    })
+    buffers = sorted({
+        (digest.get("buffer") or {}).get("name")
+        for digest in digests
+        if (digest.get("buffer") or {}).get("name")
+    })
+    kinetics = sorted({
+        profile.get("name")
+        for digest in digests
+        for profile in digest.get("kinetics_profiles", [])
+        if profile.get("name")
+    })
+    return {
+        "restriction_alerts": alerts,
+        "restriction_state": "review" if alerts else "ok",
+        "metadata_tags": metadata_tags,
+        "buffers": buffers,
+        "kinetics": kinetics,
+    }
+
+
+def _assembly_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """Summarise assembly simulation outputs for guardrails."""
+
+    # purpose: align asset summaries with planner assembly heuristics
+    success = result.get("average_success", 0.0)
+    state = "ok" if success >= 0.7 else "review"
+    steps = result.get("steps", [])
+    metadata_tags = sorted({
+        tag
+        for step in steps
+        for tag in step.get("metadata_tags", [])
+    })
+    ligation_profiles = sorted({
+        (step.get("ligation_profile") or {}).get("strategy")
+        for step in steps
+        if (step.get("ligation_profile") or {}).get("strategy")
+    })
+    buffers = sorted({
+        (step.get("buffer") or {}).get("name")
+        for step in steps
+        if (step.get("buffer") or {}).get("name")
+    })
+    kinetics = sorted({
+        profile.get("name")
+        for step in steps
+        for profile in step.get("kinetics_profiles", [])
+        if profile.get("name")
+    })
+    return {
+        "assembly_success": success,
+        "assembly_state": state,
+        "metadata_tags": metadata_tags,
+        "ligation_profiles": ligation_profiles,
+        "buffers": buffers,
+        "kinetics": kinetics,
+    }
+
+
+def _kinetics_summary(digest: dict[str, Any], assembly: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate kinetics descriptors across digest and assembly outputs."""
+
+    # purpose: provide reusable kinetics summaries for DNA asset serialization
+    enzymes: set[str] = set()
+    buffers: set[str] = set()
+    ligation_profiles: set[str] = set()
+    metadata_tags: set[str] = set()
+    for entry in digest.get("digests", []):
+        metadata_tags.update(entry.get("metadata_tags", []))
+        buffer = (entry.get("buffer") or {}).get("name")
+        if buffer:
+            buffers.add(buffer)
+        for profile in entry.get("kinetics_profiles", []):
+            if profile.get("name"):
+                enzymes.add(profile["name"])
+            metadata_tags.update(profile.get("metadata_tags", []))
+    for step in assembly.get("steps", []):
+        metadata_tags.update(step.get("metadata_tags", []))
+        buffer = (step.get("buffer") or {}).get("name")
+        if buffer:
+            buffers.add(buffer)
+        ligation = step.get("ligation_profile") or {}
+        strategy = ligation.get("strategy")
+        if strategy:
+            ligation_profiles.add(strategy)
+        for profile in step.get("kinetics_profiles", []):
+            if profile.get("name"):
+                enzymes.add(profile["name"])
+            metadata_tags.update(profile.get("metadata_tags", []))
+    return {
+        "enzymes": sorted(enzymes),
+        "buffers": sorted(buffers),
+        "ligation_profiles": sorted(ligation_profiles),
+        "metadata_tags": sorted(metadata_tags),
+    }
+
+
+def _analyse_sequence_guardrails(sequence: str, profile: SequenceToolkitProfile) -> dict[str, Any]:
+    """Run toolkit analyses to derive guardrail and kinetics summaries."""
+
+    # purpose: ensure DNA asset serialization reflects kinetics-aware toolkit outputs
+    template = [{"name": "asset_version", "sequence": sequence}]
+    primer_payload = sequence_toolkit.design_primers(template, config=profile)
+    digest_payload = sequence_toolkit.analyze_restriction_digest(template, config=profile)
+    assembly_payload = sequence_toolkit.simulate_assembly(
+        primer_payload,
+        digest_payload,
+        config=profile,
+        strategy=profile.assembly.strategy,
+    )
+    guardrails = {
+        "primers": _primer_guardrail_summary(primer_payload),
+        "restriction": _restriction_guardrail_summary(digest_payload),
+        "assembly": _assembly_guardrail_summary(assembly_payload),
+    }
+    kinetics = _kinetics_summary(digest_payload, assembly_payload)
+    presets: set[str] = {profile.assembly.strategy}
+    for step in assembly_payload.get("steps", []):
+        strategy = step.get("strategy")
+        if strategy:
+            presets.add(strategy)
+        ligation = step.get("ligation_profile") or {}
+        ligation_strategy = ligation.get("strategy")
+        if ligation_strategy:
+            presets.add(ligation_strategy)
+    return {
+        "guardrails": guardrails,
+        "kinetics": kinetics,
+        "assembly_presets": sorted(presets),
+    }
+
+
+def _primer_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """Summarise primer metrics for DNA asset guardrails."""
+
+    # purpose: share planner-aligned primer heuristics with asset serialization
+    primers = [p for p in result.get("primers", []) if p.get("status") == "ok"]
+    warning_count = sum(len(p.get("warnings", [])) for p in primers)
+    tm_values = [
+        p.get("forward", {}).get("thermodynamics", {}).get("tm")
+        for p in primers
+        if p.get("forward")
+    ] + [
+        p.get("reverse", {}).get("thermodynamics", {}).get("tm")
+        for p in primers
+        if p.get("reverse")
+    ]
+    tm_values = [value for value in tm_values if isinstance(value, (int, float))]
+    tm_span = max(tm_values) - min(tm_values) if tm_values else 0.0
+    metadata_tags = sorted({
+        tag
+        for primer in primers
+        for tag in primer.get("metadata_tags", [])
+    })
+    return {
+        "primer_sets": len(primers),
+        "primer_warnings": warning_count,
+        "primer_state": "review" if warning_count else "ok",
+        "metadata_tags": metadata_tags,
+        "tm_span": tm_span,
+    }
+
+
+def _restriction_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """Summarise restriction digest guardrail metadata."""
+
+    # purpose: propagate kinetics, buffer, and tag details to asset views
+    alerts = result.get("alerts", [])
+    digests = result.get("digests", [])
+    metadata_tags = sorted({
+        tag
+        for digest in digests
+        for tag in digest.get("metadata_tags", [])
+    })
+    buffers = sorted({
+        (digest.get("buffer") or {}).get("name")
+        for digest in digests
+        if (digest.get("buffer") or {}).get("name")
+    })
+    kinetics = sorted({
+        profile.get("name")
+        for digest in digests
+        for profile in digest.get("kinetics_profiles", [])
+        if profile.get("name")
+    })
+    return {
+        "restriction_alerts": alerts,
+        "restriction_state": "review" if alerts else "ok",
+        "metadata_tags": metadata_tags,
+        "buffers": buffers,
+        "kinetics": kinetics,
+    }
+
+
+def _assembly_guardrail_summary(result: dict[str, Any]) -> dict[str, Any]:
+    """Summarise assembly simulation outputs for guardrails."""
+
+    # purpose: align asset summaries with planner assembly heuristics
+    success = result.get("average_success", 0.0)
+    state = "ok" if success >= 0.7 else "review"
+    steps = result.get("steps", [])
+    metadata_tags = sorted({
+        tag
+        for step in steps
+        for tag in step.get("metadata_tags", [])
+    })
+    ligation_profiles = sorted({
+        (step.get("ligation_profile") or {}).get("strategy")
+        for step in steps
+        if (step.get("ligation_profile") or {}).get("strategy")
+    })
+    buffers = sorted({
+        (step.get("buffer") or {}).get("name")
+        for step in steps
+        if (step.get("buffer") or {}).get("name")
+    })
+    kinetics = sorted({
+        profile.get("name")
+        for step in steps
+        for profile in step.get("kinetics_profiles", [])
+        if profile.get("name")
+    })
+    return {
+        "assembly_success": success,
+        "assembly_state": state,
+        "metadata_tags": metadata_tags,
+        "ligation_profiles": ligation_profiles,
+        "buffers": buffers,
+        "kinetics": kinetics,
+    }
+
+
+def _kinetics_summary(digest: dict[str, Any], assembly: dict[str, Any]) -> dict[str, Any]:
+    """Aggregate kinetics descriptors across digest and assembly outputs."""
+
+    # purpose: provide reusable kinetics summaries for DNA asset serialization
+    enzymes: set[str] = set()
+    buffers: set[str] = set()
+    ligation_profiles: set[str] = set()
+    metadata_tags: set[str] = set()
+    for entry in digest.get("digests", []):
+        metadata_tags.update(entry.get("metadata_tags", []))
+        buffer = (entry.get("buffer") or {}).get("name")
+        if buffer:
+            buffers.add(buffer)
+        for profile in entry.get("kinetics_profiles", []):
+            if profile.get("name"):
+                enzymes.add(profile["name"])
+            metadata_tags.update(profile.get("metadata_tags", []))
+    for step in assembly.get("steps", []):
+        metadata_tags.update(step.get("metadata_tags", []))
+        buffer = (step.get("buffer") or {}).get("name")
+        if buffer:
+            buffers.add(buffer)
+        ligation = step.get("ligation_profile") or {}
+        strategy = ligation.get("strategy")
+        if strategy:
+            ligation_profiles.add(strategy)
+        for profile in step.get("kinetics_profiles", []):
+            if profile.get("name"):
+                enzymes.add(profile["name"])
+            metadata_tags.update(profile.get("metadata_tags", []))
+    return {
+        "enzymes": sorted(enzymes),
+        "buffers": sorted(buffers),
+        "ligation_profiles": sorted(ligation_profiles),
+        "metadata_tags": sorted(metadata_tags),
+    }
+
+
+def _analyse_sequence_guardrails(sequence: str, profile: SequenceToolkitProfile) -> dict[str, Any]:
+    """Run toolkit analyses to derive guardrail and kinetics summaries."""
+
+    # purpose: ensure DNA asset serialization reflects kinetics-aware toolkit outputs
+    template = [{"name": "asset_version", "sequence": sequence}]
+    primer_payload = sequence_toolkit.design_primers(template, config=profile)
+    digest_payload = sequence_toolkit.analyze_restriction_digest(template, config=profile)
+    assembly_payload = sequence_toolkit.simulate_assembly(
+        primer_payload,
+        digest_payload,
+        config=profile,
+        strategy=profile.assembly.strategy,
+    )
+    guardrails = {
+        "primers": _primer_guardrail_summary(primer_payload),
+        "restriction": _restriction_guardrail_summary(digest_payload),
+        "assembly": _assembly_guardrail_summary(assembly_payload),
+    }
+    kinetics = _kinetics_summary(digest_payload, assembly_payload)
+    presets = sorted({profile.assembly.strategy} | {
+        step.get("strategy")
+        for step in assembly_payload.get("steps", [])
+        if step.get("strategy")
+    })
+    ligation_strategies = {
+        (step.get("ligation_profile") or {}).get("strategy")
+        for step in assembly_payload.get("steps", [])
+        if (step.get("ligation_profile") or {}).get("strategy")
+    }
+    presets = sorted({preset for preset in presets + list(ligation_strategies) if preset})
+    return {
+        "guardrails": guardrails,
+        "kinetics": kinetics,
+        "assembly_presets": presets,
+    }
 
 
 def _build_version(
@@ -200,6 +550,9 @@ def serialize_version(version: models.DNAAssetVersion) -> DNAAssetVersionOut:
         )
         for annotation in version.annotations
     ]
+    analysis = _analyse_sequence_guardrails(version.sequence, _DEFAULT_PROFILE)
+    kinetics_summary = DNAAssetKineticsSummary(**analysis["kinetics"])
+    guardrails = DNAAssetGuardrailHeuristics(**analysis["guardrails"])
     return DNAAssetVersionOut(
         id=version.id,
         version_index=version.version_index,
@@ -209,6 +562,9 @@ def serialize_version(version: models.DNAAssetVersion) -> DNAAssetVersionOut:
         created_by_id=version.created_by_id,
         metadata=version.meta or {},
         annotations=annotations,
+        kinetics_summary=kinetics_summary,
+        assembly_presets=analysis["assembly_presets"],
+        guardrail_heuristics=guardrails,
     )
 
 

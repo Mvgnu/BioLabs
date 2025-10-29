@@ -16,15 +16,21 @@ from .dna_assets import (
     DNAAssetDiffResponse,
     DNAAssetGovernanceUpdate,
     DNAAssetGuardrailEventOut,
+    DNAAssetGuardrailHeuristics,
+    DNAAssetKineticsSummary,
     DNAAssetSummary,
     DNAAssetVersionCreate,
     DNAAssetVersionOut,
 )
 from .sequence_toolkit import (
     AssemblySimulationConfig,
+    AssemblySimulationResult,
     PrimerDesignConfig,
+    PrimerDesignResponse,
     QCConfig,
+    QCReportResponse,
     RestrictionDigestConfig,
+    RestrictionDigestResponse,
     SequenceToolkitProfile,
 )
 
@@ -2736,10 +2742,10 @@ class CloningPlannerSessionOut(BaseModel):
     status: str
     assembly_strategy: str
     input_sequences: list[dict[str, Any]]
-    primer_set: dict[str, Any]
-    restriction_digest: dict[str, Any]
-    assembly_plan: dict[str, Any]
-    qc_reports: dict[str, Any]
+    primer_set: PrimerDesignResponse
+    restriction_digest: RestrictionDigestResponse
+    assembly_plan: AssemblySimulationResult
+    qc_reports: QCReportResponse
     inventory_reservations: list[dict[str, Any]]
     guardrail_state: dict[str, Any]
     stage_timings: dict[str, Any]

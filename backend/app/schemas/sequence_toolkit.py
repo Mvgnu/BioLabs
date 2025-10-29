@@ -177,6 +177,7 @@ class RestrictionDigestResult(BaseModel):
     notes: List[str] = Field(default_factory=list)
     buffer: Optional[ReactionBuffer] = None
     metadata_tags: List[str] = Field(default_factory=list)
+    kinetics_profiles: List[EnzymeKineticsProfile] = Field(default_factory=list)
 
 
 class RestrictionDigestResponse(BaseModel):
@@ -218,6 +219,7 @@ class PrimerDesignRecord(BaseModel):
     reverse: Optional[PrimerCandidate] = None
     product_size: Optional[int] = None
     warnings: List[str] = Field(default_factory=list)
+    metadata_tags: List[str] = Field(default_factory=list)
     source: Optional[str] = None
     notes: List[str] = Field(default_factory=list)
 
@@ -250,6 +252,9 @@ class AssemblyStepMetrics(BaseModel):
     junction_success: float = Field(ge=0.0, le=1.0)
     ligation_efficiency: float = Field(default=0.85, ge=0.0, le=1.0)
     kinetics_score: float = Field(default=0.0, ge=0.0, le=1.0)
+    ligation_profile: Optional[LigationEfficiencyProfile] = None
+    buffer: Optional[ReactionBuffer] = None
+    kinetics_profiles: List[EnzymeKineticsProfile] = Field(default_factory=list)
     heuristics: Dict[str, Any] = Field(default_factory=dict)
     warnings: List[str] = Field(default_factory=list)
     metadata_tags: List[str] = Field(default_factory=list)
@@ -265,6 +270,7 @@ class AssemblySimulationResult(BaseModel):
     min_success: float = Field(ge=0.0, le=1.0)
     max_success: float = Field(ge=0.0, le=1.0)
     payload_contract: Dict[str, Any] = Field(default_factory=dict)
+    metadata_tags: List[str] = Field(default_factory=list)
 
 
 class QCReport(BaseModel):

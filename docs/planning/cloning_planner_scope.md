@@ -11,6 +11,7 @@
 - Celery infrastructure exists for narrative packaging and sequence analysis jobs (`backend/app/tasks.py`, `backend/app/workers/packaging.py`), providing patterns for resumable orchestration and storage management.【F:backend/app/workers/packaging.py†L30-L221】【F:backend/app/tasks.py†L46-L69】
 - Frontend sequence utilities sit under `frontend/app/sequence/` with hooks in `frontend/app/hooks` for API calls, which we can extend for planner flows.
 - Sequence toolkit catalogs now include enzyme kinetics (`backend/app/data/enzyme_kinetics.json`) and ligation efficiency presets (`backend/app/data/ligation_profiles.json`) surfaced through cached loaders so planner stages can consume consistent parameters without re-reading disk.
+- Guardrail snapshots inherit primer metadata tags, buffer provenance, and kinetics identifiers from these toolkit outputs so planner sessions and DNA asset serializers remain aligned.
 
 ## Backend Planner Orchestrator
 1. **Session Model**: Introduce `CloningPlannerSession` ORM model capturing uploaded sequences, chosen assembly strategy (`gibson`, `golden_gate`, etc.), reagent selections, and Celery task handles. Leverage SQLAlchemy patterns from `models.SequenceAnalysisJob` for async lifecycle management.
@@ -22,7 +23,7 @@
    - Payload contract builder stamping metadata tags for governance-aware dashboards.
    - Optional chromatogram QC ingestion to gate progression when sequencing data is attached.
 3. **Inventory Awareness**: Query `models.InventoryItem` for enzyme/reagent SKUs, enforce reservations, and record expirations. Provide failure reasons when stock insufficient.
-4. **Guardrail Hooks**: On finalization, trigger governance checks (restricted enzymes, policy compliance) using guardrail simulations before generating exportable assembly briefs.
+4. **Guardrail Hooks**: On finalization, trigger governance checks (restricted enzymes, policy compliance) using guardrail simulations before generating exportable assembly briefs, now enriched with primer metadata tags, ligation presets, buffer provenance, and kinetics identifiers for downstream DNA asset serialization.
 5. **Persistence**: Store each stage output as JSON columns (e.g., `primer_set`, `restriction_digest`, `assembly_plan`) plus audit timestamps for resumable sessions.
 6. **Celery Tasks**: Add `enqueue_cloning_plan` tasks to process heavy computations asynchronously, mirroring `enqueue_analyze_sequence_job` usage.
 

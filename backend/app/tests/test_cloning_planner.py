@@ -68,6 +68,9 @@ def test_record_cloning_planner_stage_updates_payload(client):
     assert updated["current_step"] == "restriction"
     assert updated["primer_set"]["primers"][0]["status"] == "ok"
     assert updated["guardrail_state"]["primers"]["primer_state"] in {"ok", "review"}
+    tags = updated["guardrail_state"]["primers"]["metadata_tags"]
+    assert tags
+    assert any(tag.startswith("primer_source:") for tag in tags)
 
 
 def test_finalize_cloning_planner_session_sets_completion(client):
@@ -89,3 +92,5 @@ def test_finalize_cloning_planner_session_sets_completion(client):
     completed_at = data["completed_at"]
     assert "T" in completed_at
     assert data["guardrail_state"]["qc"]["qc_checks"] >= 1
+    assert "buffers" in data["guardrail_state"]["restriction"]
+    assert "ligation_profiles" in data["guardrail_state"]["assembly"]
