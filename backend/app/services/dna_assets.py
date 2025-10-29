@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..analytics.governance import invalidate_governance_analytics_cache
 from ..schemas import (
     DNAAnnotationOut,
     DNAAnnotationPayload,
@@ -532,6 +533,11 @@ def record_guardrail_event(
     db.add(record)
     asset.updated_at = _utcnow()
     db.flush()
+    details = dict(event.details or {})
+    event_type = (event.event_type or "").lower()
+    severity = str(details.get("severity", "")).lower()
+    if "breach" in event_type or severity in {"critical", "major"}:
+        invalidate_governance_analytics_cache(execution_ids=[asset.id])
     return record
 
 

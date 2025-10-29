@@ -7,17 +7,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 import json
 from uuid import UUID
 
+from celery import chain
 from sqlalchemy.orm import Session
 
 from .. import models
+from ..analytics.governance import invalidate_governance_analytics_cache
 from ..database import SessionLocal
 from ..schemas.sequence_toolkit import SequenceToolkitProfile
 from . import sequence_toolkit
 from ..tasks import celery_app
+from . import qc_ingestion
 
 
 DEFAULT_TOOLKIT_PROFILE = SequenceToolkitProfile()
@@ -160,7 +163,11 @@ def compose_guardrail_state(
     if planner.assembly_plan:
         snapshot["assembly"] = _assembly_guardrail_summary(planner.assembly_plan)
     if planner.qc_reports:
-        snapshot["qc"] = _qc_guardrail_summary(planner.qc_reports)
+        qc_summary = _qc_guardrail_summary(planner.qc_reports)
+        previous_qc = snapshot.get("qc")
+        if isinstance(previous_qc, dict) and previous_qc.get("breaches"):
+            qc_summary.setdefault("breaches", previous_qc.get("breaches", []))
+        snapshot["qc"] = qc_summary
     if override:
         snapshot.update(override)
     return snapshot
@@ -195,7 +202,14 @@ def create_session(
         assembly_strategy=assembly_strategy,
         input_sequences=list(input_sequences or []),
         guardrail_state=dict(metadata.get("guardrail_state", {})) if metadata else {},
-        stage_timings={"intake": now.isoformat()},
+        stage_timings={
+            "intake": {
+                "completed_at": now.isoformat(),
+                "status": "intake_recorded",
+                "task_id": None,
+                "next_step": "primers",
+            }
+        },
         current_step="intake",
         created_at=now,
         updated_at=now,
@@ -212,6 +226,7 @@ def run_primer_design(
     planner: models.CloningPlannerSession,
     product_size_range: tuple[int, int] | None = None,
     target_tm: float | None = None,
+    task_id: str | None = None,
 ) -> models.CloningPlannerSession:
     """Execute primer design stage for a planner session."""
 
@@ -238,6 +253,7 @@ def run_primer_design(
         next_step="restriction",
         status="primer_complete",
         guardrail_state=guardrail_state,
+        task_id=task_id,
     )
 
 
@@ -246,6 +262,7 @@ def run_restriction_analysis(
     *,
     planner: models.CloningPlannerSession,
     enzymes: Sequence[str] | None = None,
+    task_id: str | None = None,
 ) -> models.CloningPlannerSession:
     """Execute restriction digest analysis for a planner session."""
 
@@ -271,6 +288,7 @@ def run_restriction_analysis(
         next_step="assembly",
         status="restriction_complete",
         guardrail_state=guardrail_state,
+        task_id=task_id,
     )
 
 
@@ -279,6 +297,7 @@ def run_assembly_planning(
     *,
     planner: models.CloningPlannerSession,
     strategy: str | None = None,
+    task_id: str | None = None,
 ) -> models.CloningPlannerSession:
     """Execute assembly simulation for a planner session."""
 
@@ -305,6 +324,7 @@ def run_assembly_planning(
         next_step="qc",
         status="assembly_complete",
         guardrail_state=guardrail_state,
+        task_id=task_id,
     )
 
 
@@ -313,6 +333,7 @@ def run_qc_checks(
     *,
     planner: models.CloningPlannerSession,
     chromatograms: Sequence[dict[str, Any]] | None = None,
+    task_id: str | None = None,
 ) -> models.CloningPlannerSession:
     """Execute QC evaluation for a planner session."""
 
@@ -321,23 +342,28 @@ def run_qc_checks(
     # outputs: updated planner with qc payload and guardrail snapshot
     # status: experimental
     profile = DEFAULT_TOOLKIT_PROFILE
+    ingestion = qc_ingestion.ingest_chromatograms(chromatograms)
     qc_payload = sequence_toolkit.evaluate_qc_reports(
         planner.assembly_plan,
         config=profile,
-        chromatograms=chromatograms,
+        chromatograms=ingestion["artifacts"],
     )
+    qc_summary = _qc_guardrail_summary(qc_payload)
+    qc_summary["breaches"] = ingestion["breaches"]
     guardrail_state = _merge_guardrail_state(
         planner,
-        {"qc": _qc_guardrail_summary(qc_payload)},
+        {"qc": qc_summary},
     )
+    status = "qc_guardrail_blocked" if ingestion["breaches"] else "qc_complete"
     return record_stage_progress(
         db,
         planner=planner,
         step="qc",
         payload=qc_payload,
         next_step="finalize",
-        status="qc_complete",
+        status=status,
         guardrail_state=guardrail_state,
+        task_id=task_id,
     )
 
 
@@ -356,63 +382,363 @@ def run_full_pipeline(
     # inputs: planner record with optional configuration overrides
     # outputs: planner record updated through qc stage
     # status: experimental
+    _mark_stage_started(db, planner, "primers", task_id=None)
     planner = run_primer_design(
         db,
         planner=planner,
         product_size_range=product_size_range,
         target_tm=target_tm,
     )
+    _mark_stage_started(db, planner, "restriction", task_id=None)
     planner = run_restriction_analysis(
         db,
         planner=planner,
         enzymes=enzymes,
     )
+    _mark_stage_started(db, planner, "assembly", task_id=None)
     planner = run_assembly_planning(
         db,
         planner=planner,
     )
+    _mark_stage_started(db, planner, "qc", task_id=None)
     planner = run_qc_checks(
         db,
         planner=planner,
         chromatograms=chromatograms,
     )
+    planner = _complete_pipeline_stage(db, planner, task_id=None)
     return planner
 
 
-@celery_app.task(bind=True, autoretry_for=(Exception,), retry_backoff=True, max_retries=3)
-def orchestrate_planner_pipeline(
+def _mark_stage_started(
+    db: Session,
+    planner: models.CloningPlannerSession,
+    stage: str,
+    *,
+    task_id: str | None,
+) -> models.CloningPlannerSession:
+    """Record the start of a pipeline stage for checkpoint tracking."""
+
+    # purpose: capture resumable checkpoint metadata before stage execution
+    now = _utcnow()
+    timings = dict(planner.stage_timings or {})
+    entry = dict(timings.get(stage) or {})
+    previous_runs = entry.get("retries", 0)
+    if entry:
+        previous_runs += 1
+    entry.update(
+        {
+            "started_at": now.isoformat(),
+            "status": f"{stage}_running",
+            "retries": previous_runs,
+            "error": None,
+        }
+    )
+    if task_id is not None:
+        entry["task_id"] = task_id
+    else:
+        entry.setdefault("task_id", None)
+    timings[stage] = entry
+    planner.stage_timings = timings
+    planner.current_step = stage
+    planner.status = f"{stage}_running"
+    if task_id is not None:
+        planner.celery_task_id = task_id
+    planner.updated_at = now
+    db.add(planner)
+    db.flush()
+    return planner
+
+
+def _record_stage_failure(
+    db: Session,
+    planner: models.CloningPlannerSession,
+    stage: str,
+    exc: Exception,
+    *,
+    task_id: str | None,
+) -> None:
+    """Persist failure metadata when a stage errors during execution."""
+
+    now = _utcnow()
+    timings = dict(planner.stage_timings or {})
+    entry = dict(timings.get(stage) or {})
+    entry.update(
+        {
+            "status": f"{stage}_errored",
+            "error": str(exc),
+            "completed_at": now.isoformat(),
+        }
+    )
+    if task_id is not None:
+        entry["task_id"] = task_id
+    timings[stage] = entry
+    planner.stage_timings = timings
+    planner.status = "errored"
+    planner.last_error = str(exc)
+    planner.updated_at = now
+    if task_id is not None:
+        planner.celery_task_id = task_id
+    db.add(planner)
+    db.commit()
+
+
+def _complete_pipeline_stage(
+    db: Session,
+    planner: models.CloningPlannerSession,
+    *,
+    task_id: str | None,
+) -> models.CloningPlannerSession:
+    """Summarise guardrail state and mark pipeline completion checkpoint."""
+
+    guardrails = compose_guardrail_state(planner)
+    planner.guardrail_state = guardrails
+    qc_breaches = guardrails.get("qc", {}).get("breaches", [])
+    status = "qc_guardrail_blocked" if qc_breaches else "ready_for_finalize"
+    now = _utcnow()
+    timings = dict(planner.stage_timings or {})
+    entry = dict(timings.get("finalize") or {})
+    entry.update(
+        {
+            "status": status,
+            "completed_at": now.isoformat(),
+            "task_id": task_id,
+            "guardrail": guardrails.get("qc"),
+            "error": None,
+        }
+    )
+    timings["finalize"] = entry
+    planner.stage_timings = timings
+    planner.status = status
+    planner.current_step = "finalize"
+    planner.updated_at = now
+    if task_id is not None:
+        planner.celery_task_id = task_id
+    if status == "qc_guardrail_blocked":
+        invalidate_governance_analytics_cache(execution_ids=[planner.id])
+    db.add(planner)
+    db.flush()
+    db.refresh(planner)
+    return planner
+
+
+def _execute_stage_task(
+    task,
+    planner_id: str,
+    stage: str,
+    runner: Callable[[Session, models.CloningPlannerSession, str | None], models.CloningPlannerSession],
+) -> str:
+    """Execute a planner stage within a Celery worker context."""
+
+    db = SessionLocal()
+    planner: models.CloningPlannerSession | None = None
+    task_id = getattr(task.request, "id", None)
+    try:
+        planner = db.get(models.CloningPlannerSession, UUID(planner_id))
+        if not planner:
+            return planner_id
+        _mark_stage_started(db, planner, stage, task_id=task_id)
+        planner = runner(db, planner, task_id)
+        db.commit()
+        return str(planner.id)
+    except Exception as exc:  # pragma: no cover - Celery handles retries
+        db.rollback()
+        if planner is None:
+            planner = db.get(models.CloningPlannerSession, UUID(planner_id))
+        if planner is not None:
+            _record_stage_failure(db, planner, stage, exc, task_id=task_id)
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=3,
+    name="app.workers.cloning_planner.primer_stage",
+)
+def primer_stage_task(
     self,
     planner_id: str,
     *,
     product_size_range: tuple[int, int] | None = None,
     target_tm: float | None = None,
+) -> str:
+    """Celery task for primer design stage."""
+
+    return _execute_stage_task(
+        self,
+        planner_id,
+        "primers",
+        lambda db, planner, task_id: run_primer_design(
+            db,
+            planner=planner,
+            product_size_range=product_size_range,
+            target_tm=target_tm,
+            task_id=task_id,
+        ),
+    )
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=3,
+    name="app.workers.cloning_planner.restriction_stage",
+)
+def restriction_stage_task(
+    self,
+    planner_id: str,
+    *,
     enzymes: Sequence[str] | None = None,
-) -> None:
-    """Celery task to orchestrate cloning planner pipeline."""
+) -> str:
+    """Celery task for restriction digest stage."""
+
+    enzyme_list: Sequence[str] | None = list(enzymes) if enzymes else None
+    return _execute_stage_task(
+        self,
+        planner_id,
+        "restriction",
+        lambda db, planner, task_id: run_restriction_analysis(
+            db,
+            planner=planner,
+            enzymes=enzyme_list,
+            task_id=task_id,
+        ),
+    )
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=3,
+    name="app.workers.cloning_planner.assembly_stage",
+)
+def assembly_stage_task(
+    self,
+    planner_id: str,
+    *,
+    strategy: str | None = None,
+) -> str:
+    """Celery task for assembly planning stage."""
+
+    return _execute_stage_task(
+        self,
+        planner_id,
+        "assembly",
+        lambda db, planner, task_id: run_assembly_planning(
+            db,
+            planner=planner,
+            strategy=strategy,
+            task_id=task_id,
+        ),
+    )
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=3,
+    name="app.workers.cloning_planner.qc_stage",
+)
+def qc_stage_task(
+    self,
+    planner_id: str,
+    *,
+    chromatograms: Sequence[dict[str, Any]] | None = None,
+) -> str:
+    """Celery task for QC evaluation stage."""
+
+    chroma_payload = list(chromatograms) if chromatograms else None
+    return _execute_stage_task(
+        self,
+        planner_id,
+        "qc",
+        lambda db, planner, task_id: run_qc_checks(
+            db,
+            planner=planner,
+            chromatograms=chroma_payload,
+            task_id=task_id,
+        ),
+    )
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    max_retries=3,
+    name="app.workers.cloning_planner.finalize_stage",
+)
+def finalize_stage_task(self, planner_id: str) -> str:
+    """Celery task to summarise guardrails after QC completion."""
+
+    return _execute_stage_task(
+        self,
+        planner_id,
+        "finalize",
+        lambda db, planner, task_id: _complete_pipeline_stage(
+            db,
+            planner,
+            task_id=task_id,
+        ),
+    )
+
+
+def _prepare_enqueued_state(planner_id: UUID, stage: str) -> None:
+    """Initialise queue metadata for a planner stage."""
 
     db = SessionLocal()
     try:
-        record = db.get(models.CloningPlannerSession, UUID(planner_id))
+        record = db.get(models.CloningPlannerSession, planner_id)
         if not record:
             return
-        run_full_pipeline(
-            db,
-            record,
-            product_size_range=product_size_range,
-            target_tm=target_tm,
-            enzymes=enzymes,
+        now = _utcnow()
+        timings = dict(record.stage_timings or {})
+        entry = dict(timings.get(stage) or {})
+        entry.update(
+            {
+                "status": f"{stage}_queued",
+                "queued_at": now.isoformat(),
+                "error": None,
+            }
         )
+        entry.setdefault("task_id", None)
+        timings[stage] = entry
+        record.stage_timings = timings
+        record.current_step = stage
+        record.status = f"{stage}_queued"
+        record.celery_task_id = None
+        record.updated_at = now
+        db.add(record)
         db.commit()
-    except Exception as exc:  # pragma: no cover - Celery handles retries
-        db.rollback()
-        record = db.get(models.CloningPlannerSession, UUID(planner_id))
-        if record:
-            record.last_error = str(exc)
-            record.status = "errored"
-            record.updated_at = _utcnow()
-            db.add(record)
-            db.commit()
-        raise
+    finally:
+        db.close()
+
+
+def _assign_task_reference(planner_id: UUID, task_id: str | None) -> None:
+    """Persist Celery task identifiers for orchestration tracking."""
+
+    db = SessionLocal()
+    try:
+        record = db.get(models.CloningPlannerSession, planner_id)
+        if not record:
+            return
+        stage = record.current_step or "primers"
+        timings = dict(record.stage_timings or {})
+        entry = dict(timings.get(stage) or {})
+        entry["task_id"] = task_id
+        timings[stage] = entry
+        record.stage_timings = timings
+        record.celery_task_id = task_id
+        record.updated_at = _utcnow()
+        db.add(record)
+        db.commit()
     finally:
         db.close()
 
@@ -423,19 +749,57 @@ def enqueue_pipeline(
     product_size_range: tuple[int, int] | None = None,
     target_tm: float | None = None,
     enzymes: Sequence[str] | None = None,
-) -> None:
+    chromatograms: Sequence[dict[str, Any]] | None = None,
+    resume_from: str | None = None,
+) -> str | None:
     """Schedule cloning planner orchestration via Celery."""
 
-    task_kwargs = {
-        "planner_id": str(planner_id),
-        "product_size_range": product_size_range,
-        "target_tm": target_tm,
-        "enzymes": list(enzymes) if enzymes else None,
-    }
+    start_stage = (resume_from or "primers").lower()
+    if start_stage == "intake":
+        start_stage = "primers"
+    stage_plan = [
+        (
+            "primers",
+            primer_stage_task.s(
+                str(planner_id),
+                product_size_range=product_size_range,
+                target_tm=target_tm,
+            ),
+        ),
+        (
+            "restriction",
+            restriction_stage_task.s(enzymes=list(enzymes) if enzymes else None),
+        ),
+        (
+            "assembly",
+            assembly_stage_task.s(),
+        ),
+        (
+            "qc",
+            qc_stage_task.s(chromatograms=list(chromatograms) if chromatograms else None),
+        ),
+        (
+            "finalize",
+            finalize_stage_task.s(),
+        ),
+    ]
+    start_index = next((idx for idx, (name, _) in enumerate(stage_plan) if name == start_stage), 0)
+    signatures = [sig.clone() for _, sig in stage_plan[start_index:]]
+    if signatures:
+        if start_index > 0:
+            existing_args = tuple(signatures[0].args or ())
+            signatures[0].args = (str(planner_id),) + existing_args
+    if not signatures:
+        return None
+    _prepare_enqueued_state(planner_id, stage_plan[start_index][0])
+    pipeline = chain(*signatures)
     if celery_app.conf.task_always_eager:
-        orchestrate_planner_pipeline(**task_kwargs)
+        result = pipeline.apply()
     else:  # pragma: no cover - exercised in production deployments
-        orchestrate_planner_pipeline.delay(**task_kwargs)
+        result = pipeline.apply_async()
+    task_id = getattr(result, "id", None)
+    _assign_task_reference(planner_id, task_id)
+    return task_id
 
 
 def record_stage_progress(
@@ -480,7 +844,9 @@ def record_stage_progress(
     if planner.assembly_plan:
         guardrail_snapshot["assembly"] = _assembly_guardrail_summary(planner.assembly_plan)
     if planner.qc_reports:
-        guardrail_snapshot["qc"] = _qc_guardrail_summary(planner.qc_reports)
+        qc_state = _qc_guardrail_summary(planner.qc_reports)
+        qc_state.setdefault("breaches", [])
+        guardrail_snapshot["qc"] = qc_state
     state_override: dict[str, Any] | None = None
     if guardrail_state is not None:
         state_override = guardrail_state
@@ -494,7 +860,20 @@ def record_stage_progress(
         planner.celery_task_id = task_id
     planner.last_error = error
     planner.stage_timings = dict(planner.stage_timings or {})
-    planner.stage_timings[step] = now.isoformat()
+    checkpoint_payload = dict(planner.stage_timings.get(step) or {})
+    checkpoint_payload.update(
+        {
+            "completed_at": now.isoformat(),
+            "status": status,
+            "task_id": task_id,
+            "next_step": next_step,
+            "error": error,
+        }
+    )
+    guardrail_key = guardrail_snapshot.get(step)
+    if isinstance(guardrail_key, dict):
+        checkpoint_payload["guardrail"] = guardrail_key
+    planner.stage_timings[step] = checkpoint_payload
     planner.updated_at = now
     if next_step:
         planner.current_step = next_step

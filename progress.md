@@ -783,3 +783,11 @@ This implementation establishes BioLab as a data-driven laboratory management pl
 - Injected guardrail projections into experiment console export payloads, adding tooltips, badges, and disabled states for risky stages alongside projected delay messaging.
 - Normalised guardrail payloads in governance API clients and experiment console hooks so React components consume typed summaries consistently.
 - Expanded backend pytest coverage to ensure guardrail summaries surface through export history responses and added Vitest assertions for the disabled-stage experience.
+
+## 2025-07-07 - Cloning Planner Celery Orchestration & QC Guardrails
+
+- Refactored cloning planner orchestration into chained Celery stages with resumable checkpoints, retry counters, and per-stage task IDs persisted on the session model.
+- Added chromatogram ingestion heuristics (`services/qc_ingestion.py`) and QC guardrail gating that invalidates governance analytics when breaches block finalization.
+- Exposed resume and cancel REST endpoints, expanded Pydantic schemas, and enriched documentation to cover recovery flows and cancellation checkpoints.
+- Enhanced DNA asset guardrail events to invalidate governance analytics when severe breaches are recorded, aligning cloning planner guardrails with broader governance dashboards.
+- Extended pytest coverage for resume flows, guardrail blocking, and cancellation checkpoints to ensure the orchestration contract remains stable under retries.

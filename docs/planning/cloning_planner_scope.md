@@ -25,12 +25,14 @@
 3. **Inventory Awareness**: Query `models.InventoryItem` for enzyme/reagent SKUs, enforce reservations, and record expirations. Provide failure reasons when stock insufficient.
 4. **Guardrail Hooks**: On finalization, trigger governance checks (restricted enzymes, policy compliance) using guardrail simulations before generating exportable assembly briefs, now enriched with primer metadata tags, ligation presets, buffer provenance, and kinetics identifiers for downstream DNA asset serialization.
 5. **Persistence**: Store each stage output as JSON columns (e.g., `primer_set`, `restriction_digest`, `assembly_plan`) plus audit timestamps for resumable sessions.
-6. **Celery Tasks**: Add `enqueue_cloning_plan` tasks to process heavy computations asynchronously, mirroring `enqueue_analyze_sequence_job` usage.
+6. **Celery Tasks**: Add chained Celery signatures per stage so intake → primers → restriction → assembly → QC → finalize checkpoints persist retries, task IDs, and guardrail summaries. Resume logic should restart from `current_step`, while cancellations revoke active tasks and freeze the checkpoint timeline.
 
 ## API Surface
 - New router `backend/app/routes/cloning_planner.py` with endpoints:
   - `POST /api/cloning-planner/sessions` – create session, upload sequences, choose strategy.
   - `POST /api/cloning-planner/{session_id}/steps/{step}` – trigger stage transitions (primer, restriction, assembly, qc).
+  - `POST /api/cloning-planner/{session_id}/resume` – restart orchestration from the persisted checkpoint with optional overrides.
+  - `POST /api/cloning-planner/{session_id}/cancel` – revoke outstanding tasks, capture operator reason, and freeze the timeline for review.
   - `GET /api/cloning-planner/{session_id}` – retrieve aggregated outputs and guardrail status.
   - `POST /api/cloning-planner/{session_id}/finalize` – persist final plan, enforce guardrails, attach inventory reservations.
 - Schema updates in `backend/app/schemas.py` for session payloads and stage outputs.
