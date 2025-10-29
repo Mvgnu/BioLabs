@@ -35,6 +35,9 @@ from ..schemas import (
     SequenceToolkitProfile,
     DNAViewerAnalytics,
     DNAViewerFeature,
+    DNAViewerGovernanceContext,
+    DNAViewerGuardrailTimelineEvent,
+    DNAViewerLineageBreadcrumb,
     DNAViewerPayload,
     DNAViewerTrack,
     DNAViewerTranslation,
@@ -1195,6 +1198,7 @@ def build_viewer_payload(
         codon_adaptation_index=cai,
         motif_hotspots=motif_hotspots,
     )
+    governance_context = _build_viewer_governance_context(asset, version_out)
     return DNAViewerPayload(
         asset=asset_summary,
         version=version_out,
@@ -1206,5 +1210,96 @@ def build_viewer_payload(
         guardrails=guardrails,
         analytics=analytics,
         diff=diff,
+        governance_context=governance_context,
     )
+
+
+def _build_viewer_governance_context(
+    asset: models.DNAAsset,
+    version_out: DNAAssetVersionOut,
+) -> DNAViewerGovernanceContext:
+    recent_versions = sorted(asset.versions, key=lambda v: v.version_index)[-6:]
+    lineage = [
+        DNAViewerLineageBreadcrumb(
+            version_id=version.id,
+            version_index=version.version_index,
+            created_at=version.created_at,
+            created_by_id=version.created_by_id,
+            sequence_length=version.sequence_length,
+            comment=version.comment,
+        )
+        for version in recent_versions
+    ]
+    guardrail_history = [
+        DNAViewerGuardrailTimelineEvent(
+            id=event.id,
+            event_type=event.event_type,
+            severity=(event.details or {}).get("severity"),
+            created_at=event.created_at,
+            created_by_id=event.created_by_id,
+            details=event.details or {},
+        )
+        for event in asset.guardrail_events[:10]
+    ]
+    regulatory_density = _compute_regulatory_feature_density(version_out)
+    mitigation_playbooks: set[str] = set()
+    for event in asset.guardrail_events:
+        details = event.details or {}
+        candidates: list[str] = []
+        if isinstance(details.get("playbook"), str):
+            candidates.append(details["playbook"])
+        alias = details.get("mitigation_playbook")
+        if isinstance(alias, str):
+            candidates.append(alias)
+        mitigation_detail = details.get("mitigation")
+        if isinstance(mitigation_detail, dict):
+            playbook = mitigation_detail.get("playbook")
+            if isinstance(playbook, str):
+                candidates.append(playbook)
+        for candidate in candidates:
+            mitigation_playbooks.add(candidate)
+        if len(mitigation_playbooks) >= 5:
+            break
+    return DNAViewerGovernanceContext(
+        lineage=lineage,
+        guardrail_history=guardrail_history,
+        regulatory_feature_density=regulatory_density,
+        mitigation_playbooks=sorted(mitigation_playbooks),
+    )
+
+
+def _compute_regulatory_feature_density(
+    version_out: DNAAssetVersionOut,
+) -> float | None:
+    annotations = version_out.annotations or []
+    total = len(annotations)
+    if total == 0:
+        return None
+    regulatory_keywords = {
+        "promoter",
+        "operator",
+        "enhancer",
+        "terminator",
+        "utr",
+        "regulatory",
+        "riboswitch",
+    }
+    matches = 0
+    for annotation in annotations:
+        feature_type = (annotation.feature_type or "").lower()
+        qualifiers = annotation.qualifiers or {}
+        qualifier_values = " ".join(
+            [
+                " ".join(value)
+                if isinstance(value, (list, tuple))
+                else str(value)
+                for value in qualifiers.values()
+            ]
+        ).lower()
+        if any(keyword in feature_type for keyword in regulatory_keywords):
+            matches += 1
+            continue
+        if any(keyword in qualifier_values for keyword in regulatory_keywords):
+            matches += 1
+    return round(matches / total, 4)
 

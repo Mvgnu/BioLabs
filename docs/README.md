@@ -10,6 +10,7 @@ This directory houses living documentation for the narrative export platform. Ea
 - `governance/operator_sop.md`: Operational playbook covering cross-surface guardrails and escalation procedures.
 - `planning/README.md`: Index for forward-looking implementation plans (cloning orchestrator, DNA assets, documentation readiness).
 - `dna_assets.md`: Captures the initial DNA asset lifecycle foundation including data model, services, routes, and validation coverage.
+- `operations/custody_governance.md`: Describes freezer custody governance models, guardrail heuristics, and SOP expectations for custody dashboards.
 
 ## Maintenance
 - Update this index whenever new documentation is added or existing guides significantly change.

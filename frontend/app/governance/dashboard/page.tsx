@@ -1,8 +1,11 @@
 'use client'
 
 import React, { useMemo } from 'react'
+import CustodyFreezerMap from '../../components/governance/CustodyFreezerMap'
+import CustodyLedgerPanel from '../../components/governance/CustodyLedgerPanel'
 import GuardrailHealthDashboard from '../../components/governance/GuardrailHealthDashboard'
 import OverdueDashboard from '../../components/governance/OverdueDashboard'
+import { useCustodyFreezers, useCustodyLogs } from '../../hooks/useCustodyGovernance'
 import { useGovernanceAnalytics, useGuardrailHealth } from '../../hooks/useExperimentConsole'
 import type { GovernanceStageMetrics } from '../../types'
 
@@ -13,6 +16,8 @@ import type { GovernanceStageMetrics } from '../../types'
 export default function GovernanceOverdueDashboardPage() {
   const analyticsQuery = useGovernanceAnalytics(null)
   const guardrailHealthQuery = useGuardrailHealth({ limit: 25 })
+  const custodyFreezersQuery = useCustodyFreezers()
+  const custodyLogsQuery = useCustodyLogs({ limit: 25 })
 
   const summary = analyticsQuery.data?.meta.overdue_stage_summary
   const stageMetrics = useMemo<Record<string, GovernanceStageMetrics> | undefined>(() => {
@@ -33,6 +38,16 @@ export default function GovernanceOverdueDashboardPage() {
         stageMetrics={stageMetrics}
         isLoading={analyticsQuery.isLoading}
         error={analyticsQuery.error as Error | null}
+      />
+      <CustodyFreezerMap
+        units={custodyFreezersQuery.data}
+        isLoading={custodyFreezersQuery.isLoading}
+        error={custodyFreezersQuery.error as Error | null}
+      />
+      <CustodyLedgerPanel
+        logs={custodyLogsQuery.data}
+        isLoading={custodyLogsQuery.isLoading}
+        error={custodyLogsQuery.error as Error | null}
       />
     </div>
   )

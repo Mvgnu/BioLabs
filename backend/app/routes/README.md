@@ -44,3 +44,11 @@
 - `GET /api/dna-assets/{asset_id}/viewer` composes viewer-ready payloads containing feature tracks, guardrail summaries, translations, kinetics, and optional diffs against a comparison version.
 - `POST /api/dna-assets/{asset_id}/guardrails` records governance events tied to asset versions for dashboard telemetry.
 - **RBAC**: Restricted to asset creators and administrators during the initial implementation phase; team-scoped filters will expand in follow-up work.
+
+## Custody Governance
+- **Module**: `sample_governance.py`
+- **Capabilities**:
+  - `GET /api/governance/custody/freezers` emits freezer unit topology trees with compartment occupancy, latest activity, and guardrail alerts.
+  - `GET /api/governance/custody/logs` surfaces custody ledger entries filtered by asset, planner session, or compartment for audit timelines.
+  - `POST /api/governance/custody/logs` records guardrail-evaluated custody movements, automatically flagging lineage or capacity concerns.
+- **RBAC**: Limited to administrators while custody guardrail policies stabilize; future work will introduce delegated operator roles.

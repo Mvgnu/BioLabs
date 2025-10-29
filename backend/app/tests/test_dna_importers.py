@@ -115,3 +115,8 @@ def test_build_viewer_payload_tracks_and_translations(viewer_asset):
     assert payload.analytics.codon_adaptation_index >= 0.0
     assert isinstance(payload.analytics.motif_hotspots, list)
     assert "mitigations" in payload.analytics.thermodynamic_risk
+    assert payload.governance_context.lineage
+    assert payload.governance_context.guardrail_history == []
+    assert payload.governance_context.regulatory_feature_density is None or isinstance(
+        payload.governance_context.regulatory_feature_density, float
+    )

@@ -15,6 +15,7 @@ experimental
 - Importer suite under `backend/app/services/importers/` normalises GenBank, SBOL, and SnapGene uploads into `DNAImportResult` payloads before invoking `dna_assets.create_asset`, preserving topology, annotations, source metadata, provenance tags, and original attachments for governance provenance. The GenBank adapter now sorts compound joins, propagates regulatory qualifiers, and extends provenance tags to include experiment, function, and bound-molecule descriptors.
 - Viewer payload builder `dna_assets.build_viewer_payload` assembles feature tracks, guardrail overlays, translated CDS frames, kinetics summaries, analytics overlays (codon usage, GC skew, thermodynamic risk), and optional version diffs for frontend consumption using the `DNAViewerPayload` schema family.
 - Viewer analytics now layer translation frame utilisation, codon adaptation index, and motif hotspot overlays alongside refreshed thermodynamic mitigation guidance to support governance consumers.
+- Viewer payloads now embed governance-first context including lineage breadcrumbs, guardrail event history, regulatory feature density heuristics, and surfaced mitigation playbooks that align with custody dashboards.
 - Pytest coverage (`backend/app/tests/test_dna_assets.py`, `backend/app/tests/test_dna_importers.py`) exercises asset lifecycle APIs, importer fidelity, and viewer payload construction using representative fixture files stored under `backend/app/tests/data/importers/`.
 
 ## importer workflows
