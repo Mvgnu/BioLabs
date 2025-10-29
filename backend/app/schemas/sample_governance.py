@@ -39,6 +39,8 @@ class FreezerUnitTopology(BaseModel):
 class SampleCustodyLogBase(BaseModel):
     asset_version_id: UUID | None = None
     planner_session_id: UUID | None = None
+    protocol_execution_id: UUID | None = None
+    execution_event_id: UUID | None = None
     compartment_id: UUID | None = None
     custody_action: str = Field(min_length=1)
     quantity: int | None = None
@@ -62,6 +64,18 @@ class SampleCustodyLogOut(SampleCustodyLogBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ProtocolExecutionContext(BaseModel):
+    id: UUID
+    status: str
+    run_by: UUID | None = None
+    template_id: UUID | None = None
+    template_name: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CustodyEscalation(BaseModel):
     id: UUID
     status: str
@@ -78,6 +92,9 @@ class CustodyEscalation(BaseModel):
     freezer_unit_id: UUID | None = None
     compartment_id: UUID | None = None
     asset_version_id: UUID | None = None
+    protocol_execution_id: UUID | None = None
+    execution_event_id: UUID | None = None
+    protocol_execution: ProtocolExecutionContext | None = None
     created_at: datetime
     updated_at: datetime
 

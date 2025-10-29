@@ -22,6 +22,8 @@ export interface CustodyLogFilters {
   assetId?: string | null
   assetVersionId?: string | null
   plannerSessionId?: string | null
+  protocolExecutionId?: string | null
+  executionEventId?: string | null
   compartmentId?: string | null
   limit?: number | null
 }
@@ -34,6 +36,8 @@ export const useCustodyLogs = (filters?: CustodyLogFilters) => {
     filters?.assetId ?? null,
     filters?.assetVersionId ?? null,
     filters?.plannerSessionId ?? null,
+    filters?.protocolExecutionId ?? null,
+    filters?.executionEventId ?? null,
     filters?.compartmentId ?? null,
     filters?.limit ?? null,
   ]
@@ -44,6 +48,8 @@ export const useCustodyLogs = (filters?: CustodyLogFilters) => {
         asset_id: filters?.assetId ?? undefined,
         asset_version_id: filters?.assetVersionId ?? undefined,
         planner_session_id: filters?.plannerSessionId ?? undefined,
+        protocol_execution_id: filters?.protocolExecutionId ?? undefined,
+        execution_event_id: filters?.executionEventId ?? undefined,
         compartment_id: filters?.compartmentId ?? undefined,
         limit: filters?.limit ?? undefined,
       }),
@@ -67,6 +73,8 @@ export const useCreateCustodyLog = () => {
 export interface CustodyEscalationFilters {
   teamId?: string | null
   status?: string[] | null
+  protocolExecutionId?: string | null
+  executionEventId?: string | null
 }
 
 export const useCustodyEscalations = (filters?: CustodyEscalationFilters) => {
@@ -76,6 +84,8 @@ export const useCustodyEscalations = (filters?: CustodyEscalationFilters) => {
     'escalations',
     filters?.teamId ?? null,
     filters?.status ? filters.status.join(',') : null,
+    filters?.protocolExecutionId ?? null,
+    filters?.executionEventId ?? null,
   ]
   return useQuery({
     queryKey: key,
@@ -83,6 +93,8 @@ export const useCustodyEscalations = (filters?: CustodyEscalationFilters) => {
       governanceApi.listCustodyEscalations({
         team_id: filters?.teamId ?? undefined,
         status: filters?.status ?? undefined,
+        protocol_execution_id: filters?.protocolExecutionId ?? undefined,
+        execution_event_id: filters?.executionEventId ?? undefined,
       }),
     staleTime: 15 * 1000,
   })

@@ -79,6 +79,37 @@ def test_custody_escalation_and_fault_flow(client):
     headers, admin_id = _admin_headers()
     team_id, freezer_id, compartment_id = _bootstrap_custody_fixture(admin_id)
 
+    db = TestingSessionLocal()
+    try:
+        template = models.ProtocolTemplate(
+            name="Sample Protocol",
+            version="1.0",
+            content="steps",
+            team_id=team_id,
+            created_by=admin_id,
+        )
+        db.add(template)
+        db.flush()
+        execution = models.ProtocolExecution(
+            template_id=template.id,
+            run_by=admin_id,
+            status="running",
+        )
+        db.add(execution)
+        db.flush()
+        event = models.ExecutionEvent(
+            execution_id=execution.id,
+            event_type="protocol.step.completed",
+            payload={"step": "incubate"},
+            sequence=1,
+        )
+        db.add(event)
+        db.commit()
+        execution_id = execution.id
+        event_id = event.id
+    finally:
+        db.close()
+
     payload = {
         "asset_version_id": None,
         "planner_session_id": None,
@@ -88,6 +119,8 @@ def test_custody_escalation_and_fault_flow(client):
         "quantity": 3,
         "quantity_units": "vials",
         "meta": {"guardrail_flags": ["fault.temperature.high"]},
+        "protocol_execution_id": str(execution_id),
+        "execution_event_id": str(event_id),
     }
 
     response = client.post(
@@ -98,6 +131,8 @@ def test_custody_escalation_and_fault_flow(client):
     assert response.status_code == 201
     body = response.json()
     assert "capacity.exceeded" in body["guardrail_flags"]
+    assert body["protocol_execution_id"] == str(execution_id)
+    assert body["execution_event_id"] == str(event_id)
 
     escalations = client.get("/api/governance/custody/escalations", headers=headers)
     assert escalations.status_code == 200
@@ -106,6 +141,10 @@ def test_custody_escalation_and_fault_flow(client):
     escalation_id = escalation_payload[0]["id"]
     assert escalation_payload[0]["severity"] == "critical"
     assert escalation_payload[0]["status"] == "open"
+    assert escalation_payload[0]["protocol_execution_id"] == str(execution_id)
+    assert escalation_payload[0]["execution_event_id"] == str(event_id)
+    context = escalation_payload[0]["protocol_execution"]
+    assert context and context["id"] == str(execution_id)
 
     # Notifications are issued automatically on escalation creation
     assert any("Custody escalation" in subject for _, subject, _ in notify.EMAIL_OUTBOX)
@@ -124,6 +163,18 @@ def test_custody_escalation_and_fault_flow(client):
     )
     assert resolved.status_code == 200
     assert resolved.json()["status"] == "resolved"
+
+    db_check = TestingSessionLocal()
+    try:
+        execution_row = db_check.get(models.ProtocolExecution, execution_id)
+        assert execution_row is not None
+        custody_state = (execution_row.result or {}).get("custody", {})
+        ledger = custody_state.get("ledger", [])
+        assert any(entry["log_id"] == body["id"] for entry in ledger)
+        escalation_state = custody_state.get("escalations", {})
+        assert escalation_state[str(escalation_id)]["status"] == "resolved"
+    finally:
+        db_check.close()
 
     faults = client.get("/api/governance/custody/faults", headers=headers)
     assert faults.status_code == 200

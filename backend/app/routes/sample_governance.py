@@ -42,6 +42,8 @@ def list_custody_logs(
     asset_id: UUID | None = None,
     asset_version_id: UUID | None = None,
     planner_session_id: UUID | None = None,
+    protocol_execution_id: UUID | None = None,
+    execution_event_id: UUID | None = None,
     compartment_id: UUID | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -53,6 +55,8 @@ def list_custody_logs(
         asset_id=asset_id,
         asset_version_id=asset_version_id,
         planner_session_id=planner_session_id,
+        protocol_execution_id=protocol_execution_id,
+        execution_event_id=execution_event_id,
         compartment_id=compartment_id,
         limit=limit,
     )
@@ -83,6 +87,8 @@ def create_custody_log(
 def list_custody_escalations(
     team_id: UUID | None = None,
     status_filters: list[str] | None = Query(default=None, alias="status"),
+    protocol_execution_id: UUID | None = None,
+    execution_event_id: UUID | None = None,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
@@ -91,6 +97,8 @@ def list_custody_escalations(
         db,
         team_id=team_id,
         statuses=status_filters,
+        protocol_execution_id=protocol_execution_id,
+        execution_event_id=execution_event_id,
     )
     return escalations
 

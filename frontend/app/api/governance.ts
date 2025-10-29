@@ -261,21 +261,25 @@ export const governanceApi = {
     asset_id?: string | null
     asset_version_id?: string | null
     planner_session_id?: string | null
+    protocol_execution_id?: string | null
+    execution_event_id?: string | null
     compartment_id?: string | null
     limit?: number | null
   }) {
     const response = await api.get<CustodyLogEntry[]>(
       '/api/governance/custody/logs',
       {
-        params: {
-          asset_id: params?.asset_id ?? undefined,
-          asset_version_id: params?.asset_version_id ?? undefined,
-          planner_session_id: params?.planner_session_id ?? undefined,
-          compartment_id: params?.compartment_id ?? undefined,
-          limit: params?.limit ?? undefined,
+          params: {
+            asset_id: params?.asset_id ?? undefined,
+            asset_version_id: params?.asset_version_id ?? undefined,
+            planner_session_id: params?.planner_session_id ?? undefined,
+            protocol_execution_id: params?.protocol_execution_id ?? undefined,
+            execution_event_id: params?.execution_event_id ?? undefined,
+            compartment_id: params?.compartment_id ?? undefined,
+            limit: params?.limit ?? undefined,
+          },
         },
-      },
-    )
+      )
     return response.data
   },
   async createCustodyLog(payload: CustodyLogCreate) {
@@ -288,16 +292,23 @@ export const governanceApi = {
     )
     return response.data
   },
-  async listCustodyEscalations(params?: { team_id?: string | null; status?: string[] | null }) {
+  async listCustodyEscalations(params?: {
+    team_id?: string | null
+    status?: string[] | null
+    protocol_execution_id?: string | null
+    execution_event_id?: string | null
+  }) {
     const response = await api.get<CustodyEscalation[]>(
       '/api/governance/custody/escalations',
       {
-        params: {
-          team_id: params?.team_id ?? undefined,
-          status: params?.status ?? undefined,
+          params: {
+            team_id: params?.team_id ?? undefined,
+            status: params?.status ?? undefined,
+            protocol_execution_id: params?.protocol_execution_id ?? undefined,
+            execution_event_id: params?.execution_event_id ?? undefined,
+          },
         },
-      },
-    )
+      )
     return response.data
   },
   async acknowledgeCustodyEscalation(escalationId: string) {

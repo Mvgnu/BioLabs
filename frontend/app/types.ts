@@ -1128,13 +1128,15 @@ export interface CustodyFreezerUnit {
 }
 
 export interface CustodyLogEntry {
-  // purpose: custody ledger row powering governance audit timelines
-  // status: pilot
-  id: string
-  asset_version_id: string | null
-  planner_session_id: string | null
-  compartment_id: string | null
-  custody_action: string
+    // purpose: custody ledger row powering governance audit timelines
+    // status: pilot
+    id: string
+    asset_version_id: string | null
+    planner_session_id: string | null
+    protocol_execution_id: string | null
+    execution_event_id: string | null
+    compartment_id: string | null
+    custody_action: string
   quantity: number | null
   quantity_units: string | null
   performed_for_team_id: string | null
@@ -1147,11 +1149,13 @@ export interface CustodyLogEntry {
 }
 
 export interface CustodyLogCreate {
-  // purpose: custody ledger creation payload for governance operators
-  // status: pilot
-  asset_version_id?: string | null
-  planner_session_id?: string | null
-  compartment_id?: string | null
+    // purpose: custody ledger creation payload for governance operators
+    // status: pilot
+    asset_version_id?: string | null
+    planner_session_id?: string | null
+    protocol_execution_id?: string | null
+    execution_event_id?: string | null
+    compartment_id?: string | null
   custody_action: string
   quantity?: number | null
   quantity_units?: string | null
@@ -1161,26 +1165,41 @@ export interface CustodyLogCreate {
   meta?: Record<string, any>
 }
 
+export interface ProtocolExecutionContext {
+    // purpose: lightweight protocol execution reference for custody governance surfaces
+    // status: pilot
+    id: string
+    status: string
+    run_by: string | null
+    template_id: string | null
+    template_name: string | null
+    created_at: string
+    updated_at: string
+}
+
 export interface CustodyEscalation {
-  // purpose: represent custody escalation queue items with SLA and notification metadata
-  // status: pilot
-  id: string
-  status: 'open' | 'acknowledged' | 'resolved'
-  severity: 'critical' | 'warning' | 'info'
-  reason: string
-  due_at: string | null
-  acknowledged_at: string | null
-  resolved_at: string | null
-  assigned_to_id: string | null
-  guardrail_flags: string[]
-  notifications: Array<{ recipient?: string | null; channel?: string | null; sent_at?: string | null }>
-  meta: Record<string, any>
-  log_id: string | null
-  freezer_unit_id: string | null
-  compartment_id: string | null
-  asset_version_id: string | null
-  created_at: string
-  updated_at: string
+    // purpose: represent custody escalation queue items with SLA and notification metadata
+    // status: pilot
+    id: string
+    status: 'open' | 'acknowledged' | 'resolved'
+    severity: 'critical' | 'warning' | 'info'
+    reason: string
+    due_at: string | null
+    acknowledged_at: string | null
+    resolved_at: string | null
+    assigned_to_id: string | null
+    guardrail_flags: string[]
+    notifications: Array<{ recipient?: string | null; channel?: string | null; sent_at?: string | null }>
+    meta: Record<string, any>
+    log_id: string | null
+    freezer_unit_id: string | null
+    compartment_id: string | null
+    asset_version_id: string | null
+    protocol_execution_id: string | null
+    execution_event_id: string | null
+    protocol_execution: ProtocolExecutionContext | null
+    created_at: string
+    updated_at: string
 }
 
 export interface CustodyEscalationAck {

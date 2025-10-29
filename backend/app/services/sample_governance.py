@@ -8,7 +8,7 @@ from typing import Iterable, Sequence
 from uuid import UUID
 
 import sqlalchemy as sa
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from .. import models, notify, schemas
 
@@ -99,6 +99,8 @@ def record_custody_event(
     log = models.GovernanceSampleCustodyLog(
         asset_version_id=payload.asset_version_id,
         planner_session_id=payload.planner_session_id,
+        protocol_execution_id=payload.protocol_execution_id,
+        execution_event_id=payload.execution_event_id,
         compartment_id=payload.compartment_id,
         custody_action=payload.custody_action,
         quantity=payload.quantity,
@@ -115,6 +117,7 @@ def record_custody_event(
     db.add(log)
     db.flush()
     db.refresh(log)
+    _attach_log_to_protocol(db, log)
     _synchronize_custody_escalations(db, log)
     return log
 
@@ -125,6 +128,8 @@ def fetch_custody_logs(
     asset_id: UUID | None = None,
     asset_version_id: UUID | None = None,
     planner_session_id: UUID | None = None,
+    protocol_execution_id: UUID | None = None,
+    execution_event_id: UUID | None = None,
     compartment_id: UUID | None = None,
     limit: int = 100,
 ) -> list[models.GovernanceSampleCustodyLog]:
@@ -140,6 +145,14 @@ def fetch_custody_logs(
     if planner_session_id:
         query = query.filter(
             models.GovernanceSampleCustodyLog.planner_session_id == planner_session_id
+        )
+    if protocol_execution_id:
+        query = query.filter(
+            models.GovernanceSampleCustodyLog.protocol_execution_id == protocol_execution_id
+        )
+    if execution_event_id:
+        query = query.filter(
+            models.GovernanceSampleCustodyLog.execution_event_id == execution_event_id
         )
     if compartment_id:
         query = query.filter(models.GovernanceSampleCustodyLog.compartment_id == compartment_id)
@@ -174,6 +187,34 @@ def _serialize_compartment(
         latest_activity_at=latest_activity,
         children=child_nodes,
     )
+
+
+def _attach_log_to_protocol(
+    db: Session,
+    log: models.GovernanceSampleCustodyLog,
+) -> None:
+    if not log.protocol_execution_id:
+        return
+    execution = db.get(models.ProtocolExecution, log.protocol_execution_id)
+    if not execution:
+        return
+    governance_result = dict(execution.result or {})
+    custody_payload = dict(governance_result.get("custody", {}))
+    ledger = list(custody_payload.get("ledger", []))
+    log_ref = {
+        "log_id": str(log.id),
+        "performed_at": log.performed_at.isoformat(),
+        "custody_action": log.custody_action,
+        "compartment_id": str(log.compartment_id) if log.compartment_id else None,
+        "guardrail_flags": list(log.guardrail_flags or []),
+    }
+    if all(existing.get("log_id") != log_ref["log_id"] for existing in ledger):
+        ledger.append(log_ref)
+        custody_payload["ledger"] = ledger
+        governance_result["custody"] = custody_payload
+        execution.result = governance_result
+        execution.updated_at = datetime.now(timezone.utc)
+        db.add(execution)
 
 
 def _resolve_quantity_delta(log: models.GovernanceSampleCustodyLog) -> int:
@@ -214,10 +255,16 @@ def list_custody_escalations(
     *,
     team_id: UUID | None = None,
     statuses: Sequence[str] | None = None,
+    protocol_execution_id: UUID | None = None,
+    execution_event_id: UUID | None = None,
 ) -> list[models.GovernanceCustodyEscalation]:
     """Return custody escalations filtered by team and status."""
 
-    query = db.query(models.GovernanceCustodyEscalation)
+    query = db.query(models.GovernanceCustodyEscalation).options(
+        joinedload(models.GovernanceCustodyEscalation.protocol_execution).joinedload(
+            models.ProtocolExecution.template
+        )
+    )
     query = query.outerjoin(
         models.GovernanceFreezerUnit,
         models.GovernanceFreezerUnit.id
@@ -235,6 +282,15 @@ def list_custody_escalations(
                 models.GovernanceFreezerUnit.team_id == team_id,
                 models.GovernanceSampleCustodyLog.performed_for_team_id == team_id,
             )
+        )
+    if protocol_execution_id:
+        query = query.filter(
+            models.GovernanceCustodyEscalation.protocol_execution_id
+            == protocol_execution_id
+        )
+    if execution_event_id:
+        query = query.filter(
+            models.GovernanceCustodyEscalation.execution_event_id == execution_event_id
         )
     return (
         query.order_by(models.GovernanceCustodyEscalation.due_at.asc()).all()
@@ -257,6 +313,8 @@ def acknowledge_custody_escalation(
     escalation.acknowledged_at = now
     escalation.assigned_to_id = actor_id
     escalation.updated_at = now
+    _ensure_recovery_drill(escalation, now)
+    _sync_protocol_escalation_state(db, escalation)
     db.add(escalation)
     db.flush()
     return escalation
@@ -279,6 +337,8 @@ def resolve_custody_escalation(
     if actor_id:
         escalation.assigned_to_id = actor_id
     escalation.updated_at = now
+    _ensure_recovery_drill(escalation, now)
+    _sync_protocol_escalation_state(db, escalation)
     db.add(escalation)
     db.flush()
     return escalation
@@ -397,9 +457,14 @@ def _upsert_custody_escalation(
         existing.reason = reason
         existing.guardrail_flags = flags
         existing.due_at = due_at
+        existing.protocol_execution_id = log.protocol_execution_id
+        existing.execution_event_id = log.execution_event_id
         existing.meta = {
             **(existing.meta or {}),
             "last_log_id": str(log.id),
+            "protocol_execution_id": str(log.protocol_execution_id)
+            if log.protocol_execution_id
+            else None,
         }
         existing.updated_at = now
         escalation = existing
@@ -409,6 +474,8 @@ def _upsert_custody_escalation(
             freezer_unit_id=log.compartment.freezer_id if log.compartment else None,
             compartment_id=log.compartment_id,
             asset_version_id=log.asset_version_id,
+            protocol_execution_id=log.protocol_execution_id,
+            execution_event_id=log.execution_event_id,
             severity=severity,
             status="open",
             reason=reason,
@@ -419,11 +486,16 @@ def _upsert_custody_escalation(
                 "team_id": str(log.performed_for_team_id)
                 if log.performed_for_team_id
                 else None,
+                "protocol_execution_id": str(log.protocol_execution_id)
+                if log.protocol_execution_id
+                else None,
             },
             created_at=now,
         )
         db.add(escalation)
+    _ensure_recovery_drill(escalation, now)
     db.flush()
+    _sync_protocol_escalation_state(db, escalation)
     _dispatch_custody_escalation_notifications(db, escalation)
 
 
@@ -446,6 +518,8 @@ def _resolve_existing_escalations(
         }
         escalation.updated_at = now
         db.add(escalation)
+        _ensure_recovery_drill(escalation, now)
+        _sync_protocol_escalation_state(db, escalation)
     db.flush()
 
 
@@ -461,6 +535,54 @@ def _determine_escalation_severity(flags: Sequence[str]) -> str | None:
     if any(flag == "lineage.unlinked" for flag in flags):
         return "info"
     return "warning"
+
+
+def _ensure_recovery_drill(
+    escalation: models.GovernanceCustodyEscalation,
+    now: datetime,
+) -> None:
+    meta = dict(escalation.meta or {})
+    due_at = escalation.due_at
+    if due_at and due_at.tzinfo is None:
+        due_at = due_at.replace(tzinfo=timezone.utc)
+    if due_at and due_at <= now and not meta.get("recovery_drill_open"):
+        meta["recovery_drill_open"] = True
+        meta.setdefault("recovery_opened_at", now.isoformat())
+    if escalation.status == "resolved" and meta.get("recovery_drill_open"):
+        meta["recovery_drill_open"] = False
+        meta["recovery_closed_at"] = now.isoformat()
+    escalation.meta = meta
+
+
+def _sync_protocol_escalation_state(
+    db: Session,
+    escalation: models.GovernanceCustodyEscalation,
+) -> None:
+    if not escalation.protocol_execution_id:
+        return
+    execution = db.get(models.ProtocolExecution, escalation.protocol_execution_id)
+    if not execution:
+        return
+    governance_result = dict(execution.result or {})
+    custody_payload = dict(governance_result.get("custody", {}))
+    escalation_map = dict(custody_payload.get("escalations", {}))
+    escalation_map[str(escalation.id)] = {
+        "status": escalation.status,
+        "severity": escalation.severity,
+        "reason": escalation.reason,
+        "due_at": escalation.due_at.isoformat() if escalation.due_at else None,
+        "acknowledged_at": escalation.acknowledged_at.isoformat()
+        if escalation.acknowledged_at
+        else None,
+        "resolved_at": escalation.resolved_at.isoformat() if escalation.resolved_at else None,
+        "guardrail_flags": list(escalation.guardrail_flags or []),
+        "recovery_drill_open": (escalation.meta or {}).get("recovery_drill_open"),
+    }
+    custody_payload["escalations"] = escalation_map
+    governance_result["custody"] = custody_payload
+    execution.result = governance_result
+    execution.updated_at = datetime.now(timezone.utc)
+    db.add(execution)
 
 
 def _compute_sla_due_at(
