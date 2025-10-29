@@ -2726,6 +2726,21 @@ class CloningPlannerStageRequest(BaseModel):
     error: str | None = None
 
 
+class CloningPlannerResumeRequest(BaseModel):
+    """Resume payload for restarting cloning planner pipelines."""
+
+    # purpose: capture restart instructions, optional overrides, and target step
+    step: str | None = None
+    overrides: dict[str, Any] | None = None
+
+
+class CloningPlannerCancelRequest(BaseModel):
+    """Cancellation payload for cloning planner sessions."""
+
+    # purpose: record cancellation reasons for audit and guardrail context
+    reason: str | None = None
+
+
 class CloningPlannerFinalizeRequest(BaseModel):
     """Finalize payload for cloning planner sessions."""
 
