@@ -8,7 +8,8 @@
     "compatible_buffers": ["CutSmart", "Buffer E"],
     "methylation_sensitivity": "dam, dcm",
     "star_activity_notes": "Star activity observed above 0.1 U/µL and in low-salt buffers.",
-    "supplier": "NEB"
+    "supplier": "NEB",
+    "metadata_tags": ["enzyme:EcoRI", "model:high_fidelity"]
   },
   {
     "name": "BamHI-HF",
@@ -19,7 +20,8 @@
     "compatible_buffers": ["CutSmart"],
     "methylation_sensitivity": "dam",
     "star_activity_notes": "High-fidelity formulation reduces off-target cleavage.",
-    "supplier": "NEB"
+    "supplier": "NEB",
+    "metadata_tags": ["enzyme:BamHI", "model:high_fidelity"]
   },
   {
     "name": "BsaI-HFv2",
@@ -30,7 +32,8 @@
     "compatible_buffers": ["CutSmart"],
     "methylation_sensitivity": "insensitive",
     "star_activity_notes": "Designed for Golden Gate assembly with minimized star activity.",
-    "supplier": "NEB"
+    "supplier": "NEB",
+    "metadata_tags": ["enzyme:BsaI", "model:type_iis_pulsed"]
   },
   {
     "name": "BsmBI",
@@ -41,6 +44,7 @@
     "compatible_buffers": ["CutSmart", "Buffer 3.1"],
     "methylation_sensitivity": "partial",
     "star_activity_notes": "Maintains activity in Golden Gate cycling conditions.",
-    "supplier": "NEB"
+    "supplier": "NEB",
+    "metadata_tags": ["enzyme:BsmBI", "model:type_iis_pulsed"]
   }
 ]

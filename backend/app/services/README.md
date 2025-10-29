@@ -12,9 +12,9 @@ This package contains reusable service-layer helpers shared across FastAPI route
 - status: active — enzyme catalog, thermodynamic validation, and multi-strategy assembly engine implemented
 - highlights:
   - Curated enzyme metadata loaded from `app/data/enzymes.json` with buffer compatibility, methylation sensitivity, and star activity notes cached for reuse.
-  - Dedicated data loaders under `app/data/` surface reaction buffers and assembly strategy catalogs with shared caching.
+  - Dedicated data loaders under `app/data/` surface reaction buffers, enzyme kinetics, ligation profiles, and assembly strategy catalogs with shared caching.
   - Primer design responses surface nearest-neighbor melting temps, GC clamps, and secondary-structure ΔG heuristics for both primers.
-  - Restriction digest analysis emits structured schema payloads linking templates to annotated enzyme hits, buffer context, and guardrail-ready alerts.
-  - Assembly simulator now supports Gibson, Golden Gate, HiFi, and homologous recombination heuristics with kinetics modifiers, ligation efficiency scoring, and traceable heuristic payloads for downstream telemetry.
+  - Restriction digest analysis emits structured schema payloads linking templates to annotated enzyme hits, kinetics presets, buffer context, and guardrail-ready alerts with reusable metadata tags.
+  - Assembly simulator now supports Gibson, Golden Gate, HiFi, and homologous recombination heuristics with kinetics modifiers, ligation efficiency scoring, metadata-tagged steps, and machine-readable payload contracts for downstream telemetry.
   - QC evaluation links chromatogram mismatch thresholds with strategy outcomes for governance dashboards.
 - `dna_assets.py` — DNA asset persistence, versioning, diffing, and guardrail event helpers powering lifecycle APIs and governance dashboards.

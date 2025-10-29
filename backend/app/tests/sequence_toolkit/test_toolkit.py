@@ -31,6 +31,15 @@ def test_get_reaction_buffers_cached_reference():
     assert any(buffer.name == "CutSmart" for buffer in buffers_first)
 
 
+def test_get_enzyme_kinetics_cached_reference():
+    """Enzyme kinetics catalog should be cached for deterministic reuse."""
+
+    first = sequence_toolkit.get_enzyme_kinetics()
+    second = sequence_toolkit.get_enzyme_kinetics()
+    assert first is second
+    assert any(profile.name == "BsaI" for profile in first)
+
+
 def test_design_primers_includes_thermodynamics():
     """Primer design responses expose thermodynamic metadata."""
 
@@ -81,6 +90,11 @@ def test_digest_reports_include_buffer_alerts():
     assert all(
         not alert.startswith("No catalog metadata") for alert in payload["alerts"]
     )
+    assert digest["sites"]["EcoRI"]["kinetics"]["rate_constant"] == pytest.approx(
+        0.82,
+        rel=1e-2,
+    )
+    assert "model:high_fidelity" in digest["metadata_tags"]
 
 
 def test_simulate_assembly_includes_strategy_metrics():
@@ -111,6 +125,7 @@ def test_simulate_assembly_includes_strategy_metrics():
                 "compatible": True,
                 "buffer_alerts": [],
                 "notes": [],
+                "metadata_tags": ["buffer:universal"],
                 "buffer": {
                     "name": "CutSmart",
                     "ionic_strength_mM": 100,
@@ -146,6 +161,10 @@ def test_simulate_assembly_includes_strategy_metrics():
     assert pytest.approx(step["ligation_efficiency"], rel=1e-3) == 0.9
     assert 0.0 <= step["kinetics_score"] <= 1.0
     assert "kinetics_modifier" in step["heuristics"]
+    assert step["metadata_tags"], "Metadata tags should be populated"
+    assert "ligation_profile" in step["heuristics"]
+    assert plan["payload_contract"]["schema_version"] == "1.1"
+    assert "strategy:golden_gate" in plan["payload_contract"]["metadata_tags"]
     assert plan["average_success"] == pytest.approx(
         step["junction_success"],
         rel=1e-6,
@@ -180,6 +199,7 @@ def test_simulate_assembly_penalizes_buffer_incompatibility():
                 "compatible": True,
                 "buffer_alerts": [],
                 "notes": [],
+                "metadata_tags": ["buffer:high_salt"],
                 "buffer": {
                     "name": "Buffer 3.1",
                     "ionic_strength_mM": 150,
@@ -187,6 +207,7 @@ def test_simulate_assembly_penalizes_buffer_incompatibility():
                     "stabilizers": ["DTT"],
                     "compatible_strategies": ["homologous_recombination"],
                     "notes": "",
+                    "metadata_tags": ["buffer:high_salt"],
                 },
                 "sites": {
                     "EcoRI": {
@@ -209,3 +230,5 @@ def test_simulate_assembly_penalizes_buffer_incompatibility():
     step = plan["steps"][0]
     assert step["heuristics"]["buffer_penalty"] >= 0.1
     assert step["junction_success"] < 1.0
+    assert plan["payload_contract"]["metadata_tags"]
+    assert "buffer:high_salt" in plan["payload_contract"]["metadata_tags"]

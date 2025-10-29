@@ -1,0 +1,38 @@
+[
+  {
+    "name": "BsaI",
+    "model": "type_iis_pulsed",
+    "optimal_temperature_c": 50.0,
+    "km_uM": 0.8,
+    "kcat_s": 1.4,
+    "rate_constant": 0.95,
+    "metadata_tags": [
+      "enzyme:restriction",
+      "model:type_iis_pulsed"
+    ]
+  },
+  {
+    "name": "EcoRI",
+    "model": "high_fidelity",
+    "optimal_temperature_c": 37.0,
+    "km_uM": 0.6,
+    "kcat_s": 0.9,
+    "rate_constant": 0.82,
+    "metadata_tags": [
+      "enzyme:restriction",
+      "model:high_fidelity"
+    ]
+  },
+  {
+    "name": "GibsonMix",
+    "model": "isothermal_exonuclease",
+    "optimal_temperature_c": 50.0,
+    "km_uM": 1.1,
+    "kcat_s": 1.8,
+    "rate_constant": 0.88,
+    "metadata_tags": [
+      "enzyme:assembly",
+      "model:isothermal_exonuclease"
+    ]
+  }
+]

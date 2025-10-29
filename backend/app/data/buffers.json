@@ -5,7 +5,8 @@
     "ph": 7.9,
     "stabilizers": ["BSA"],
     "compatible_strategies": ["golden_gate", "gibson", "hifi"],
-    "notes": "Broad spectrum buffer supporting most NEB high-fidelity enzymes."
+    "notes": "Broad spectrum buffer supporting most NEB high-fidelity enzymes.",
+    "metadata_tags": ["buffer:universal", "vendor:NEB"]
   },
   {
     "name": "Buffer E",
@@ -13,7 +14,8 @@
     "ph": 7.4,
     "stabilizers": [],
     "compatible_strategies": ["golden_gate"],
-    "notes": "Legacy buffer requiring supplemental ATP for ligation efficiency."
+    "notes": "Legacy buffer requiring supplemental ATP for ligation efficiency.",
+    "metadata_tags": ["buffer:legacy"]
   },
   {
     "name": "Buffer 3.1",
@@ -21,6 +23,7 @@
     "ph": 7.0,
     "stabilizers": ["DTT"],
     "compatible_strategies": ["gibson", "homologous_recombination"],
-    "notes": "High salt formulation optimized for recombinase-mediated assemblies."
+    "notes": "High salt formulation optimized for recombinase-mediated assemblies.",
+    "metadata_tags": ["buffer:high_salt"]
   }
 ]
