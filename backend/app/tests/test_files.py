@@ -1,12 +1,11 @@
-from .conftest import client
+from .conftest import client, ensure_auth_headers
 from pathlib import Path
 import uuid
 
 
 def get_headers(client):
-    email = f"file{uuid.uuid4()}@example.com"
-    resp = client.post("/api/auth/register", json={"email": email, "password": "secret"})
-    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+    headers, _ = ensure_auth_headers(client, email=f"file{uuid.uuid4()}@example.com")
+    return headers
 
 
 def test_upload_file(client):

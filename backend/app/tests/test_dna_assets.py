@@ -105,9 +105,10 @@ def test_dna_asset_residency_violation_creates_compliance_record(client, auth_he
     headers, user = auth_headers
     session = TestingSessionLocal()
     try:
+        org_slug = f"helios-{uuid.uuid4().hex[:8]}"
         organization = models.Organization(
-            name="Helios Labs",
-            slug="helios",
+            name=f"Helios Labs {org_slug.split('-')[-1]}",
+            slug=org_slug,
             primary_region="us-east-1",
             allowed_regions=["us-east-1"],
             encryption_policy={"at_rest": "kms"},

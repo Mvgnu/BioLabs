@@ -1,4 +1,5 @@
 import uuid
+
 from datetime import datetime, timedelta, timezone
 
 from .conftest import TestingSessionLocal
@@ -18,10 +19,11 @@ def test_billing_subscription_and_usage_flow(client):
     try:
         user = session.query(models.User).filter_by(email='billing-admin@example.com').first()
         user.is_admin = True
+        org_suffix = uuid.uuid4().hex[:8]
         organization = models.Organization(
             id=uuid.uuid4(),
-            name='Helix Labs',
-            slug='helix',
+            name=f'Helix Labs {org_suffix}',
+            slug=f'helix-{org_suffix}',
             primary_region='us-east-1',
             allowed_regions=['us-east-1'],
             encryption_policy={'at_rest': 'kms'},
