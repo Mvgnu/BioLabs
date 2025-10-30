@@ -48,6 +48,7 @@ modules = [
     'workflows',
     'sharing',
     'lifecycle',
+    'instrumentation',
 ]
 
 for m in modules:

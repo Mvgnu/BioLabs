@@ -198,6 +198,98 @@ export interface DNAKineticsSummary {
   metadata_tags: string[]
 }
 
+export interface InstrumentCapability {
+  id: string
+  equipment_id: string
+  capability_key: string
+  title: string
+  parameters: Record<string, any>
+  guardrail_requirements: Record<string, any>[]
+  created_at: string
+  updated_at: string
+}
+
+export interface InstrumentSOPSummary {
+  sop_id: string
+  title: string
+  version: number
+  status: string
+  effective_at: string
+  retired_at?: string | null
+}
+
+export interface InstrumentReservation {
+  id: string
+  equipment_id: string
+  planner_session_id?: string | null
+  protocol_execution_id?: string | null
+  team_id?: string | null
+  requested_by_id: string
+  scheduled_start: string
+  scheduled_end: string
+  status: string
+  run_parameters: Record<string, any>
+  guardrail_snapshot: Record<string, any>
+  created_at: string
+  updated_at: string
+}
+
+export interface InstrumentRun {
+  id: string
+  reservation_id?: string | null
+  equipment_id: string
+  team_id?: string | null
+  planner_session_id?: string | null
+  protocol_execution_id?: string | null
+  status: string
+  run_parameters: Record<string, any>
+  guardrail_flags: string[]
+  started_at?: string | null
+  completed_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface InstrumentTelemetrySample {
+  id: string
+  run_id: string
+  channel: string
+  payload: Record<string, any>
+  recorded_at: string
+}
+
+export interface InstrumentRunTelemetryEnvelope {
+  run: InstrumentRun
+  samples: InstrumentTelemetrySample[]
+}
+
+export interface InstrumentProfile {
+  equipment_id: string
+  name: string
+  eq_type?: string | null
+  status: string
+  team_id?: string | null
+  capabilities: InstrumentCapability[]
+  sops: InstrumentSOPSummary[]
+  next_reservation?: InstrumentReservation | null
+  active_run?: InstrumentRun | null
+  custody_alerts: Record<string, any>[]
+}
+
+export interface InstrumentSimulationEvent {
+  sequence: number
+  event_type: 'status' | 'telemetry'
+  recorded_at: string
+  payload: Record<string, any>
+}
+
+export interface InstrumentSimulationResult {
+  reservation: InstrumentReservation
+  run: InstrumentRun
+  envelope: InstrumentRunTelemetryEnvelope
+  events: InstrumentSimulationEvent[]
+}
+
 export interface LifecycleScope {
   planner_session_id?: string | null
   dna_asset_id?: string | null
@@ -2153,10 +2245,67 @@ export interface DNARepositoryRelease {
   guardrail_snapshot: Record<string, any>
   mitigation_summary?: string | null
   created_by_id: string
+  planner_session_id?: string | null
+  lifecycle_snapshot: Record<string, any>
+  mitigation_history: Record<string, any>[]
+  replay_checkpoint: Record<string, any>
   created_at: string
   updated_at: string
   published_at?: string | null
   approvals: DNARepositoryReleaseApproval[]
+}
+
+export interface DNARepositoryFederationAttestation {
+  id: string
+  link_id: string
+  release_id?: string | null
+  attestor_organization: string
+  attestor_contact?: string | null
+  guardrail_summary: Record<string, any>
+  provenance_notes?: string | null
+  created_at: string
+  created_by_id?: string | null
+}
+
+export interface DNARepositoryFederationLink {
+  id: string
+  repository_id: string
+  external_repository_id: string
+  external_organization: string
+  trust_state: string
+  permissions: Record<string, any>
+  guardrail_contract: Record<string, any>
+  last_attested_at?: string | null
+  created_at: string
+  updated_at: string
+  attestations: DNARepositoryFederationAttestation[]
+}
+
+export interface DNARepositoryReleaseChannelVersion {
+  id: string
+  channel_id: string
+  release_id: string
+  sequence: number
+  version_label: string
+  guardrail_attestation: Record<string, any>
+  provenance_snapshot: Record<string, any>
+  mitigation_digest?: string | null
+  created_at: string
+  release?: DNARepositoryRelease
+}
+
+export interface DNARepositoryReleaseChannel {
+  id: string
+  repository_id: string
+  federation_link_id?: string | null
+  name: string
+  slug: string
+  description?: string | null
+  audience_scope: string
+  guardrail_profile: Record<string, any>
+  created_at: string
+  updated_at: string
+  versions: DNARepositoryReleaseChannelVersion[]
 }
 
 export interface DNARepository {
@@ -2177,6 +2326,8 @@ export interface DNARepository {
   updated_at: string
   collaborators: DNARepositoryCollaborator[]
   releases: DNARepositoryRelease[]
+  federation_links: DNARepositoryFederationLink[]
+  release_channels: DNARepositoryReleaseChannel[]
 }
 
 export interface DNARepositoryTimelineEvent {

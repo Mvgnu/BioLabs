@@ -56,3 +56,14 @@
   - `POST /api/governance/custody/escalations/{id}/acknowledge|notify|resolve` manages escalation lifecycle actions, dispatching notifications and stamping audit timestamps.
   - `GET /api/governance/custody/faults` lists freezer incident telemetry, while `POST /api/governance/custody/freezers/{freezer_id}/faults` and `/faults/{fault_id}/resolve` enable manual incident capture and closure.
 - **RBAC**: Limited to administrators while custody guardrail policies stabilize; team-scoped queries enforce membership checks when filtering by team identifiers.
+
+## Instrumentation Orchestration
+- **Module**: `instrumentation.py`
+- **Capabilities**:
+  - `POST /api/instrumentation/instruments/{equipment_id}/capabilities` registers capability descriptors with guardrail requirements so planners and digital twins know supported envelopes.
+  - `POST /api/instrumentation/instruments/{equipment_id}/sops` binds SOP revisions to instruments, exposing lifecycle status for compliance dashboards.
+  - `POST /api/instrumentation/instruments/{equipment_id}/reservations` books execution windows, persists requested parameters, and records custody guardrail snapshots. Critical escalations mark reservations as `guardrail_blocked`.
+  - `POST /api/instrumentation/reservations/{reservation_id}/dispatch` transitions reservations into active runs, merging runtime overrides and inheriting guardrail flags.
+  - `POST /api/instrumentation/runs/{run_id}/telemetry` streams deterministic telemetry samples, while `GET /api/instrumentation/runs/{run_id}/telemetry` returns ordered envelopes for replay dashboards.
+  - `POST /api/instrumentation/runs/{run_id}/status` updates run lifecycle and mirrors completion on the associated reservation so scheduling UIs stay in sync.
+- **RBAC**: Team membership (`member` and above) is required for scheduling and telemetry, while capability/SOP mutations are limited to team managers/owners. Guardrail conflicts return `409` responses instructing operators to resolve custody escalations.
