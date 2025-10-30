@@ -1,9 +1,9 @@
-from .conftest import client
+from .conftest import client, ensure_auth_headers
 
 
 def auth(client, email):
-    resp = client.post("/api/auth/register", json={"email": email, "password": "secret"})
-    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
+    headers, _ = ensure_auth_headers(client, email=email)
+    return headers
 
 
 def test_service_marketplace_flow(client):

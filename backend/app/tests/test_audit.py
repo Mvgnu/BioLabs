@@ -1,11 +1,10 @@
 import uuid
-from .conftest import client
+from .conftest import client, ensure_auth_headers
 
 
 def get_headers(client):
-    resp = client.post("/api/auth/register", json={"email": f"{uuid.uuid4()}@ex.com", "password": "secret"})
-    token = resp.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    headers, _ = ensure_auth_headers(client, email=f"{uuid.uuid4()}@ex.com")
+    return headers
 
 
 def test_audit_log_item_creation(client):

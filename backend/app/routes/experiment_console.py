@@ -24,7 +24,7 @@ from ..eventlog import record_execution_event
 from ..narratives import render_execution_narrative, render_preview_narrative
 from ..services import approval_ladders
 from ..auth import get_current_user
-from ..database import get_db
+from ..database import SessionLocal, get_db
 from ..recommendations.timeline import load_governance_decision_timeline
 from ..storage import (
     generate_signed_download_url,
@@ -4109,21 +4109,42 @@ async def approve_execution_narrative_export(
     should_queue_packaging = result.should_queue_packaging
 
     db.commit()
-    db.refresh(export_record)
+    export_uuid = UUID(str(export_record.id))
+    payload: schemas.ExecutionNarrativeExport | None = None
 
     if should_queue_packaging:
+        queued_identifiers: list[str] = []
+
+        def _capture(identifier: UUID | str) -> None:
+            queued_identifiers.append(str(identifier))
+
         queued_packaging = approval_ladders.dispatch_export_for_packaging(
             db,
             export=export_record,
             actor=user,
-            enqueue=enqueue_narrative_export_packaging,
+            enqueue=_capture,
             dry_run=dry_run,
         )
         db.commit()
-        if queued_packaging:
+        if queued_packaging and queued_identifiers:
+            db.close()
+            for identifier in queued_identifiers:
+                enqueue_narrative_export_packaging(identifier)
+            with SessionLocal() as response_session:
+                export_record = approval_ladders.load_export_with_ladder(
+                    response_session,
+                    export_id=export_uuid,
+                    include_attachments=True,
+                    include_guardrails=True,
+                )
+                payload = _build_export_payload(response_session, export_record)
+        else:
             db.refresh(export_record)
+    else:
+        db.refresh(export_record)
 
-    payload = _build_export_payload(db, export_record)
+    if payload is None:
+        payload = _build_export_payload(db, export_record)
     if payload.artifact_status == "ready" and payload.artifact_file:
         payload.artifact_download_path = _build_artifact_download_path(
             payload.execution_id, payload.id

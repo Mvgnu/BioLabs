@@ -1,14 +1,12 @@
-from .conftest import client
+from .conftest import client, ensure_auth_headers
 import uuid
 from uuid import UUID
 from datetime import datetime, timezone, timedelta
 
 
 def get_auth_headers(client, email=None):
-    email = email or f"user{uuid.uuid4()}@example.com"
-    resp = client.post("/api/auth/register", json={"email": email, "password": "secret"})
-    token = resp.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    headers, _ = ensure_auth_headers(client, email=email)
+    return headers
 
 
 def create_item(client, headers, item_type="sample", name="Item"):
@@ -23,6 +21,9 @@ def create_item(client, headers, item_type="sample", name="Item"):
 
 def test_analytics_summary(client):
     headers = get_auth_headers(client)
+    baseline = client.get("/api/analytics/summary", headers=headers)
+    assert baseline.status_code == 200
+    baseline_counts = {d["item_type"]: d["count"] for d in baseline.json()}
     create_item(client, headers, "plasmid", "A")
     create_item(client, headers, "plasmid", "B")
     create_item(client, headers, "sample", "S1")
@@ -31,8 +32,8 @@ def test_analytics_summary(client):
     assert resp.status_code == 200
     data = resp.json()
     counts = {d["item_type"]: d["count"] for d in data}
-    assert counts["plasmid"] == 2
-    assert counts["sample"] == 1
+    assert counts.get("plasmid", 0) - baseline_counts.get("plasmid", 0) == 2
+    assert counts.get("sample", 0) - baseline_counts.get("sample", 0) == 1
 
 
 def test_trending_protocols(client):

@@ -653,7 +653,7 @@ def test_multistage_approval_delegation_and_reset(client):
 
 
 def test_export_history_includes_guardrail_simulation(client):
-    headers, _, _ = create_user_headers()
+    headers, user_id, _ = create_user_headers()
 
     template = client.post(
         "/api/protocols/templates",

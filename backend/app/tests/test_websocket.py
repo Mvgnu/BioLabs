@@ -1,12 +1,11 @@
 import json
 import uuid
-from .conftest import client
+from .conftest import client, ensure_auth_headers
 
 
 def get_headers(client, email="ws@example.com"):
-    resp = client.post("/api/auth/register", json={"email": email, "password": "secret"})
-    token = resp.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    headers, _ = ensure_auth_headers(client, email=email)
+    return headers
 
 
 def test_websocket_receives_item_events(client):
