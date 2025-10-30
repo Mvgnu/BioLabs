@@ -46,6 +46,7 @@ from .routes import (
     labs,
     resource_shares,
     marketplace,
+    billing,
     services,
     forum,
     community,
@@ -137,6 +138,7 @@ app.include_router(audit.router)
 app.include_router(labs.router)
 app.include_router(resource_shares.router)
 app.include_router(marketplace.router)
+app.include_router(billing.router)
 app.include_router(services.router)
 app.include_router(forum.router)
 app.include_router(community.router)

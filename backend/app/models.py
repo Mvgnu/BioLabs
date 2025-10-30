@@ -43,14 +43,64 @@ class User(Base):
         "Notification", back_populates="user", cascade="all, delete-orphan"
     )
 
+class Organization(Base):
+    __tablename__ = "organizations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False, unique=True)
+    slug = Column(String, nullable=False, unique=True)
+    primary_region = Column(String, nullable=False)
+    residency_enforced = Column(Boolean, default=True, nullable=False)
+    allowed_regions = Column(JSON, default=list, nullable=False)
+    encryption_policy = Column(JSON, default=dict, nullable=False)
+    retention_policy = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+    )
+
+    # purpose: register enterprise organizations with residency and encryption defaults
+    # status: experimental
+    # depends_on: teams, compliance_records
+    # related_docs: docs/operations/data_residency.md
+    teams = relationship("Team", back_populates="organization")
+    residency_policies = relationship(
+        "OrganizationResidencyPolicy",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+        order_by="OrganizationResidencyPolicy.data_domain",
+    )
+    legal_holds = relationship(
+        "OrganizationLegalHold",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+        order_by="OrganizationLegalHold.created_at.desc()",
+    )
+    compliance_records = relationship("ComplianceRecord", back_populates="organization")
+    subscriptions = relationship(
+        "MarketplaceSubscription",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+    usage_events = relationship(
+        "MarketplaceUsageEvent",
+        back_populates="organization",
+        cascade="all, delete-orphan",
+    )
+
+
 class Team(Base):
     __tablename__ = "teams"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=True)
 
     members = relationship("TeamMember", back_populates="team")
+    organization = relationship("Organization", back_populates="teams")
 
 class TeamMember(Base):
     __tablename__ = "team_members"
@@ -61,6 +111,68 @@ class TeamMember(Base):
     user = relationship("User", back_populates="teams")
     team = relationship("Team", back_populates="members")
 
+
+class OrganizationResidencyPolicy(Base):
+    __tablename__ = "organization_residency_policies"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    data_domain = Column(String, nullable=False)
+    allowed_regions = Column(JSON, default=list, nullable=False)
+    default_region = Column(String, nullable=False)
+    encryption_at_rest = Column(String, nullable=False)
+    encryption_in_transit = Column(String, nullable=False)
+    retention_days = Column(Integer, nullable=False, default=365)
+    audit_interval_days = Column(Integer, nullable=False, default=30)
+    guardrail_flags = Column(JSON, default=list, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+    )
+
+    # purpose: persist granular residency, encryption, and retention controls per data domain
+    # status: experimental
+    # depends_on: organizations
+    # related_docs: docs/operations/data_residency.md
+    organization = relationship("Organization", back_populates="residency_policies")
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "organization_id",
+            "data_domain",
+            name="uq_org_residency_domain",
+        ),
+    )
+
+
+class OrganizationLegalHold(Base):
+    __tablename__ = "organization_legal_holds"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    scope_type = Column(String, nullable=False)
+    scope_reference = Column(String, nullable=False)
+    reason = Column(Text, nullable=False)
+    status = Column(String, nullable=False, default="active")
+    initiated_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    released_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    released_at = Column(DateTime, nullable=True)
+    release_notes = Column(Text, nullable=True)
+
+    # purpose: capture legal hold scopes for regional compliance enforcement
+    # status: experimental
+    # depends_on: organizations, users
+    # related_docs: docs/operations/data_residency.md
+    organization = relationship("Organization", back_populates="legal_holds")
+    initiator = relationship("User", foreign_keys=[initiated_by_id])
+    releaser = relationship("User", foreign_keys=[released_by_id])
 
 class Location(Base):
     __tablename__ = "locations"
@@ -2024,10 +2136,29 @@ class ComplianceRecord(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     item_id = Column(UUID(as_uuid=True), ForeignKey("inventory_items.id"), nullable=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    organization_id = Column(
+        UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
     record_type = Column(String, nullable=False)
+    data_domain = Column(String, nullable=False, default="general")
     status = Column(String, default="pending")
     notes = Column(String)
+    region = Column(String, nullable=True)
+    encryption_profile = Column(JSON, default=dict, nullable=False)
+    retention_period_days = Column(Integer, nullable=True)
+    guardrail_flags = Column(JSON, default=list, nullable=False)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+    )
+
+    # purpose: log compliance checkpoints with residency, encryption, and retention posture
+    # status: experimental
+    # depends_on: organizations, inventory_items, users
+    # related_docs: docs/operations/data_residency.md
+    organization = relationship("Organization", back_populates="compliance_records")
 
 
 class KnowledgeArticle(Base):
@@ -2130,6 +2261,202 @@ class MarketplaceRequest(Base):
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
 
+class MarketplacePricingPlan(Base):
+    __tablename__ = "marketplace_pricing_plans"
+
+    # purpose: define monetized marketplace bundles with pricing and SLA metadata
+    # status: experimental
+    # depends_on: organizations.id
+    # related_docs: docs/marketplace/billing.md
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug = Column(String, nullable=False, unique=True)
+    title = Column(String, nullable=False)
+    description = Column(Text)
+    billing_cadence = Column(String, nullable=False, default="monthly")
+    base_price_cents = Column(Integer, nullable=False, default=0)
+    credit_allowance = Column(Integer, nullable=False, default=0)
+    sla_tier = Column(String, nullable=False, default="standard")
+    plan_metadata = Column('metadata', JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    features = relationship(
+        "MarketplacePlanFeature",
+        back_populates="plan",
+        cascade="all, delete-orphan",
+        order_by="MarketplacePlanFeature.feature_key",
+    )
+    subscriptions = relationship(
+        "MarketplaceSubscription",
+        back_populates="plan",
+        cascade="all, delete-orphan",
+    )
+
+
+
+class MarketplacePlanFeature(Base):
+    __tablename__ = "marketplace_plan_features"
+
+    # purpose: enumerate surfaced capabilities per marketplace pricing plan
+    # status: experimental
+    # depends_on: marketplace_pricing_plans.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("marketplace_pricing_plans.id", ondelete="CASCADE"), nullable=False)
+    feature_key = Column(String, nullable=False)
+    label = Column(String, nullable=False)
+    details = Column(Text)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    plan = relationship("MarketplacePricingPlan", back_populates="features")
+
+    __table_args__ = (
+        sa.UniqueConstraint("plan_id", "feature_key", name="uq_plan_feature_key"),
+    )
+
+
+class MarketplaceSubscription(Base):
+    __tablename__ = "marketplace_subscriptions"
+
+    # purpose: bind organizations to pricing plans with credit balances and SLA acceptance
+    # status: experimental
+    # depends_on: marketplace_pricing_plans.id, organizations.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    plan_id = Column(UUID(as_uuid=True), ForeignKey("marketplace_pricing_plans.id", ondelete="RESTRICT"), nullable=False)
+    status = Column(String, nullable=False, default="active")
+    billing_email = Column(String)
+    started_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    renews_at = Column(DateTime, nullable=True)
+    cancelled_at = Column(DateTime, nullable=True)
+    sla_acceptance = Column(JSON, default=dict, nullable=False)
+    current_credits = Column(Integer, nullable=False, default=0)
+    subscription_metadata = Column('metadata', JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    organization = relationship("Organization", back_populates="subscriptions")
+    plan = relationship("MarketplacePricingPlan", back_populates="subscriptions")
+    invoices = relationship(
+        "MarketplaceInvoice",
+        back_populates="subscription",
+        cascade="all, delete-orphan",
+        order_by="MarketplaceInvoice.period_start",
+    )
+    usage_events = relationship(
+        "MarketplaceUsageEvent",
+        back_populates="subscription",
+        cascade="all, delete-orphan",
+    )
+    credit_ledger_entries = relationship(
+        "MarketplaceCreditLedger",
+        back_populates="subscription",
+        cascade="all, delete-orphan",
+        order_by="MarketplaceCreditLedger.created_at",
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint("organization_id", "plan_id", name="uq_org_plan_active"),
+    )
+
+
+
+class MarketplaceUsageEvent(Base):
+    __tablename__ = "marketplace_usage_events"
+
+    # purpose: track guardrail-aware consumption for billing and credit ledgers
+    # status: experimental
+    # depends_on: marketplace_subscriptions.id, organizations.id, teams.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    subscription_id = Column(UUID(as_uuid=True), ForeignKey("marketplace_subscriptions.id", ondelete="SET NULL"), nullable=True)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    service = Column(String, nullable=False)
+    operation = Column(String, nullable=False)
+    unit_quantity = Column(Float, nullable=False, default=0.0)
+    credits_consumed = Column(Integer, nullable=False, default=0)
+    guardrail_flags = Column(JSON, default=list, nullable=False)
+    event_metadata = Column('metadata', JSON, default=dict, nullable=False)
+    occurred_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    subscription = relationship("MarketplaceSubscription", back_populates="usage_events")
+    organization = relationship("Organization", back_populates="usage_events")
+    team = relationship("Team")
+    user = relationship("User")
+    ledger_entry = relationship(
+        "MarketplaceCreditLedger",
+        back_populates="usage_event",
+        uselist=False,
+    )
+
+    __table_args__ = (
+        sa.Index("ix_usage_events_service_operation", "service", "operation"),
+        sa.Index("ix_usage_events_org_time", "organization_id", "occurred_at"),
+    )
+
+
+
+class MarketplaceInvoice(Base):
+    __tablename__ = "marketplace_invoices"
+
+    # purpose: issue monetization invoices capturing credit usage and charges
+    # status: experimental
+    # depends_on: marketplace_subscriptions.id, organizations.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    subscription_id = Column(UUID(as_uuid=True), ForeignKey("marketplace_subscriptions.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    invoice_number = Column(String, nullable=False, unique=True)
+    period_start = Column(DateTime, nullable=False)
+    period_end = Column(DateTime, nullable=False)
+    amount_due_cents = Column(Integer, nullable=False, default=0)
+    credit_usage = Column(Integer, nullable=False, default=0)
+    status = Column(String, nullable=False, default="draft")
+    issued_at = Column(DateTime, nullable=True)
+    paid_at = Column(DateTime, nullable=True)
+    line_items = Column(JSON, default=list, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    subscription = relationship("MarketplaceSubscription", back_populates="invoices")
+    organization = relationship("Organization")
+
+
+class MarketplaceCreditLedger(Base):
+    __tablename__ = "marketplace_credit_ledger"
+
+    # purpose: maintain credit debits and grants tied to monetized usage events
+    # status: experimental
+    # depends_on: marketplace_subscriptions.id, marketplace_usage_events.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    subscription_id = Column(UUID(as_uuid=True), ForeignKey("marketplace_subscriptions.id", ondelete="CASCADE"), nullable=False)
+    organization_id = Column(UUID(as_uuid=True), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    usage_event_id = Column(UUID(as_uuid=True), ForeignKey("marketplace_usage_events.id", ondelete="SET NULL"), nullable=True)
+    delta_credits = Column(Integer, nullable=False)
+    reason = Column(String, nullable=False)
+    running_balance = Column(Integer, nullable=False, default=0)
+    ledger_metadata = Column('metadata', JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    subscription = relationship("MarketplaceSubscription", back_populates="credit_ledger_entries")
+    organization = relationship("Organization")
+    usage_event = relationship("MarketplaceUsageEvent", back_populates="ledger_entry")
+
+    __table_args__ = (
+        sa.Index("ix_credit_ledger_org_time", "organization_id", "created_at"),
+    )
+
+
+
 class Post(Base):
     __tablename__ = "posts"
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -2177,6 +2504,130 @@ class PostLike(Base):
     post_id = Column(UUID(as_uuid=True), ForeignKey("posts.id"), primary_key=True)
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), primary_key=True)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
+
+
+class CommunityPortfolio(Base):
+    __tablename__ = "community_portfolios"
+
+    # purpose: catalog community-facing DNA knowledge releases with guardrail lineage
+    # status: experimental
+    # depends_on: teams.id, users.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id", ondelete="SET NULL"), nullable=True)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    slug = Column(String, nullable=False, unique=True)
+    title = Column(String, nullable=False)
+    summary = Column(Text, nullable=True)
+    visibility = Column(String, nullable=False, default="public")
+    license = Column(String, nullable=False, default="CC-BY-4.0")
+    tags = Column(JSON, default=list, nullable=False)
+    attribution = Column(JSON, default=dict, nullable=False)
+    provenance = Column(JSON, default=dict, nullable=False)
+    mitigation_history = Column(JSON, default=list, nullable=False)
+    replay_checkpoints = Column(JSON, default=list, nullable=False)
+    guardrail_flags = Column(JSON, default=list, nullable=False)
+    engagement_score = Column(Float, nullable=False, default=0.0)
+    status = Column(String, nullable=False, default="draft")
+    published_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        nullable=False,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+    )
+
+    team = relationship("Team")
+    created_by = relationship("User")
+    assets = relationship(
+        "CommunityPortfolioAssetLink",
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+        order_by="CommunityPortfolioAssetLink.created_at",
+    )
+    engagements = relationship(
+        "CommunityPortfolioEngagement",
+        back_populates="portfolio",
+        cascade="all, delete-orphan",
+    )
+
+
+class CommunityPortfolioAssetLink(Base):
+    __tablename__ = "community_portfolio_assets"
+
+    # purpose: connect community portfolios to DNA assets, protocols, and planner sessions
+    # status: experimental
+    # depends_on: community_portfolios.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    portfolio_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("community_portfolios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_type = Column(String, nullable=False)
+    asset_id = Column(UUID(as_uuid=True), nullable=False)
+    asset_version_id = Column(UUID(as_uuid=True), nullable=True)
+    planner_session_id = Column(UUID(as_uuid=True), nullable=True)
+    meta = Column("metadata", JSON, default=dict, nullable=False)
+    guardrail_snapshot = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    portfolio = relationship("CommunityPortfolio", back_populates="assets")
+
+    __table_args__ = (
+        sa.Index(
+            "ix_community_portfolio_assets_asset",
+            "asset_type",
+            "asset_id",
+        ),
+    )
+
+
+class CommunityPortfolioEngagement(Base):
+    __tablename__ = "community_portfolio_engagements"
+
+    # purpose: persist per-user engagement signals for discovery ranking
+    # status: experimental
+    # depends_on: community_portfolios.id, users.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    portfolio_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("community_portfolios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    interaction = Column(String, nullable=False)
+    weight = Column(Float, nullable=False, default=1.0)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    portfolio = relationship("CommunityPortfolio", back_populates="engagements")
+    user = relationship("User")
+
+    __table_args__ = (
+        sa.UniqueConstraint("portfolio_id", "user_id", "interaction"),
+    )
+
+
+class CommunityModerationEvent(Base):
+    __tablename__ = "community_moderation_events"
+
+    # purpose: record guardrail-driven moderation workflow for community releases
+    # status: experimental
+    # depends_on: community_portfolios.id, users.id
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    portfolio_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("community_portfolios.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    triggered_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    guardrail_flags = Column(JSON, default=list, nullable=False)
+    outcome = Column(String, nullable=False, default="pending")
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    portfolio = relationship("CommunityPortfolio")
+    triggered_by = relationship("User")
 
 
 class ProtocolStar(Base):
@@ -2651,6 +3102,12 @@ class DNARepositoryFederationLink(Base):
         cascade="all, delete-orphan",
         order_by="DNARepositoryFederationAttestation.created_at.desc()",
     )
+    grants = relationship(
+        "DNARepositoryFederationGrant",
+        back_populates="link",
+        cascade="all, delete-orphan",
+        order_by="DNARepositoryFederationGrant.created_at.desc()",
+    )
 
     __table_args__ = (
         sa.UniqueConstraint(
@@ -2691,6 +3148,54 @@ class DNARepositoryFederationAttestation(Base):
     link = relationship("DNARepositoryFederationLink", back_populates="attestations")
     release = relationship("DNARepositoryRelease")
     actor = relationship("User")
+
+
+class DNARepositoryFederationGrant(Base):
+    __tablename__ = "dna_repository_federation_grants"
+
+    # purpose: persist cross-organization collaboration permissions for federated DNA repositories
+    # status: experimental
+    # depends_on: dna_repository_federation_links, users
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    link_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_federation_links.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    organization = Column(String, nullable=False)
+    permission_tier = Column(String, nullable=False, default="reviewer")
+    guardrail_scope = Column(JSON, default=dict, nullable=False)
+    handshake_state = Column(String, nullable=False, default="pending")
+    requested_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    activated_at = Column(DateTime, nullable=True)
+    revoked_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    link = relationship("DNARepositoryFederationLink", back_populates="grants")
+    requester = relationship("User", foreign_keys=[requested_by_id])
+    approver = relationship("User", foreign_keys=[approved_by_id])
+    channel_versions = relationship(
+        "DNARepositoryReleaseChannelVersion",
+        back_populates="grant",
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "link_id",
+            "organization",
+            name="uq_dna_repository_federation_grant_organization",
+        ),
+    )
 
 
 class DNARepositoryReleaseChannel(Base):
@@ -2772,9 +3277,16 @@ class DNARepositoryReleaseChannelVersion(Base):
     provenance_snapshot = Column(JSON, default=dict, nullable=False)
     mitigation_digest = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    grant_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_federation_grants.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     channel = relationship("DNARepositoryReleaseChannel", back_populates="versions")
     release = relationship("DNARepositoryRelease", back_populates="channel_versions")
+    grant = relationship("DNARepositoryFederationGrant", back_populates="channel_versions")
 
     __table_args__ = (
         sa.UniqueConstraint(

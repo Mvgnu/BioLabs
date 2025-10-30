@@ -1,230 +1,154 @@
-from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from ..database import get_db
-from ..auth import get_current_user
 from .. import models, schemas
+from ..auth import get_current_user
+from ..database import get_db
+from ..services import community as community_service
 
 router = APIRouter(prefix="/api/community", tags=["community"])
 
-@router.post("/posts", response_model=schemas.PostOut)
-async def create_post(
-    post: schemas.PostCreate,
+
+@router.get("/portfolios", response_model=list[schemas.CommunityPortfolioOut])
+async def list_portfolios(
+    include_unpublished: bool = Query(False),
+    visibility: str | None = Query("public"),
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    db_post = models.Post(content=post.content, user_id=user.id)
-    db.add(db_post)
-    db.commit()
-    db.refresh(db_post)
-    return db_post
-
-
-@router.delete("/posts/{post_id}")
-async def delete_post(
-    post_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    try:
-        pid = UUID(post_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid post id")
-    post = db.query(models.Post).filter(models.Post.id == pid).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    if post.user_id != user.id:
-        raise HTTPException(status_code=403, detail="Not allowed")
-    db.delete(post)
-    db.commit()
-    return {"detail": "deleted"}
-
-
-@router.get("/posts", response_model=list[schemas.PostOut])
-async def list_posts(
-    user_id: Optional[str] = None,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    query = db.query(models.Post)
-    if user_id:
-        try:
-            uid = UUID(user_id)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid user id")
-        query = query.filter(models.Post.user_id == uid)
-    return query.order_by(models.Post.created_at.desc()).all()
-
-
-@router.post("/follow/{user_id}", response_model=schemas.FollowOut)
-async def follow_user(
-    user_id: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    try:
-        uid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user id")
-    if uid == current_user.id:
-        raise HTTPException(status_code=400, detail="Cannot follow yourself")
-    follow = db.query(models.Follow).filter(
-        models.Follow.follower_id == current_user.id,
-        models.Follow.followed_id == uid,
-    ).first()
-    if not follow:
-        follow = models.Follow(follower_id=current_user.id, followed_id=uid)
-        db.add(follow)
-        db.commit()
-    return follow
-
-
-@router.delete("/follow/{user_id}")
-async def unfollow_user(
-    user_id: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    try:
-        uid = UUID(user_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid user id")
-    follow = db.query(models.Follow).filter(
-        models.Follow.follower_id == current_user.id,
-        models.Follow.followed_id == uid,
-    ).first()
-    if follow:
-        db.delete(follow)
-        db.commit()
-    return {"detail": "unfollowed"}
-
-
-@router.get("/feed", response_model=list[schemas.PostOut])
-async def get_feed(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    followed_ids = [
-        f.followed_id
-        for f in db.query(models.Follow).filter(models.Follow.follower_id == current_user.id)
-    ]
-    if not followed_ids:
-        return []
-    return (
-        db.query(models.Post)
-        .filter(models.Post.user_id.in_(followed_ids))
-        .order_by(models.Post.created_at.desc())
-        .all()
+    portfolios = community_service.list_portfolios(
+        db,
+        include_unpublished=include_unpublished and user.is_admin,
+        visibility=visibility if visibility in {"public", "restricted"} else None,
     )
+    return portfolios
 
 
-@router.post("/posts/{post_id}/like", response_model=schemas.PostLikeOut)
-async def like_post(
-    post_id: str,
+@router.post("/portfolios", response_model=schemas.CommunityPortfolioOut)
+async def create_portfolio(
+    payload: schemas.CommunityPortfolioCreate,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    try:
-        pid = UUID(post_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid post id")
-    if not db.query(models.Post).filter(models.Post.id == pid).first():
-        raise HTTPException(status_code=404, detail="Post not found")
-    like = (
-        db.query(models.PostLike)
-        .filter(models.PostLike.post_id == pid, models.PostLike.user_id == user.id)
-        .first()
+    team_id = user.teams[0].team_id if user.teams else None
+    portfolio = community_service.create_portfolio(
+        db,
+        payload,
+        creator_id=user.id,
+        team_id=team_id,
     )
-    if not like:
-        like = models.PostLike(post_id=pid, user_id=user.id)
-        db.add(like)
-        db.commit()
-    return like
-
-
-@router.delete("/posts/{post_id}/like")
-async def unlike_post(
-    post_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    try:
-        pid = UUID(post_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid post id")
-    like = (
-        db.query(models.PostLike)
-        .filter(models.PostLike.post_id == pid, models.PostLike.user_id == user.id)
-        .first()
-    )
-    if like:
-        db.delete(like)
-        db.commit()
-    return {"detail": "unliked"}
-
-
-@router.get("/posts/{post_id}/likes", response_model=int)
-async def count_likes(
-    post_id: str,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    try:
-        pid = UUID(post_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid post id")
-    return (
-        db.query(models.PostLike)
-        .filter(models.PostLike.post_id == pid)
-        .count()
-    )
-
-
-@router.post("/posts/{post_id}/report", response_model=schemas.PostReportOut)
-async def report_post(
-    post_id: str,
-    report: schemas.PostReportCreate,
-    db: Session = Depends(get_db),
-    user: models.User = Depends(get_current_user),
-):
-    try:
-        pid = UUID(post_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid post id")
-    post = db.query(models.Post).filter(models.Post.id == pid).first()
-    if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
-    db_report = models.PostReport(post_id=pid, reporter_id=user.id, reason=report.reason)
-    db.add(db_report)
     db.commit()
-    db.refresh(db_report)
-    return db_report
+    db.refresh(portfolio)
+    return portfolio
 
 
-@router.get("/reports", response_model=list[schemas.PostReportOut])
-async def list_reports(
+@router.get("/portfolios/{portfolio_id}", response_model=schemas.CommunityPortfolioOut)
+async def get_portfolio(
+    portfolio_id: UUID,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    return db.query(models.PostReport).order_by(models.PostReport.created_at.desc()).all()
+    portfolio = db.get(models.CommunityPortfolio, portfolio_id)
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if portfolio.visibility != "public" and portfolio.created_by_id != user.id and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Portfolio restricted")
+    return portfolio
 
 
-@router.post("/reports/{report_id}/resolve")
-async def resolve_report(
-    report_id: str,
+@router.post("/portfolios/{portfolio_id}/assets", response_model=schemas.CommunityPortfolioOut)
+async def add_portfolio_asset(
+    portfolio_id: UUID,
+    payload: schemas.CommunityPortfolioAssetRef,
     db: Session = Depends(get_db),
     user: models.User = Depends(get_current_user),
 ):
-    try:
-        rid = UUID(report_id)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid report id")
-    rep = db.query(models.PostReport).filter(models.PostReport.id == rid).first()
-    if not rep:
-        raise HTTPException(status_code=404, detail="Report not found")
-    rep.status = "resolved"
+    portfolio = db.get(models.CommunityPortfolio, portfolio_id)
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if portfolio.created_by_id not in {None, user.id} and not user.is_admin:
+        raise HTTPException(status_code=403, detail="Not allowed to modify portfolio")
+    portfolio = community_service.add_asset(db, portfolio, payload, actor_id=user.id)
     db.commit()
-    return {"detail": "resolved"}
+    db.refresh(portfolio)
+    return portfolio
+
+
+@router.post(
+    "/portfolios/{portfolio_id}/engagements",
+    response_model=schemas.CommunityPortfolioEngagementOut,
+)
+async def record_engagement(
+    portfolio_id: UUID,
+    payload: schemas.CommunityPortfolioEngagementCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    portfolio = db.get(models.CommunityPortfolio, portfolio_id)
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    engagement = community_service.record_engagement(
+        db,
+        portfolio,
+        user_id=user.id,
+        payload=payload,
+    )
+    db.commit()
+    db.refresh(engagement)
+    return engagement
+
+
+@router.post(
+    "/portfolios/{portfolio_id}/moderation",
+    response_model=schemas.CommunityModerationEventOut,
+)
+async def moderate_portfolio(
+    portfolio_id: UUID,
+    payload: schemas.CommunityModerationDecision,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    portfolio = db.get(models.CommunityPortfolio, portfolio_id)
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    if not user.is_admin and portfolio.created_by_id != user.id:
+        raise HTTPException(status_code=403, detail="Moderation restricted")
+    event = community_service.create_moderation_event(
+        db,
+        portfolio,
+        actor_id=user.id,
+        decision=payload,
+    )
+    db.commit()
+    db.refresh(event)
+    return event
+
+
+@router.get("/feed", response_model=list[schemas.CommunityFeedEntry])
+async def personalized_feed(
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    entries = community_service.personal_feed(
+        db,
+        user_id=user.id,
+        limit=limit,
+    )
+    return entries
+
+
+@router.get("/trending", response_model=schemas.CommunityTrendingOut)
+async def trending_feed(
+    timeframe: str = Query("7d", pattern="^(24h|7d|30d)$"),
+    limit: int = Query(10, ge=1, le=20),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+):
+    return community_service.trending(
+        db,
+        timeframe=timeframe,
+        limit=limit,
+    )

@@ -329,6 +329,81 @@ def record_federation_attestation(
     return attestation
 
 
+def request_federation_grant(
+    db: Session,
+    link: models.DNARepositoryFederationLink,
+    payload: schemas.DNARepositoryFederationGrantCreate,
+    *,
+    actor_id: UUID,
+) -> models.DNARepositoryFederationGrant:
+    """Request cross-organization access within a federated workspace."""
+
+    now = datetime.now(timezone.utc)
+    grant = models.DNARepositoryFederationGrant(
+        link_id=link.id,
+        organization=payload.organization,
+        permission_tier=payload.permission_tier,
+        guardrail_scope=payload.guardrail_scope,
+        handshake_state="pending",
+        requested_by_id=actor_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(grant)
+    db.flush()
+    _create_timeline_event(
+        db,
+        link.repository,
+        event_type="federation.grant_requested",
+        actor_id=actor_id,
+        payload={
+            "link_id": str(link.id),
+            "grant_id": str(grant.id),
+            "organization": grant.organization,
+            "permission_tier": grant.permission_tier,
+        },
+    )
+    return grant
+
+
+def record_federation_grant_decision(
+    db: Session,
+    grant: models.DNARepositoryFederationGrant,
+    payload: schemas.DNARepositoryFederationGrantDecision,
+    *,
+    actor_id: UUID,
+) -> models.DNARepositoryFederationGrant:
+    """Approve or revoke a federated grant and emit guardrail timeline events."""
+
+    now = datetime.now(timezone.utc)
+    if payload.decision == "approve":
+        grant.handshake_state = "active"
+        grant.approved_by_id = actor_id
+        grant.activated_at = now
+        grant.revoked_at = None
+    else:
+        grant.handshake_state = "revoked"
+        grant.revoked_at = now
+    grant.updated_at = now
+    db.add(grant)
+    _create_timeline_event(
+        db,
+        grant.link.repository,
+        event_type=(
+            "federation.grant_approved"
+            if payload.decision == "approve"
+            else "federation.grant_revoked"
+        ),
+        actor_id=actor_id,
+        payload={
+            "grant_id": str(grant.id),
+            "organization": grant.organization,
+            "decision": payload.decision,
+        },
+    )
+    return grant
+
+
 def create_release_channel(
     db: Session,
     repo: models.DNARepository,
@@ -374,6 +449,15 @@ def publish_release_to_channel(
     """Link a release to a channel with attestation metadata and sequencing."""
 
     next_sequence = _next_channel_sequence(db, channel.id)
+    grant_id = payload.grant_id
+    if grant_id:
+        grant = db.get(models.DNARepositoryFederationGrant, grant_id)
+        if not grant or grant.link.repository_id != release.repository_id:
+            raise ValueError("Grant does not belong to repository")
+        if grant.handshake_state != "active":
+            raise ValueError("Grant must be active to publish to a channel")
+    else:
+        grant = None
     version = models.DNARepositoryReleaseChannelVersion(
         channel_id=channel.id,
         release_id=release.id,
@@ -382,6 +466,7 @@ def publish_release_to_channel(
         guardrail_attestation=payload.guardrail_attestation,
         provenance_snapshot=payload.provenance_snapshot,
         mitigation_digest=payload.mitigation_digest,
+        grant_id=grant.id if grant else None,
     )
     db.add(version)
     db.flush()
@@ -394,6 +479,7 @@ def publish_release_to_channel(
             "channel_id": str(channel.id),
             "release_id": str(release.id),
             "sequence": next_sequence,
+            "grant_id": str(grant.id) if grant else None,
         },
         release=release,
     )

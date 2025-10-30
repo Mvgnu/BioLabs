@@ -322,6 +322,9 @@ export interface LifecycleSummary {
   latest_event_at?: string | null
   custody_state?: string | null
   context_chips: LifecycleContextChip[]
+  compliance_allowed?: boolean | null
+  compliance_flags: string[]
+  compliance_region?: string | null
 }
 
 export interface LifecycleTimelineResponse {
@@ -905,19 +908,80 @@ export interface ItemTypeCount {
   count: number
 }
 
+export interface ComplianceOrganization {
+  id: string
+  name: string
+  slug?: string
+  primary_region: string
+  residency_enforced: boolean
+  allowed_regions: string[]
+  encryption_policy: Record<string, any>
+  retention_policy: Record<string, any>
+  created_at: string
+  updated_at: string
+  policy_count: number
+  active_legal_holds: number
+}
+
+export interface ResidencyPolicy {
+  id: string
+  data_domain: string
+  allowed_regions: string[]
+  default_region: string
+  encryption_at_rest: string
+  encryption_in_transit: string
+  retention_days: number
+  audit_interval_days: number
+  guardrail_flags: string[]
+  created_at: string
+  updated_at: string
+}
+
+export interface LegalHold {
+  id: string
+  scope_type: string
+  scope_reference: string
+  reason: string
+  status: string
+  created_at: string
+  released_at?: string | null
+  release_notes?: string | null
+}
+
 export interface ComplianceRecord {
   id: string
   item_id?: string | null
   user_id?: string | null
+  organization_id?: string | null
   record_type: string
+  data_domain: string
   status: string
   notes?: string | null
+  region?: string | null
+  guardrail_flags: string[]
+  retention_period_days?: number | null
+  encryption_profile: Record<string, any>
   created_at: string
+  updated_at: string
 }
 
 export interface StatusCount {
   status: string
   count: number
+}
+
+export interface ComplianceReportSummary {
+  generated_at: string
+  organizations: Array<{
+    id: string
+    name: string
+    primary_region: string
+    residency_enforced: boolean
+    policy_count: number
+    active_holds: number
+    residency_gaps: string[]
+    record_status_totals: Record<string, number>
+  }>
 }
 
 export interface CalendarEvent {
@@ -994,16 +1058,154 @@ export interface MarketplaceRequest {
   created_at: string
 }
 
-export interface Post {
+export interface MarketplacePlanFeature {
   id: string
-  user_id: string
-  content: string
+  feature_key: string
+  label: string
+  details?: string | null
   created_at: string
 }
 
-export interface Follow {
-  follower_id: string
-  followed_id: string
+export interface MarketplacePricingPlan {
+  id: string
+  slug: string
+  title: string
+  description?: string | null
+  billing_cadence: string
+  base_price_cents: number
+  credit_allowance: number
+  sla_tier: string
+  metadata: Record<string, any>
+  created_at: string
+  updated_at: string
+  features: MarketplacePlanFeature[]
+}
+
+export interface MarketplaceSubscription {
+  id: string
+  organization_id: string
+  plan: MarketplacePricingPlan
+  status: string
+  billing_email?: string | null
+  started_at: string
+  renews_at?: string | null
+  cancelled_at?: string | null
+  sla_acceptance: Record<string, any>
+  current_credits: number
+  metadata: Record<string, any>
+  created_at: string
+  updated_at: string
+}
+
+export interface MarketplaceUsageEvent {
+  id: string
+  subscription_id?: string | null
+  organization_id: string
+  team_id?: string | null
+  user_id?: string | null
+  service: string
+  operation: string
+  unit_quantity: number
+  credits_consumed: number
+  guardrail_flags: string[]
+  metadata: Record<string, any>
+  occurred_at: string
+  created_at: string
+}
+
+export interface MarketplaceInvoice {
+  id: string
+  subscription_id: string
+  organization_id: string
+  invoice_number: string
+  period_start: string
+  period_end: string
+  amount_due_cents: number
+  credit_usage: number
+  status: string
+  issued_at?: string | null
+  paid_at?: string | null
+  line_items: Record<string, any>[]
+  created_at: string
+}
+
+export interface MarketplaceCreditLedgerEntry {
+  id: string
+  subscription_id: string
+  organization_id: string
+  usage_event_id?: string | null
+  delta_credits: number
+  reason: string
+  running_balance: number
+  metadata: Record<string, any>
+  created_at: string
+}
+
+export interface CommunityPortfolioAsset {
+  id: string
+  asset_type: 'protocol' | 'dna_asset' | 'planner_session'
+  asset_id: string
+  asset_version_id?: string | null
+  planner_session_id?: string | null
+  meta: Record<string, unknown>
+  guardrail_snapshot: Record<string, unknown>
+  created_at: string
+}
+
+export interface CommunityPortfolio {
+  id: string
+  slug: string
+  title: string
+  summary?: string | null
+  visibility: string
+  license: string
+  tags: string[]
+  attribution: Record<string, unknown>
+  provenance: Record<string, unknown>
+  mitigation_history: unknown[]
+  replay_checkpoints: unknown[]
+  guardrail_flags: string[]
+  engagement_score: number
+  status: string
+  published_at?: string | null
+  created_at: string
+  updated_at: string
+  assets: CommunityPortfolioAsset[]
+}
+
+export interface CommunityPortfolioEngagement {
+  id: string
+  portfolio_id: string
+  user_id: string
+  interaction: string
+  weight: number
+  created_at: string
+}
+
+export interface CommunityFeedEntry {
+  portfolio: CommunityPortfolio
+  reason: string
+  score: number
+}
+
+export interface CommunityTrendingPortfolio {
+  portfolio: CommunityPortfolio
+  engagement_delta: number
+  guardrail_summary: string[]
+}
+
+export interface CommunityTrending {
+  timeframe: '24h' | '7d' | '30d'
+  portfolios: CommunityTrendingPortfolio[]
+}
+
+export interface CommunityModerationEvent {
+  id: string
+  portfolio_id: string
+  triggered_by_id?: string | null
+  guardrail_flags: string[]
+  outcome: string
+  notes?: string | null
   created_at: string
 }
 export interface TrendingProtocol {
@@ -2279,6 +2481,7 @@ export interface DNARepositoryFederationLink {
   created_at: string
   updated_at: string
   attestations: DNARepositoryFederationAttestation[]
+  grants: DNARepositoryFederationGrant[]
 }
 
 export interface DNARepositoryReleaseChannelVersion {
@@ -2291,7 +2494,23 @@ export interface DNARepositoryReleaseChannelVersion {
   provenance_snapshot: Record<string, any>
   mitigation_digest?: string | null
   created_at: string
+  grant_id?: string | null
   release?: DNARepositoryRelease
+}
+
+export interface DNARepositoryFederationGrant {
+  id: string
+  link_id: string
+  organization: string
+  permission_tier: string
+  guardrail_scope: Record<string, any>
+  handshake_state: string
+  requested_by_id?: string | null
+  approved_by_id?: string | null
+  activated_at?: string | null
+  revoked_at?: string | null
+  created_at: string
+  updated_at: string
 }
 
 export interface DNARepositoryReleaseChannel {

@@ -307,16 +307,43 @@ def test_trending_threads_days_param(client):
 
 
 def test_trending_posts(client):
-    h1 = get_auth_headers(client)
-    post = client.post("/api/community/posts", json={"content": "x"}, headers=h1).json()
-    h2 = get_auth_headers(client, email="u2@example.com")
-    h3 = get_auth_headers(client, email="u3@example.com")
-    client.post(f"/api/community/posts/{post['id']}/like", headers=h1)
-    client.post(f"/api/community/posts/{post['id']}/like", headers=h2)
-    client.post(f"/api/community/posts/{post['id']}/like", headers=h3)
-    data = client.get("/api/analytics/trending-posts", headers=h1).json()
-    assert data[0]["post_id"] == post["id"]
-    assert data[0]["count"] == 3
+    owner = get_auth_headers(client)
+    viewer_one = get_auth_headers(client, email="viewer1@example.com")
+    viewer_two = get_auth_headers(client, email="viewer2@example.com")
+
+    asset = client.post(
+        '/api/dna-assets',
+        json={'name': 'Trending asset', 'sequence': 'ATGCATGC'},
+        headers=owner,
+    ).json()
+    portfolio = client.post(
+        '/api/community/portfolios',
+        json={
+            'slug': 'trending-portfolio',
+            'title': 'Trending portfolio',
+            'summary': 'Engagement stress test.',
+            'assets': [{'asset_type': 'dna_asset', 'asset_id': asset['id']}],
+        },
+        headers=owner,
+    ).json()
+    client.post(
+        f"/api/community/portfolios/{portfolio['id']}/moderation",
+        json={'outcome': 'cleared'},
+        headers=owner,
+    )
+    client.post(
+        f"/api/community/portfolios/{portfolio['id']}/engagements",
+        json={'interaction': 'star'},
+        headers=viewer_one,
+    )
+    client.post(
+        f"/api/community/portfolios/{portfolio['id']}/engagements",
+        json={'interaction': 'bookmark'},
+        headers=viewer_two,
+    )
+    data = client.get("/api/analytics/trending-posts", headers=owner).json()
+    assert data[0]['portfolio_id'] == portfolio['id']
+    assert data[0]['engagement_count'] >= 1.5
 
 
 def test_trending_protocol_stars(client):
