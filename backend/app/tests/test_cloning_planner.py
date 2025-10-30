@@ -39,6 +39,80 @@ def _create_session(client) -> tuple[str, dict]:
     return headers, response.json()
 
 
+def test_planner_session_emits_residency_guardrail(client):
+    headers, _ = admin_headers()
+    db = TestingSessionLocal()
+    try:
+        organization = models.Organization(
+            name="Helios Labs",
+            slug="helios",
+            primary_region="us-east-1",
+            allowed_regions=["us-east-1"],
+            encryption_policy={"at_rest": "kms"},
+            retention_policy={},
+        )
+        db.add(organization)
+        db.flush()
+        policy = models.OrganizationResidencyPolicy(
+            organization_id=organization.id,
+            data_domain="cloning_planner",
+            allowed_regions=["us-east-1"],
+            default_region="us-east-1",
+            encryption_at_rest="kms",
+            encryption_in_transit="tls1.3",
+            retention_days=365,
+            audit_interval_days=30,
+            guardrail_flags=["encryption:strict"],
+        )
+        db.add(policy)
+        db.commit()
+        organization_id = organization.id
+    finally:
+        db.close()
+
+    payload = {
+        "assembly_strategy": "gibson",
+        "input_sequences": [
+            {
+                "name": "vector",
+                "sequence": "ATGC" * 30,
+                "metadata": {"length": 120},
+            }
+        ],
+        "metadata": {
+            "guardrail_state": {"state": "intake"},
+            "compliance": {
+                "organization_id": str(organization_id),
+                "region": "eu-west-1",
+                "data_domain": "cloning_planner",
+            },
+        },
+        "toolkit_preset": "multiplex",
+    }
+    response = client.post("/api/cloning-planner/sessions", json=payload, headers=headers)
+    assert response.status_code == 201, response.text
+    body = response.json()
+    compliance_state = body["guardrail_state"].get("compliance")
+    assert compliance_state["allowed"] is False
+    assert "residency:region_blocked" in compliance_state["flags"]
+
+    db = TestingSessionLocal()
+    try:
+        records = (
+            db.query(models.ComplianceRecord)
+            .filter(
+                models.ComplianceRecord.organization_id == organization_id,
+                models.ComplianceRecord.record_type == "cloning_planner",
+            )
+            .all()
+        )
+        assert records, "expected compliance record for planner session"
+        assert any("residency:region_blocked" in (record.guardrail_flags or []) for record in records)
+        assert any(record.status == "restricted" for record in records)
+    finally:
+        db.close()
+
+
 def _seed_protocol_with_guardrail(user_id: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
     """Create a protocol execution with active custody backpressure."""
 

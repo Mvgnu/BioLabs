@@ -115,6 +115,7 @@ class DNAAssetSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     tags: List[str]
+    meta: dict[str, Any] = Field(default_factory=dict)
     latest_version: Optional[DNAAssetVersionOut] = None
 
 

@@ -23,9 +23,13 @@ from .. import models, pubsub, storage
 from ..analytics.governance import invalidate_governance_analytics_cache
 from ..database import SessionLocal
 from ..schemas.sequence_toolkit import SequenceToolkitProfile
-from . import sequence_toolkit
+from . import (
+    billing as billing_service,
+    compliance as compliance_service,
+    qc_ingestion,
+    sequence_toolkit,
+)
 from ..tasks import celery_app
-from . import qc_ingestion
 
 
 DEFAULT_TOOLKIT_PROFILE = SequenceToolkitProfile()
@@ -1343,6 +1347,67 @@ def create_session(
             with suppress(ValueError, TypeError):
                 execution_id = UUID(str(raw_execution))
     guardrail_state = dict(metadata.get("guardrail_state", {})) if metadata else {}
+    compliance_context = {}
+    if metadata:
+        raw_compliance = metadata.get("compliance")
+        if isinstance(raw_compliance, dict):
+            compliance_context = dict(raw_compliance)
+    organization_identifier = compliance_context.get("organization_id") or (
+        metadata.get("organization_id") if metadata else None
+    )
+    region = compliance_context.get("region") or (metadata.get("region") if metadata else None)
+    data_domain = compliance_context.get("data_domain", "cloning_planner")
+    if organization_identifier:
+        try:
+            organization_uuid = UUID(str(organization_identifier))
+        except (TypeError, ValueError):
+            organization_uuid = None
+        if organization_uuid:
+            organization = db.get(models.Organization, organization_uuid)
+            if organization:
+                evaluation = compliance_service.evaluate_residency_guardrails(
+                    db,
+                    organization=organization,
+                    region=region,
+                    data_domain=data_domain,
+                )
+                guardrail_state.setdefault("compliance", {})
+                guardrail_state["compliance"] = {
+                    "organization_id": str(organization.id),
+                    "allowed": evaluation.allowed,
+                    "effective_region": evaluation.effective_region,
+                    "flags": evaluation.flags,
+                }
+                policy = (
+                    db.query(models.OrganizationResidencyPolicy)
+                    .filter(
+                        models.OrganizationResidencyPolicy.organization_id == organization.id,
+                        models.OrganizationResidencyPolicy.data_domain == data_domain,
+                    )
+                    .one_or_none()
+                )
+                compliance_record = models.ComplianceRecord(
+                    organization_id=organization.id,
+                    user_id=getattr(created_by, "id", None),
+                    record_type="cloning_planner",
+                    data_domain=data_domain,
+                    status="approved" if evaluation.allowed else "restricted",
+                    notes="Planner session residency evaluation",
+                    region=evaluation.effective_region,
+                    encryption_profile={},
+                    guardrail_flags=[],
+                )
+                compliance_service.annotate_compliance_record(
+                    compliance_record,
+                    evaluation,
+                    policy=policy,
+                )
+                db.add(compliance_record)
+                if not evaluation.allowed:
+                    guardrail_state.setdefault("flags", [])
+                    for flag in evaluation.flags:
+                        if flag not in guardrail_state["flags"]:
+                            guardrail_state["flags"].append(flag)
     recommendations = sequence_toolkit.build_strategy_recommendations(
         list(input_sequences or []),
         preset_id=toolkit_preset,
@@ -2373,7 +2438,64 @@ def finalize_session(
         checkpoint={"key": "finalize", "payload": checkpoint_payload},
         event_id=event_id,
     )
+    _emit_usage_event_for_planner(db, planner)
     return planner
+
+
+def _emit_usage_event_for_planner(db: Session, planner: models.CloningPlannerSession) -> None:
+    """Record monetized usage for finalized planner sessions."""
+
+    team_id = _resolve_planner_team_id(planner)
+    if not team_id:
+        return
+    team = db.get(models.Team, team_id)
+    if not team or not team.organization_id:
+        return
+    guardrail_state = planner.guardrail_state or {}
+    flags: list[str] = []
+    open_escalations = guardrail_state.get("open_escalations")
+    if isinstance(open_escalations, list):
+        for entry in open_escalations:
+            if isinstance(entry, dict) and entry.get("code"):
+                flags.append(str(entry["code"]))
+    credit_cost = int(guardrail_state.get("credit_cost", 10))
+    metadata = {
+        "planner_id": str(planner.id),
+        "assembly_strategy": planner.assembly_strategy,
+    }
+    try:
+        billing_service.record_usage_event(
+            db,
+            schemas.MarketplaceUsageEventCreate(
+                organization_id=team.organization_id,
+                team_id=team.id,
+                user_id=planner.created_by_id,
+                service="planner",
+                operation="session_finalized",
+                unit_quantity=1.0,
+                credits_consumed=credit_cost,
+                guardrail_flags=flags,
+                metadata=metadata,
+            ),
+        )
+    except billing_service.SubscriptionNotFound:
+        return
+
+
+def _resolve_planner_team_id(planner: models.CloningPlannerSession) -> UUID | None:
+    execution = planner.protocol_execution
+    if execution and execution.template and execution.template.team_id:
+        return execution.template.team_id
+    guardrail_state = planner.guardrail_state or {}
+    candidate = guardrail_state.get("team_id")
+    if not candidate and isinstance(guardrail_state.get("custody_payload"), dict):
+        candidate = guardrail_state["custody_payload"].get("team_id")
+    if candidate:
+        try:
+            return UUID(str(candidate))
+        except ValueError:
+            return None
+    return None
 
 
 def _serialise_stage_record(record: models.CloningPlannerStageRecord) -> dict[str, Any]:

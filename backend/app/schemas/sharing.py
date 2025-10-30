@@ -153,6 +153,7 @@ class DNARepositoryFederationLinkOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     attestations: list["DNARepositoryFederationAttestationOut"] = []
+    grants: list["DNARepositoryFederationGrantOut"] = []
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -174,6 +175,33 @@ class DNARepositoryFederationAttestationOut(BaseModel):
     provenance_notes: Optional[str]
     created_at: datetime
     created_by_id: Optional[UUID]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DNARepositoryFederationGrantCreate(BaseModel):
+    organization: str
+    permission_tier: Literal["reviewer", "publisher", "observer"] = "reviewer"
+    guardrail_scope: dict = Field(default_factory=dict)
+
+
+class DNARepositoryFederationGrantDecision(BaseModel):
+    decision: Literal["approve", "revoke"]
+    notes: Optional[str] = None
+
+
+class DNARepositoryFederationGrantOut(BaseModel):
+    id: UUID
+    link_id: UUID
+    organization: str
+    permission_tier: str
+    guardrail_scope: dict
+    handshake_state: str
+    requested_by_id: Optional[UUID]
+    approved_by_id: Optional[UUID]
+    activated_at: Optional[datetime]
+    revoked_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -207,6 +235,7 @@ class DNARepositoryReleaseChannelVersionCreate(BaseModel):
     guardrail_attestation: dict = Field(default_factory=dict)
     provenance_snapshot: dict = Field(default_factory=dict)
     mitigation_digest: Optional[str] = None
+    grant_id: Optional[UUID] = None
 
 
 class DNARepositoryReleaseChannelVersionOut(BaseModel):
@@ -219,5 +248,6 @@ class DNARepositoryReleaseChannelVersionOut(BaseModel):
     provenance_snapshot: dict
     mitigation_digest: Optional[str]
     created_at: datetime
+    grant_id: Optional[UUID]
     model_config = ConfigDict(from_attributes=True)
 

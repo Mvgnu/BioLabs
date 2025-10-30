@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session, aliased, joinedload
 
 from .. import models
 from ..analytics.governance import invalidate_governance_analytics_cache
+from . import compliance as compliance_service
 from ..schemas import (
     DNAAnnotationOut,
     DNAAnnotationPayload,
@@ -877,7 +878,39 @@ def create_asset(
     """Create a DNA asset and seed the initial version."""
 
     profile = profile or _DEFAULT_PROFILE
+    compliance_context: dict[str, Any] = {}
+    if payload.metadata and isinstance(payload.metadata.get("compliance"), dict):
+        compliance_context = dict(payload.metadata["compliance"])
+    organization_identifier = compliance_context.get("organization_id")
+    region = compliance_context.get("region")
+    data_domain = compliance_context.get("data_domain", "dna_asset")
+    organization: models.Organization | None = None
+    evaluation = None
+    policy = None
+    if organization_identifier:
+        try:
+            organization_uuid = UUID(str(organization_identifier))
+        except (TypeError, ValueError):
+            organization_uuid = None
+        if organization_uuid:
+            organization = db.get(models.Organization, organization_uuid)
+            if organization:
+                evaluation = compliance_service.evaluate_residency_guardrails(
+                    db,
+                    organization=organization,
+                    region=region,
+                    data_domain=data_domain,
+                )
+                policy = (
+                    db.query(models.OrganizationResidencyPolicy)
+                    .filter(
+                        models.OrganizationResidencyPolicy.organization_id == organization.id,
+                        models.OrganizationResidencyPolicy.data_domain == data_domain,
+                    )
+                    .one_or_none()
+                )
     now = _utcnow()
+    meta_payload = dict(payload.metadata or {})
     asset = models.DNAAsset(
         name=payload.name,
         status="draft",
@@ -885,7 +918,7 @@ def create_asset(
         created_by_id=getattr(created_by, "id", None),
         created_at=now,
         updated_at=now,
-        meta=dict(payload.metadata or {}),
+        meta=meta_payload,
     )
     db.add(asset)
     db.flush()
@@ -899,6 +932,51 @@ def create_asset(
     asset.latest_version = version
     _apply_tags(asset, payload.tags)
     db.flush()
+    if evaluation and organization:
+        compliance_meta = dict(asset.meta.get("compliance") or {})
+        compliance_meta.update(
+            {
+                "organization_id": str(organization.id),
+                "allowed": evaluation.allowed,
+                "effective_region": evaluation.effective_region,
+                "flags": evaluation.flags,
+            }
+        )
+        meta_state = dict(asset.meta or {})
+        meta_state["compliance"] = compliance_meta
+        asset.meta = meta_state
+        compliance_record = models.ComplianceRecord(
+            organization_id=organization.id,
+            user_id=getattr(created_by, "id", None),
+            record_type="dna_asset",
+            data_domain=data_domain,
+            status="approved" if evaluation.allowed else "restricted",
+            notes=f"DNA asset {asset.name} residency evaluation",
+            region=evaluation.effective_region,
+            encryption_profile={},
+            guardrail_flags=[],
+        )
+        compliance_service.annotate_compliance_record(
+            compliance_record,
+            evaluation,
+            policy=policy,
+        )
+        db.add(compliance_record)
+        if not evaluation.allowed:
+            record_guardrail_event(
+                db,
+                asset=asset,
+                version=version,
+                event=DNAAssetGovernanceUpdate(
+                    event_type="residency_violation",
+                    details={
+                        "severity": "critical",
+                        "flags": evaluation.flags,
+                        "region": evaluation.effective_region,
+                    },
+                ),
+                created_by=created_by,
+            )
     return asset
 
 
@@ -913,6 +991,41 @@ def add_version(
     """Append a new version to a DNA asset and refresh metadata."""
 
     profile = profile or _DEFAULT_PROFILE
+    asset_meta = asset.meta if isinstance(getattr(asset, "meta", {}), dict) else {}
+    compliance_context: dict[str, Any] = {}
+    if payload.metadata and isinstance(payload.metadata.get("compliance"), dict):
+        compliance_context = dict(payload.metadata["compliance"])
+    elif isinstance(asset_meta.get("compliance"), dict):
+        compliance_context = dict(asset_meta["compliance"])
+    organization_identifier = compliance_context.get("organization_id")
+    region = compliance_context.get("region")
+    data_domain = compliance_context.get("data_domain", "dna_asset")
+    organization: models.Organization | None = None
+    evaluation = None
+    policy = None
+    if organization_identifier:
+        try:
+            organization_uuid = UUID(str(organization_identifier))
+        except (TypeError, ValueError):
+            organization_uuid = None
+        if organization_uuid:
+            organization = db.get(models.Organization, organization_uuid)
+            if organization:
+                evaluation = compliance_service.evaluate_residency_guardrails(
+                    db,
+                    organization=organization,
+                    region=region,
+                    data_domain=data_domain,
+                )
+                policy = (
+                    db.query(models.OrganizationResidencyPolicy)
+                    .filter(
+                        models.OrganizationResidencyPolicy.organization_id == organization.id,
+                        models.OrganizationResidencyPolicy.data_domain == data_domain,
+                    )
+                    .one_or_none()
+                )
+
     version = _build_version(
         asset,
         payload,
@@ -923,7 +1036,54 @@ def add_version(
     asset.latest_version = version
     asset.updated_at = _utcnow()
     if payload.metadata:
-        asset.meta.update(payload.metadata)
+        meta_state = dict(asset.meta or {})
+        meta_state.update(payload.metadata)
+        asset.meta = meta_state
+    if evaluation and organization:
+        compliance_meta = dict((asset.meta or {}).get("compliance") or {})
+        compliance_meta.update(
+            {
+                "organization_id": str(organization.id),
+                "allowed": evaluation.allowed,
+                "effective_region": evaluation.effective_region,
+                "flags": evaluation.flags,
+            }
+        )
+        meta_state = dict(asset.meta or {})
+        meta_state["compliance"] = compliance_meta
+        asset.meta = meta_state
+        compliance_record = models.ComplianceRecord(
+            organization_id=organization.id,
+            user_id=getattr(created_by, "id", None),
+            record_type="dna_asset",
+            data_domain=data_domain,
+            status="approved" if evaluation.allowed else "restricted",
+            notes=f"DNA asset {asset.name} version residency evaluation",
+            region=evaluation.effective_region,
+            encryption_profile={},
+            guardrail_flags=[],
+        )
+        compliance_service.annotate_compliance_record(
+            compliance_record,
+            evaluation,
+            policy=policy,
+        )
+        db.add(compliance_record)
+        if not evaluation.allowed:
+            record_guardrail_event(
+                db,
+                asset=asset,
+                version=version,
+                event=DNAAssetGovernanceUpdate(
+                    event_type="residency_violation",
+                    details={
+                        "severity": "critical",
+                        "flags": evaluation.flags,
+                        "region": evaluation.effective_region,
+                    },
+                ),
+                created_by=created_by,
+            )
     db.flush()
     return version
 
@@ -1005,6 +1165,7 @@ def serialize_asset(asset: models.DNAAsset) -> DNAAssetSummary:
         created_at=asset.created_at,
         updated_at=asset.updated_at,
         tags=sorted(tag.tag for tag in asset.tags_rel),
+        meta=dict(asset.meta or {}),
         latest_version=latest_serialized,
     )
 

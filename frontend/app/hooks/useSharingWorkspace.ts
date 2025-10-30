@@ -6,6 +6,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import api from '../api/client'
 import type {
   DNARepository,
+  DNARepositoryFederationGrant,
   DNARepositoryFederationLink,
   DNARepositoryRelease,
   DNARepositoryReleaseChannel,
@@ -47,7 +48,7 @@ export const useAddCollaborator = (repositoryId: string) => {
 export const useCreateRelease = (repositoryId: string) => {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (data: any) =>
+    mutationFn: (data: Record<string, any>) =>
       api.post(`/api/sharing/repositories/${repositoryId}/releases`, data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: repositoryKey })
@@ -59,7 +60,7 @@ export const useCreateRelease = (repositoryId: string) => {
 export const useApproveRelease = (repositoryId: string | null) => {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (vars: { id: string; data: any }) =>
+    mutationFn: (vars: { id: string; data: Record<string, any> }) =>
       api.post(`/api/sharing/releases/${vars.id}/approvals`, vars.data),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: repositoryKey })
@@ -67,6 +68,75 @@ export const useApproveRelease = (repositoryId: string | null) => {
         qc.invalidateQueries({ queryKey: ['sharing', 'timeline', repositoryId] })
       }
     },
+  })
+}
+
+export const useRequestFederationGrant = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (vars: {
+      linkId: string
+      organization: string
+      permission_tier: string
+      guardrail_scope?: Record<string, any>
+    }) =>
+      api.post(`/api/sharing/federation/links/${vars.linkId}/grants`, {
+        organization: vars.organization,
+        permission_tier: vars.permission_tier,
+        guardrail_scope: vars.guardrail_scope ?? {},
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: repositoryKey }),
+  })
+}
+
+export const useDecideFederationGrant = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (vars: { id: string; decision: 'approve' | 'revoke'; notes?: string | null }) =>
+      api.post(`/api/sharing/federation/grants/${vars.id}/decision`, {
+        decision: vars.decision,
+        notes: vars.notes ?? null,
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: repositoryKey }),
+  })
+}
+
+export const useCreateReleaseChannel = (repositoryId: string) => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (data: {
+      name: string
+      slug: string
+      description?: string
+      audience_scope?: 'internal' | 'partners' | 'public'
+      guardrail_profile?: Record<string, any>
+      federation_link_id?: string | null
+    }) => api.post(`/api/sharing/repositories/${repositoryId}/channels`, data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: repositoryKey }),
+  })
+}
+
+export const usePublishReleaseChannelVersion = () => {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (vars: {
+      channelId: string
+      release_id: string
+      version_label: string
+      guardrail_attestation?: Record<string, any>
+      provenance_snapshot?: Record<string, any>
+      mitigation_digest?: string | null
+      grant_id?: string | null
+    }) =>
+      api.post(`/api/sharing/channels/${vars.channelId}/versions`, {
+        release_id: vars.release_id,
+        version_label: vars.version_label,
+        guardrail_attestation: vars.guardrail_attestation ?? {},
+        provenance_snapshot: vars.provenance_snapshot ?? {},
+        mitigation_digest: vars.mitigation_digest ?? null,
+        grant_id: vars.grant_id ?? null,
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: repositoryKey }),
   })
 }
 
@@ -90,6 +160,7 @@ type ReviewStreamEvent = {
   release?: DNARepositoryRelease
   release_channel?: DNARepositoryReleaseChannel
   federation_link?: DNARepositoryFederationLink
+  federation_grant?: DNARepositoryFederationGrant
   id?: string
   repository_id?: string
   release_id?: string | null
@@ -156,6 +227,25 @@ export const useSharingReviewStream = (
                   ...repo.federation_links.filter((link) => link.id !== payload.federation_link!.id),
                 ]
                 return { ...repo, federation_links: links }
+              })
+            })
+          }
+          if (payload.federation_grant && repositoryId) {
+            queryClient.setQueryData<DNARepository[] | undefined>(repositoryKey, (existing) => {
+              if (!existing) return existing
+              return existing.map((repo) => {
+                if (repo.id !== repositoryId) return repo
+                return {
+                  ...repo,
+                  federation_links: repo.federation_links.map((link) => {
+                    if (link.id !== payload.federation_grant!.link_id) return link
+                    const grants = [
+                      payload.federation_grant!,
+                      ...link.grants.filter((grant) => grant.id !== payload.federation_grant!.id),
+                    ]
+                    return { ...link, grants }
+                  }),
+                }
               })
             })
           }

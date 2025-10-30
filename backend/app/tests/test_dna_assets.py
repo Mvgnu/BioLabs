@@ -101,6 +101,72 @@ def test_versioning_and_diff(client, auth_headers):
     assert diff["insertions"] >= 0
 
 
+def test_dna_asset_residency_violation_creates_compliance_record(client, auth_headers):
+    headers, user = auth_headers
+    session = TestingSessionLocal()
+    try:
+        organization = models.Organization(
+            name="Helios Labs",
+            slug="helios",
+            primary_region="us-east-1",
+            allowed_regions=["us-east-1"],
+            encryption_policy={"at_rest": "kms"},
+            retention_policy={},
+        )
+        session.add(organization)
+        session.flush()
+        policy = models.OrganizationResidencyPolicy(
+            organization_id=organization.id,
+            data_domain="dna_asset",
+            allowed_regions=["us-east-1"],
+            default_region="us-east-1",
+            encryption_at_rest="kms",
+            encryption_in_transit="tls1.3",
+            retention_days=365,
+            audit_interval_days=30,
+            guardrail_flags=["encryption:strict"],
+        )
+        session.add(policy)
+        session.commit()
+        organization_id = organization.id
+    finally:
+        session.close()
+
+    payload = {
+        "name": "Residency Asset",
+        "sequence": "ATGC" * 15,
+        "metadata": {
+            "compliance": {
+                "organization_id": str(organization_id),
+                "region": "eu-west-1",
+                "data_domain": "dna_asset",
+            }
+        },
+    }
+    resp = client.post("/api/dna-assets", json=payload, headers=headers)
+    assert resp.status_code == 201
+    asset = resp.json()
+    compliance_meta = asset["meta"].get("compliance")
+    assert compliance_meta["allowed"] is False
+    assert "residency:region_blocked" in compliance_meta["flags"]
+    assert compliance_meta["effective_region"] == "us-east-1"
+
+    session = TestingSessionLocal()
+    try:
+        records = (
+            session.query(models.ComplianceRecord)
+            .filter(
+                models.ComplianceRecord.organization_id == organization_id,
+                models.ComplianceRecord.record_type == "dna_asset",
+            )
+            .all()
+        )
+        assert records
+        assert any(record.status == "restricted" for record in records)
+    finally:
+        session.close()
+
+
 def test_guardrail_event_recording(client, auth_headers):
     headers, user = auth_headers
     payload = {

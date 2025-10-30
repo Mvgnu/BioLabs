@@ -9,6 +9,7 @@ This package contains reusable service-layer helpers shared across FastAPI route
 - `sample_governance.py` — freezer topology and custody orchestration providing guardrail-aware ledger creation, occupancy analytics, SLA-tracked escalation queues, automated notification dispatch, freezer fault modeling, and protocol execution linkage so custody escalations and ledger events annotate experiment lifecycles in real time **with acknowledged escalations still enforcing guardrail gating and protocol snapshots filtered by team, template, or execution identifiers for downstream RBAC alignment**.
 - `sharing_workspace.py` — guarded DNA repository orchestration covering repository guardrail policies, collaborator lifecycle, release guardrail evaluations, approval tracking, and publication notifications while emitting timeline events that sync governance dashboards across planner and DNA viewer surfaces.
 - `instrumentation.py` — robotic device orchestration linking capability catalogs, SOP lifecycle, custody guardrail snapshots, reservations, run dispatch, telemetry streaming, and reservation lifecycle updates so planner executions coordinate with compliance state.
+- `compliance.py` — organization residency, encryption, and legal hold orchestration that evaluates guardrail policies, annotates compliance records, and generates exportable reports for enterprise governance.
 
 ## sequence_toolkit.py
 

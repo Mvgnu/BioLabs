@@ -38,6 +38,12 @@ def list_repositories(
         .options(
             joinedload(models.DNARepository.collaborators),
             joinedload(models.DNARepository.releases).joinedload(models.DNARepositoryRelease.approvals),
+            joinedload(models.DNARepository.releases).joinedload(models.DNARepositoryRelease.channel_versions),
+            joinedload(models.DNARepository.release_channels).joinedload(models.DNARepositoryReleaseChannel.versions),
+            joinedload(models.DNARepository.federation_links)
+            .joinedload(models.DNARepositoryFederationLink.attestations),
+            joinedload(models.DNARepository.federation_links)
+            .joinedload(models.DNARepositoryFederationLink.grants),
         )
         .filter(
             sa.or_(
@@ -335,7 +341,12 @@ def create_federation_attestation(
 ) -> models.DNARepositoryFederationAttestation:
     link = (
         db.query(models.DNARepositoryFederationLink)
-        .options(joinedload(models.DNARepositoryFederationLink.repository).joinedload(models.DNARepository.collaborators))
+        .options(
+            joinedload(models.DNARepositoryFederationLink.repository)
+            .joinedload(models.DNARepository.collaborators),
+            joinedload(models.DNARepositoryFederationLink.repository)
+            .joinedload(models.DNARepository.releases),
+        )
         .filter(models.DNARepositoryFederationLink.id == link_id)
         .one_or_none()
     )
@@ -353,6 +364,74 @@ def create_federation_attestation(
     db.refresh(attestation)
     db.refresh(link)
     return attestation
+
+
+@router.post(
+    "/federation/links/{link_id}/grants",
+    response_model=schemas.DNARepositoryFederationGrantOut,
+    status_code=status.HTTP_201_CREATED,
+)
+def request_federation_grant(
+    link_id: UUID,
+    payload: schemas.DNARepositoryFederationGrantCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> models.DNARepositoryFederationGrant:
+    link = (
+        db.query(models.DNARepositoryFederationLink)
+        .options(joinedload(models.DNARepositoryFederationLink.repository).joinedload(models.DNARepository.collaborators))
+        .filter(models.DNARepositoryFederationLink.id == link_id)
+        .one_or_none()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Federation link not found")
+    if not _user_can_publish(user, link.repository):
+        raise HTTPException(status_code=403, detail="Insufficient permissions to request grant")
+    grant = sharing_workspace.request_federation_grant(
+        db,
+        link,
+        payload,
+        actor_id=user.id,
+    )
+    db.commit()
+    db.refresh(grant)
+    return grant
+
+
+@router.post(
+    "/federation/grants/{grant_id}/decision",
+    response_model=schemas.DNARepositoryFederationGrantOut,
+)
+def decide_federation_grant(
+    grant_id: UUID,
+    payload: schemas.DNARepositoryFederationGrantDecision,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(get_current_user),
+) -> models.DNARepositoryFederationGrant:
+    grant = (
+        db.query(models.DNARepositoryFederationGrant)
+        .options(
+            joinedload(models.DNARepositoryFederationGrant.link)
+            .joinedload(models.DNARepositoryFederationLink.repository)
+            .joinedload(models.DNARepository.collaborators)
+        )
+        .filter(models.DNARepositoryFederationGrant.id == grant_id)
+        .one_or_none()
+    )
+    if not grant:
+        raise HTTPException(status_code=404, detail="Federation grant not found")
+    repository = grant.link.repository
+    if not _user_can_publish(user, repository):
+        raise HTTPException(status_code=403, detail="Insufficient permissions to decide grant")
+    grant = sharing_workspace.record_federation_grant_decision(
+        db,
+        grant,
+        payload,
+        actor_id=user.id,
+    )
+    db.commit()
+    db.refresh(grant)
+    return grant
 
 
 @router.post(
@@ -411,13 +490,16 @@ def publish_release_to_channel(
     release = db.get(models.DNARepositoryRelease, payload.release_id)
     if not release or release.repository_id != channel.repository_id:
         raise HTTPException(status_code=404, detail="Release not found for repository")
-    version = sharing_workspace.publish_release_to_channel(
-        db,
-        channel,
-        release,
-        payload,
-        actor_id=user.id,
-    )
+    try:
+        version = sharing_workspace.publish_release_to_channel(
+            db,
+            channel,
+            release,
+            payload,
+            actor_id=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     db.refresh(version)
     return version
@@ -482,6 +564,7 @@ def _load_review_events(
         release_cache: dict[UUID, dict | None] = {}
         link_cache: dict[UUID, dict | None] = {}
         channel_cache: dict[UUID, dict | None] = {}
+        grant_cache: dict[UUID, dict | None] = {}
         batch: list[tuple[dict, datetime, UUID]] = []
         for event in events:
             payload = _serialize_timeline_event(event)
@@ -553,6 +636,28 @@ def _load_review_events(
                         channel_cache[channel_uuid] = channel_data
                     if channel_cache.get(channel_uuid):
                         payload["release_channel"] = channel_cache[channel_uuid]
+            grant_id = payload_map.get("grant_id") if payload_map else None
+            if grant_id:
+                try:
+                    grant_uuid = UUID(grant_id)
+                except (TypeError, ValueError):
+                    grant_uuid = None
+                if grant_uuid:
+                    grant_data = grant_cache.get(grant_uuid)
+                    if grant_data is None and grant_uuid not in grant_cache:
+                        grant = (
+                            session.query(models.DNARepositoryFederationGrant)
+                            .filter(models.DNARepositoryFederationGrant.id == grant_uuid)
+                            .one_or_none()
+                        )
+                        grant_data = (
+                            schemas.DNARepositoryFederationGrantOut.model_validate(grant).model_dump(mode="json")
+                            if grant
+                            else None
+                        )
+                        grant_cache[grant_uuid] = grant_data
+                    if grant_cache.get(grant_uuid):
+                        payload["federation_grant"] = grant_cache[grant_uuid]
             payload["type"] = "timeline"
             batch.append((payload, event.created_at, event.id))
         return batch

@@ -281,10 +281,50 @@ def _build_summary(
     )
     latest = entries[-1].occurred_at if entries else None
     custody_state = None
+    compliance_allowed: bool | None = None
+    compliance_flags: list[str] = []
+    compliance_region: str | None = None
     if scope.custody_log_inventory_item_id:
         item = db.get(models.InventoryItem, scope.custody_log_inventory_item_id)
         if item:
             custody_state = item.custody_state
+    if scope.planner_session_id:
+        planner = db.get(models.CloningPlannerSession, scope.planner_session_id)
+        if planner and isinstance(planner.guardrail_state, dict):
+            compliance_state = planner.guardrail_state.get("compliance")
+            if isinstance(compliance_state, dict):
+                if compliance_state.get("allowed") is not None:
+                    compliance_allowed = bool(compliance_state.get("allowed"))
+                region = compliance_state.get("effective_region") or compliance_state.get("region")
+                if region:
+                    compliance_region = str(region)
+                flags = compliance_state.get("flags")
+                if isinstance(flags, list):
+                    for flag in flags:
+                        value = str(flag)
+                        if value not in compliance_flags:
+                            compliance_flags.append(value)
+    asset: models.DNAAsset | None = None
+    if scope.dna_asset_version_id:
+        version = db.get(models.DNAAssetVersion, scope.dna_asset_version_id)
+        if version:
+            asset = db.get(models.DNAAsset, version.asset_id)
+    elif scope.dna_asset_id:
+        asset = db.get(models.DNAAsset, scope.dna_asset_id)
+    if asset and isinstance(asset.meta, dict):
+        compliance_meta = asset.meta.get("compliance")
+        if isinstance(compliance_meta, dict):
+            if compliance_meta.get("allowed") is not None:
+                compliance_allowed = bool(compliance_meta.get("allowed"))
+            region = compliance_meta.get("effective_region") or compliance_meta.get("region")
+            if region:
+                compliance_region = str(region)
+            flags = compliance_meta.get("flags")
+            if isinstance(flags, list):
+                for flag in flags:
+                    value = str(flag)
+                    if value not in compliance_flags:
+                        compliance_flags.append(value)
     return schemas.LifecycleSummary(
         total_events=len(entries),
         open_escalations=open_escalations,
@@ -292,6 +332,9 @@ def _build_summary(
         latest_event_at=latest,
         custody_state=custody_state,
         context_chips=[],
+        compliance_allowed=compliance_allowed,
+        compliance_flags=compliance_flags,
+        compliance_region=compliance_region,
     )
 
 

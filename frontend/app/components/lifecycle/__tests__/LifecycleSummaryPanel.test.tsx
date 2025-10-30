@@ -20,6 +20,9 @@ const responseFixture = (): LifecycleTimelineResponse => ({
     active_guardrails: 1,
     latest_event_at: '2024-01-02T10:00:00.000Z',
     custody_state: 'under_review',
+    compliance_allowed: false,
+    compliance_flags: ['residency:region_blocked'],
+    compliance_region: 'eu-west-1',
     context_chips: [
       { label: 'Planner', value: 'planner-1', kind: 'planner' },
       { label: 'Repository', value: 'vault', kind: 'repository' },
@@ -69,6 +72,9 @@ describe('LifecycleSummaryPanel', () => {
     expect(screen.getByTestId('lifecycle-summary-panel')).toBeTruthy()
     expect(screen.getByText(/Lifecycle timeline/)).toBeTruthy()
     expect(screen.getByText(/2 events/)).toBeTruthy()
+    expect(screen.getAllByText(/Residency/).length).toBeGreaterThan(0)
+    expect(screen.getByText(/Blocked/)).toBeTruthy()
+    expect(screen.getByText(/eu-west-1/)).toBeTruthy()
     expect(screen.getByText(/Primers · completed/)).toBeTruthy()
     expect(screen.getByText(/tm_range/)).toBeTruthy()
     expect(screen.getByText(/Guardrail activity detected/)).toBeTruthy()

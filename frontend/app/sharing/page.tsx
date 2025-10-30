@@ -9,11 +9,17 @@ import {
   useAddCollaborator,
   useRepositoryTimeline,
   useSharingReviewStream,
+  useRequestFederationGrant,
+  useDecideFederationGrant,
+  useCreateReleaseChannel,
+  usePublishReleaseChannelVersion,
 } from '../hooks/useSharingWorkspace'
 import type {
   DNARepository,
   DNARepositoryRelease,
   DNARepositoryReleaseChannel,
+  DNARepositoryFederationLink,
+  DNARepositoryFederationGrant,
 } from '../types'
 
 // purpose: render guarded DNA sharing workspace UI with release and guardrail workflows
@@ -47,6 +53,25 @@ export default function SharingWorkspacePage() {
     role: 'contributor',
   })
   const [activeReleaseId, setActiveReleaseId] = useState<string | null>(null)
+  const [grantForms, setGrantForms] = useState<
+    Record<string, { organization: string; permission_tier: 'reviewer' | 'publisher' | 'observer'; guardrail_scope: string }>
+  >({})
+  const [newChannelForm, setNewChannelForm] = useState({
+    name: '',
+    slug: '',
+    description: '',
+    audience_scope: 'partners' as 'internal' | 'partners' | 'public',
+    guardrail_profile: '{"audience": "partners"}',
+    federation_link_id: '',
+  })
+  const [channelVersionForms, setChannelVersionForms] = useState<Record<string, {
+    release_id: string
+    version_label: string
+    guardrail_attestation: string
+    provenance_snapshot: string
+    mitigation_digest: string
+    grant_id: string
+  }>>({})
 
   const selectedRepo: DNARepository | undefined = useMemo(
     () => repositories?.find((repo) => repo.id === selectedRepoId) ?? repositories?.[0],
@@ -56,11 +81,140 @@ export default function SharingWorkspacePage() {
   const releaseMutation = useCreateRelease(selectedRepo?.id ?? '')
   const approvalMutation = useApproveRelease(selectedRepo?.id ?? null)
   const addCollaboratorMutation = useAddCollaborator(selectedRepo?.id ?? '')
+  const requestGrantMutation = useRequestFederationGrant()
+  const decideGrantMutation = useDecideFederationGrant()
+  const createChannelMutation = useCreateReleaseChannel(selectedRepo?.id ?? '')
+  const publishChannelMutation = usePublishReleaseChannelVersion()
   const { data: timeline } = useRepositoryTimeline(selectedRepo?.id ?? null)
   useSharingReviewStream(selectedRepo?.id ?? null)
 
   const releases: DNARepositoryRelease[] = selectedRepo?.releases ?? []
   const releaseChannels: DNARepositoryReleaseChannel[] = selectedRepo?.release_channels ?? []
+  
+  const getGrantForm = (linkId: string) =>
+    grantForms[linkId] ?? { organization: '', permission_tier: 'reviewer', guardrail_scope: '{}' }
+
+  const updateGrantForm = (
+    linkId: string,
+    updates: Partial<{ organization: string; permission_tier: 'reviewer' | 'publisher' | 'observer'; guardrail_scope: string }>,
+  ) => {
+    setGrantForms((prev) => ({ ...prev, [linkId]: { ...getGrantForm(linkId), ...updates } }))
+  }
+
+  const submitGrantRequest = (link: DNARepositoryFederationLink) => {
+    const form = getGrantForm(link.id)
+    let scope: Record<string, any> = {}
+    try {
+      scope = form.guardrail_scope ? JSON.parse(form.guardrail_scope) : {}
+    } catch (error) {
+      console.error('Failed to parse guardrail scope', error)
+    }
+    requestGrantMutation.mutate({
+      linkId: link.id,
+      organization: form.organization,
+      permission_tier: form.permission_tier,
+      guardrail_scope: scope,
+    })
+    setGrantForms((prev) => ({
+      ...prev,
+      [link.id]: { organization: '', permission_tier: 'reviewer', guardrail_scope: '{}' },
+    }))
+  }
+
+  const submitGrantDecision = (grant: DNARepositoryFederationGrant, decision: 'approve' | 'revoke') => {
+    decideGrantMutation.mutate({ id: grant.id, decision })
+  }
+
+  const submitChannelCreation = () => {
+    if (!selectedRepo) return
+    let guardrailProfile: Record<string, any> = {}
+    try {
+      guardrailProfile = newChannelForm.guardrail_profile
+        ? JSON.parse(newChannelForm.guardrail_profile)
+        : {}
+    } catch (error) {
+      console.error('Failed to parse channel guardrail profile', error)
+    }
+    createChannelMutation.mutate({
+      name: newChannelForm.name,
+      slug: newChannelForm.slug,
+      description: newChannelForm.description || undefined,
+      audience_scope: newChannelForm.audience_scope,
+      guardrail_profile: guardrailProfile,
+      federation_link_id: newChannelForm.federation_link_id || undefined,
+    })
+    setNewChannelForm({
+      name: '',
+      slug: '',
+      description: '',
+      audience_scope: 'partners',
+      guardrail_profile: '{"audience": "partners"}',
+      federation_link_id: '',
+    })
+  }
+
+  const getChannelVersionForm = (channelId: string) =>
+    channelVersionForms[channelId] ?? {
+      release_id: activeRelease?.id ?? '',
+      version_label: '',
+      guardrail_attestation: '{}',
+      provenance_snapshot: '{}',
+      mitigation_digest: '',
+      grant_id: '',
+    }
+
+  const updateChannelVersionForm = (
+    channelId: string,
+    updates: Partial<{
+      release_id: string
+      version_label: string
+      guardrail_attestation: string
+      provenance_snapshot: string
+      mitigation_digest: string
+      grant_id: string
+    }>,
+  ) => {
+    setChannelVersionForms((prev) => ({
+      ...prev,
+      [channelId]: { ...getChannelVersionForm(channelId), ...updates },
+    }))
+  }
+
+  const submitChannelVersion = (channelId: string) => {
+    const form = getChannelVersionForm(channelId)
+    let attestation: Record<string, any> = {}
+    let provenance: Record<string, any> = {}
+    try {
+      attestation = form.guardrail_attestation ? JSON.parse(form.guardrail_attestation) : {}
+    } catch (error) {
+      console.error('Failed to parse guardrail attestation JSON', error)
+    }
+    try {
+      provenance = form.provenance_snapshot ? JSON.parse(form.provenance_snapshot) : {}
+    } catch (error) {
+      console.error('Failed to parse provenance snapshot JSON', error)
+    }
+    publishChannelMutation.mutate({
+      channelId,
+      release_id: form.release_id || activeRelease?.id || '',
+      version_label: form.version_label || `v${new Date().toISOString()}`,
+      guardrail_attestation: attestation,
+      provenance_snapshot: provenance,
+      mitigation_digest: form.mitigation_digest || null,
+      grant_id: form.grant_id || null,
+    })
+    setChannelVersionForms((prev) => ({
+      ...prev,
+      [channelId]: {
+        release_id: activeRelease?.id ?? '',
+        version_label: '',
+        guardrail_attestation: '{}',
+        provenance_snapshot: '{}',
+        mitigation_digest: '',
+        grant_id: '',
+      },
+    }))
+  }
 
   useEffect(() => {
     if (selectedRepo && selectedRepo.releases.length > 0) {
@@ -487,41 +641,283 @@ export default function SharingWorkspacePage() {
                 </section>
               )}
 
-              {releaseChannels.length > 0 && (
-                <section className="rounded border border-slate-200 p-4 shadow-sm">
-                  <h3 className="mb-3 text-lg font-semibold">Release Channels</h3>
+              <section className="rounded border border-slate-200 p-4 shadow-sm">
+                <h3 className="mb-3 text-lg font-semibold">Federated Collaborations</h3>
+                {selectedRepo.federation_links.length > 0 ? (
                   <div className="grid gap-4 md:grid-cols-2">
-                    {releaseChannels.map((channel) => (
-                      <div key={channel.id} className="rounded border border-slate-200 p-3">
-                        <header className="mb-2 flex items-center justify-between text-sm font-semibold text-slate-700">
-                          <span>{channel.name}</span>
-                          <span className="rounded bg-slate-100 px-2 py-1 text-xs uppercase">{channel.audience_scope}</span>
-                        </header>
-                        <p className="text-xs text-slate-600">{channel.description || 'No description provided.'}</p>
-                        <ul className="mt-3 space-y-2 text-xs text-slate-700">
-                          {channel.versions.map((version) => (
-                            <li key={version.id} className="rounded border border-slate-100 p-2">
-                              <div className="flex items-center justify-between">
-                                <span className="font-semibold">{version.version_label}</span>
-                                <span>Seq {version.sequence}</span>
-                              </div>
-                              <p className="mt-1 text-slate-500">
-                                Provenance: {JSON.stringify(version.provenance_snapshot)}
-                              </p>
-                              {version.mitigation_digest && (
-                                <p className="mt-1 text-slate-500">Mitigation: {version.mitigation_digest}</p>
+                    {selectedRepo.federation_links.map((link) => {
+                      const form = getGrantForm(link.id)
+                      return (
+                        <div key={link.id} className="rounded border border-slate-200 p-3 text-xs">
+                          <header className="mb-2 flex items-center justify-between text-sm font-semibold text-slate-700">
+                            <span>{link.external_organization}</span>
+                            <span className="rounded bg-slate-100 px-2 py-1 text-xs uppercase">{link.trust_state}</span>
+                          </header>
+                          <p className="text-slate-600">External repository: {link.external_repository_id}</p>
+                          <p className="mt-1 text-slate-500">
+                            Guardrail contract: {JSON.stringify(link.guardrail_contract)}
+                          </p>
+                          <div className="mt-3 space-y-2">
+                            <input
+                              className="w-full rounded border border-slate-300 px-2 py-1"
+                              placeholder="Partner organization"
+                              value={form.organization}
+                              onChange={(event) =>
+                                updateGrantForm(link.id, { organization: event.target.value })
+                              }
+                            />
+                            <select
+                              className="w-full rounded border border-slate-300 px-2 py-1"
+                              value={form.permission_tier}
+                              onChange={(event) =>
+                                updateGrantForm(link.id, {
+                                  permission_tier: event.target.value as 'reviewer' | 'publisher' | 'observer',
+                                })
+                              }
+                            >
+                              <option value="reviewer">Reviewer</option>
+                              <option value="publisher">Publisher</option>
+                              <option value="observer">Observer</option>
+                            </select>
+                            <textarea
+                              className="h-16 w-full rounded border border-slate-300 px-2 py-1"
+                              placeholder='Guardrail scope JSON (e.g. {"allowed": ["qc"]})'
+                              value={form.guardrail_scope}
+                              onChange={(event) =>
+                                updateGrantForm(link.id, { guardrail_scope: event.target.value })
+                              }
+                            />
+                            <button
+                              className="w-full rounded bg-blue-600 px-3 py-1 font-semibold uppercase text-white"
+                              onClick={() => submitGrantRequest(link)}
+                              disabled={requestGrantMutation.isPending}
+                            >
+                              Request Grant
+                            </button>
+                          </div>
+                          <div className="mt-4">
+                            <h4 className="text-xs font-semibold uppercase text-slate-500">Grants</h4>
+                            <ul className="mt-2 space-y-2">
+                              {link.grants.map((grant) => (
+                                <li key={grant.id} className="rounded border border-slate-100 p-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="font-semibold">{grant.organization}</span>
+                                    <span>{grant.permission_tier}</span>
+                                  </div>
+                                  <p className="mt-1 text-slate-500">State: {grant.handshake_state}</p>
+                                  <p className="mt-1 text-slate-500">
+                                    Guardrail scope: {JSON.stringify(grant.guardrail_scope)}
+                                  </p>
+                                  <div className="mt-2 flex gap-2">
+                                    {grant.handshake_state !== 'active' && (
+                                      <button
+                                        className="flex-1 rounded bg-emerald-600 px-3 py-1 text-white"
+                                        onClick={() => submitGrantDecision(grant, 'approve')}
+                                        disabled={decideGrantMutation.isPending}
+                                      >
+                                        Approve
+                                      </button>
+                                    )}
+                                    {grant.handshake_state === 'active' && (
+                                      <button
+                                        className="flex-1 rounded bg-rose-600 px-3 py-1 text-white"
+                                        onClick={() => submitGrantDecision(grant, 'revoke')}
+                                        disabled={decideGrantMutation.isPending}
+                                      >
+                                        Revoke
+                                      </button>
+                                    )}
+                                  </div>
+                                </li>
+                              ))}
+                              {link.grants.length === 0 && (
+                                <li className="text-slate-500">No federated grants yet.</li>
                               )}
-                            </li>
-                          ))}
-                          {channel.versions.length === 0 && (
-                            <li className="text-slate-500">No published versions yet.</li>
-                          )}
-                        </ul>
-                      </div>
-                    ))}
+                            </ul>
+                          </div>
+                        </div>
+                      )
+                    })}
                   </div>
-                </section>
-              )}
+                ) : (
+                  <p className="text-sm text-slate-500">No federation links established yet. Use the API to connect partner labs.</p>
+                )}
+              </section>
+
+              <section className="rounded border border-slate-200 p-4 shadow-sm">
+                <h3 className="mb-3 text-lg font-semibold">Release Channels</h3>
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="rounded border border-dashed border-slate-300 p-3 text-xs">
+                    <h4 className="text-sm font-semibold text-slate-700">Create Channel</h4>
+                    <input
+                      className="mt-2 w-full rounded border border-slate-300 px-2 py-1"
+                      placeholder="Channel name"
+                      value={newChannelForm.name}
+                      onChange={(event) => setNewChannelForm((prev) => ({ ...prev, name: event.target.value }))}
+                    />
+                    <input
+                      className="mt-2 w-full rounded border border-slate-300 px-2 py-1"
+                      placeholder="Slug"
+                      value={newChannelForm.slug}
+                      onChange={(event) => setNewChannelForm((prev) => ({ ...prev, slug: event.target.value }))}
+                    />
+                    <textarea
+                      className="mt-2 h-16 w-full rounded border border-slate-300 px-2 py-1"
+                      placeholder="Description"
+                      value={newChannelForm.description}
+                      onChange={(event) => setNewChannelForm((prev) => ({ ...prev, description: event.target.value }))}
+                    />
+                    <select
+                      className="mt-2 w-full rounded border border-slate-300 px-2 py-1"
+                      value={newChannelForm.audience_scope}
+                      onChange={(event) =>
+                        setNewChannelForm((prev) => ({
+                          ...prev,
+                          audience_scope: event.target.value as 'internal' | 'partners' | 'public',
+                        }))
+                      }
+                    >
+                      <option value="internal">Internal</option>
+                      <option value="partners">Partners</option>
+                      <option value="public">Public</option>
+                    </select>
+                    <textarea
+                      className="mt-2 h-20 w-full rounded border border-slate-300 px-2 py-1"
+                      placeholder='Guardrail profile JSON (e.g. {"audience": "partners"})'
+                      value={newChannelForm.guardrail_profile}
+                      onChange={(event) => setNewChannelForm((prev) => ({ ...prev, guardrail_profile: event.target.value }))}
+                    />
+                    <input
+                      className="mt-2 w-full rounded border border-slate-300 px-2 py-1"
+                      placeholder="Federation link ID (optional)"
+                      value={newChannelForm.federation_link_id}
+                      onChange={(event) => setNewChannelForm((prev) => ({ ...prev, federation_link_id: event.target.value }))}
+                    />
+                    <button
+                      className="mt-3 w-full rounded bg-blue-600 px-3 py-1 font-semibold uppercase text-white"
+                      onClick={submitChannelCreation}
+                      disabled={createChannelMutation.isPending}
+                    >
+                      Create Channel
+                    </button>
+                  </div>
+                  <div className="md:col-span-2">
+                    {releaseChannels.length > 0 ? (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        {releaseChannels.map((channel) => {
+                          const form = getChannelVersionForm(channel.id)
+                          return (
+                            <div key={channel.id} className="rounded border border-slate-200 p-3 text-xs">
+                              <header className="mb-2 flex items-center justify-between text-sm font-semibold text-slate-700">
+                                <span>{channel.name}</span>
+                                <span className="rounded bg-slate-100 px-2 py-1 text-xs uppercase">{channel.audience_scope}</span>
+                              </header>
+                              <p className="text-slate-600">{channel.description || 'No description provided.'}</p>
+                              {channel.federation_link_id && (
+                                <p className="mt-1 text-slate-500">Federation link: {channel.federation_link_id}</p>
+                              )}
+                              <div className="mt-3 space-y-2">
+                                <select
+                                  className="w-full rounded border border-slate-300 px-2 py-1"
+                                  value={form.release_id}
+                                  onChange={(event) =>
+                                    updateChannelVersionForm(channel.id, { release_id: event.target.value })
+                                  }
+                                >
+                                  <option value="">Select release</option>
+                                  {releases.map((release) => (
+                                    <option key={release.id} value={release.id}>
+                                      {release.version}
+                                    </option>
+                                  ))}
+                                </select>
+                                <input
+                                  className="w-full rounded border border-slate-300 px-2 py-1"
+                                  placeholder="Version label"
+                                  value={form.version_label}
+                                  onChange={(event) =>
+                                    updateChannelVersionForm(channel.id, { version_label: event.target.value })
+                                  }
+                                />
+                                <textarea
+                                  className="h-16 w-full rounded border border-slate-300 px-2 py-1"
+                                  placeholder='Guardrail attestation JSON (e.g. {"status": "cleared"})'
+                                  value={form.guardrail_attestation}
+                                  onChange={(event) =>
+                                    updateChannelVersionForm(channel.id, { guardrail_attestation: event.target.value })
+                                  }
+                                />
+                                <textarea
+                                  className="h-16 w-full rounded border border-slate-300 px-2 py-1"
+                                  placeholder='Provenance snapshot JSON (e.g. {"source": "planner"})'
+                                  value={form.provenance_snapshot}
+                                  onChange={(event) =>
+                                    updateChannelVersionForm(channel.id, { provenance_snapshot: event.target.value })
+                                  }
+                                />
+                                <input
+                                  className="w-full rounded border border-slate-300 px-2 py-1"
+                                  placeholder="Mitigation digest"
+                                  value={form.mitigation_digest}
+                                  onChange={(event) =>
+                                    updateChannelVersionForm(channel.id, { mitigation_digest: event.target.value })
+                                  }
+                                />
+                                <input
+                                  className="w-full rounded border border-slate-300 px-2 py-1"
+                                  placeholder="Federation grant ID (optional)"
+                                  value={form.grant_id}
+                                  onChange={(event) =>
+                                    updateChannelVersionForm(channel.id, { grant_id: event.target.value })
+                                  }
+                                />
+                                <button
+                                  className="w-full rounded bg-emerald-600 px-3 py-1 font-semibold uppercase text-white"
+                                  onClick={() => submitChannelVersion(channel.id)}
+                                  disabled={publishChannelMutation.isPending}
+                                >
+                                  Publish to Channel
+                                </button>
+                              </div>
+                              <ul className="mt-4 space-y-2 text-slate-700">
+                                {channel.versions.map((version) => {
+                                  const grant = selectedRepo?.federation_links
+                                    .flatMap((link) => link.grants)
+                                    .find((entry) => entry.id === version.grant_id)
+                                  return (
+                                    <li key={version.id} className="rounded border border-slate-100 p-2">
+                                      <div className="flex items-center justify-between text-xs">
+                                        <span className="font-semibold">{version.version_label}</span>
+                                        <span>Seq {version.sequence}</span>
+                                      </div>
+                                      <p className="mt-1 text-slate-500">
+                                        Provenance: {JSON.stringify(version.provenance_snapshot)}
+                                      </p>
+                                      {version.mitigation_digest && (
+                                        <p className="mt-1 text-slate-500">Mitigation: {version.mitigation_digest}</p>
+                                      )}
+                                      {grant && (
+                                        <p className="mt-1 text-slate-500">
+                                          Grant: {grant.organization} · {grant.permission_tier} ({grant.handshake_state})
+                                        </p>
+                                      )}
+                                    </li>
+                                  )
+                                })}
+                                {channel.versions.length === 0 && (
+                                  <li className="text-slate-500">No published versions yet.</li>
+                                )}
+                              </ul>
+                            </div>
+                          )
+                        })}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-slate-500">No channels created yet. Define a channel to publish collaborative releases.</p>
+                    )}
+                  </div>
+                </div>
+              </section>
 
               <section className="rounded border border-slate-200 p-4 shadow-sm">
                 <h3 className="mb-3 text-lg font-semibold">Timeline</h3>

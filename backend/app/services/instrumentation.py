@@ -11,6 +11,7 @@ import sqlalchemy as sa
 from sqlalchemy.orm import Session, joinedload
 
 from .. import models, schemas
+from . import billing as billing_service
 
 # purpose: orchestrate robotic instrument reservations, runs, and telemetry with custody guardrails
 # status: pilot
@@ -322,11 +323,14 @@ def update_run_status(
     run.status = payload.status
     run.guardrail_flags = payload.guardrail_flags
     run.updated_at = now
+    was_terminal = run.completed_at is not None
     if payload.status in {"completed", "failed", "cancelled"}:
         run.completed_at = now
         if run.reservation:
             run.reservation.status = payload.status
             run.reservation.updated_at = now
+        if payload.status == "completed" and not was_terminal:
+            _emit_usage_event_for_run(db, run)
     db.flush()
     db.refresh(run)
     return run
@@ -520,6 +524,41 @@ def _select_active_run(runs: Iterable[models.InstrumentRun]) -> models.Instrumen
     if not active:
         return None
     return sorted(active, key=lambda run: run.started_at or run.created_at)[0]
+
+
+def _emit_usage_event_for_run(db: Session, run: models.InstrumentRun) -> None:
+    """Record monetized usage for a completed instrumentation run."""
+
+    if not run.team_id:
+        return
+    team = db.get(models.Team, run.team_id)
+    if not team or not team.organization_id:
+        return
+    requested_by = run.reservation.requested_by_id if run.reservation else None
+    metadata = {
+        "run_id": str(run.id),
+        "equipment_id": str(run.equipment_id),
+    }
+    if run.planner_session_id:
+        metadata["planner_session_id"] = str(run.planner_session_id)
+    try:
+        billing_service.record_usage_event(
+            db,
+            schemas.MarketplaceUsageEventCreate(
+                organization_id=team.organization_id,
+                team_id=run.team_id,
+                user_id=requested_by,
+                service="instrumentation",
+                operation="run_completed",
+                unit_quantity=1.0,
+                credits_consumed=int(run.run_parameters.get("credit_cost", 5)),
+                guardrail_flags=run.guardrail_flags,
+                metadata=metadata,
+            ),
+        )
+    except billing_service.SubscriptionNotFound:
+        # No subscription available; instrumentation run proceeds without monetized charge.
+        return
 
 
 def _assert_no_conflicts(

@@ -309,3 +309,137 @@ def test_federation_channels_and_review_stream(client):
         payload.get("release_channel", {}).get("versions")
         for payload in channel_events
     )
+
+
+def test_federation_grants_enforce_channel_permissions(client):
+    owner_token = _register(client, "grant-owner@example.com")
+
+    repo_payload = {
+        "name": "Grant Repo",
+        "slug": "grant-repo",
+        "description": "Grant enforcement",
+        "team_id": None,
+        "guardrail_policy": {
+            "name": "Strict",
+            "approval_threshold": 1,
+            "requires_custody_clearance": True,
+            "requires_planner_link": False,
+            "mitigation_playbooks": [],
+        },
+    }
+    repo_resp = client.post(
+        "/api/sharing/repositories",
+        json=repo_payload,
+        headers=_auth_headers(owner_token),
+    )
+    assert repo_resp.status_code == 201, repo_resp.text
+    repository = repo_resp.json()
+
+    release_payload = {
+        "version": "v1.1.0",
+        "title": "Grant Release",
+        "notes": "Partners",
+        "guardrail_snapshot": {"custody_status": "clear", "breaches": []},
+        "mitigation_summary": None,
+        "lifecycle_snapshot": {"source": "planner", "checkpoint": "ready"},
+        "mitigation_history": [],
+        "replay_checkpoint": {"checkpoint": "ready"},
+    }
+    release_resp = client.post(
+        f"/api/sharing/repositories/{repository['id']}/releases",
+        json=release_payload,
+        headers=_auth_headers(owner_token),
+    )
+    assert release_resp.status_code == 201, release_resp.text
+    release = release_resp.json()
+
+    link_payload = {
+        "external_repository_id": "urn:repo:partners/grants",
+        "external_organization": "Partner Org",
+        "permissions": {"pull": True},
+        "guardrail_contract": {"nda": True},
+    }
+    link_resp = client.post(
+        f"/api/sharing/repositories/{repository['id']}/federation/links",
+        json=link_payload,
+        headers=_auth_headers(owner_token),
+    )
+    assert link_resp.status_code == 201, link_resp.text
+    link = link_resp.json()
+
+    grant_request = client.post(
+        f"/api/sharing/federation/links/{link['id']}/grants",
+        json={
+            "organization": "Partner Org",
+            "permission_tier": "reviewer",
+            "guardrail_scope": {"datasets": ["summary"]},
+        },
+        headers=_auth_headers(owner_token),
+    )
+    assert grant_request.status_code == 201, grant_request.text
+    grant = grant_request.json()
+    assert grant["handshake_state"] == "pending"
+
+    channel_payload = {
+        "name": "Grant Channel",
+        "slug": "grant-channel",
+        "description": "Requires grant",
+        "audience_scope": "partners",
+        "guardrail_profile": {"requires_grant": True},
+        "federation_link_id": link["id"],
+    }
+    channel_resp = client.post(
+        f"/api/sharing/repositories/{repository['id']}/channels",
+        json=channel_payload,
+        headers=_auth_headers(owner_token),
+    )
+    assert channel_resp.status_code == 201, channel_resp.text
+    channel = channel_resp.json()
+
+    pending_version = client.post(
+        f"/api/sharing/channels/{channel['id']}/versions",
+        json={
+            "release_id": release["id"],
+            "version_label": "partners-pending",
+            "guardrail_attestation": {"custody": "clear"},
+            "provenance_snapshot": {"link": link["id"]},
+            "mitigation_digest": None,
+            "grant_id": grant["id"],
+        },
+        headers=_auth_headers(owner_token),
+    )
+    assert pending_version.status_code == 400
+    assert "Grant must be active" in pending_version.json()["detail"]
+
+    approve_resp = client.post(
+        f"/api/sharing/federation/grants/{grant['id']}/decision",
+        json={"decision": "approve"},
+        headers=_auth_headers(owner_token),
+    )
+    assert approve_resp.status_code == 200, approve_resp.text
+    approved_grant = approve_resp.json()
+    assert approved_grant["handshake_state"] == "active"
+
+    publish_resp = client.post(
+        f"/api/sharing/channels/{channel['id']}/versions",
+        json={
+            "release_id": release["id"],
+            "version_label": "partners-approved",
+            "guardrail_attestation": {"custody": "clear"},
+            "provenance_snapshot": {"link": link["id"]},
+            "mitigation_digest": "Cleared",
+            "grant_id": grant["id"],
+        },
+        headers=_auth_headers(owner_token),
+    )
+    assert publish_resp.status_code == 201, publish_resp.text
+
+    events = sharing_routes._load_review_events(UUID(repository["id"]), None, None)
+    payloads = [item for item, _, _ in events]
+    grant_events = [
+        payload
+        for payload in payloads
+        if payload.get("event_type") in {"federation.grant_requested", "federation.grant_approved"}
+    ]
+    assert grant_events, "Expected grant lifecycle events"
+    assert any(event.get("federation_grant", {}).get("handshake_state") == "active" for event in payloads)

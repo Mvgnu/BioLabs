@@ -66,4 +66,25 @@
   - `POST /api/instrumentation/reservations/{reservation_id}/dispatch` transitions reservations into active runs, merging runtime overrides and inheriting guardrail flags.
   - `POST /api/instrumentation/runs/{run_id}/telemetry` streams deterministic telemetry samples, while `GET /api/instrumentation/runs/{run_id}/telemetry` returns ordered envelopes for replay dashboards.
   - `POST /api/instrumentation/runs/{run_id}/status` updates run lifecycle and mirrors completion on the associated reservation so scheduling UIs stay in sync.
-- **RBAC**: Team membership (`member` and above) is required for scheduling and telemetry, while capability/SOP mutations are limited to team managers/owners. Guardrail conflicts return `409` responses instructing operators to resolve custody escalations.
+  - **RBAC**: Team membership (`member` and above) is required for scheduling and telemetry, while capability/SOP mutations are limited to team managers/owners. Guardrail conflicts return `409` responses instructing operators to resolve custody escalations.
+
+## Enterprise Compliance Residency
+- **Module**: `compliance.py`
+- **Capabilities**:
+  - `POST /api/compliance/organizations` registers organizations with residency defaults, encryption posture, and retention envelopes.
+  - `POST /api/compliance/organizations/{organization_id}/policies` upserts domain-specific residency rules, encryption requirements, and audit cadences.
+  - `POST /api/compliance/organizations/{organization_id}/legal-holds` activates legal holds tied to DNA assets, planner runs, or other resources with explicit release workflows.
+  - `GET /api/compliance/reports/export` emits multi-organization compliance summaries including active holds, residency gaps, and record status totals for audit export.
+  - `POST /api/compliance/records` records guardrail-aware checkpoints that automatically evaluate residency rules, annotate encryption scope, and emit guardrail flags for lifecycle timelines.
+- **RBAC**: Endpoints require authenticated users; enforcement hooks surface guardrail flags and blocklist reasons so UI workflows can gate actions when residency policies fail.
+
+## Marketplace Billing & Monetization
+- **Module**: `billing.py`
+- **Capabilities**:
+  - `GET /api/billing/plans` enumerates monetized bundles including SLA metadata and feature matrices. When the catalog is empty a default "Lab Standard" plan is bootstrapped.
+  - `POST /api/billing/organizations/{organization_id}/subscriptions` provisions an organization subscription, initializes credit balances, and records SLA acceptance payloads.
+  - `GET /api/billing/organizations/{organization_id}/subscriptions` returns the active subscription (if present) with pricing plan details for storefront dashboards.
+  - `POST /api/billing/usage` records guardrail-aware usage events, debits credits, and appends ledger entries. `GET /api/billing/organizations/{organization_id}/usage` streams recent consumption telemetry for analytics surfaces.
+  - `POST /api/billing/subscriptions/{subscription_id}/invoices/draft` assembles draft invoices by combining base fees with credit overages; `GET /api/billing/subscriptions/{subscription_id}/invoices` lists prior invoices.
+  - `POST /api/billing/credits/adjust` captures manual credit adjustments while updating running balances; `GET /api/billing/subscriptions/{subscription_id}/ledger` surfaces the credit ledger timeline for finance reviews.
+- **RBAC**: Restricted to administrators or users whose team memberships tie them to the target organization. Usage recording tolerates organizations without active subscriptions to avoid blocking sandbox flows.
