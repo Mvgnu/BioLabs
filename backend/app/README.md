@@ -8,6 +8,8 @@ This directory contains the FastAPI application modules that power BioLabs serve
 - `analytics/`: Aggregation utilities turning execution telemetry into governance dashboards.
 - `narratives.py`: Markdown narrative serialization for experiment execution exports.
 - `routes/governance.py`: Administrative APIs for workflow template management and assignments.
+- `routes/sharing.py`: Guarded DNA workspace APIs spanning repositories, federated links, and release channels.
+- `routes/instrumentation.py`: Robotic instrument scheduling, capability registration, telemetry streaming, and guardrail-aware run control.
 - Supporting helpers for authentication, notifications, orchestration, and integrations.
 
 ## Narrative Exports

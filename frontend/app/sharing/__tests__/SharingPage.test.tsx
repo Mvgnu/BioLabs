@@ -11,17 +11,19 @@ const mocks = vi.hoisted(() => ({
   useApproveRelease: vi.fn(),
   useAddCollaborator: vi.fn(),
   useRepositoryTimeline: vi.fn(),
-}))
+    useSharingReviewStream: vi.fn(),
+  }))
 
 vi.mock('../../hooks/useSharingWorkspace', () => mocks)
 
-const {
-  useRepositories: mockUseRepositories,
-  useCreateRelease: mockUseCreateRelease,
-  useApproveRelease: mockUseApproveRelease,
-  useAddCollaborator: mockUseAddCollaborator,
-  useRepositoryTimeline: mockUseRepositoryTimeline,
-} = mocks
+  const {
+    useRepositories: mockUseRepositories,
+    useCreateRelease: mockUseCreateRelease,
+    useApproveRelease: mockUseApproveRelease,
+    useAddCollaborator: mockUseAddCollaborator,
+    useRepositoryTimeline: mockUseRepositoryTimeline,
+    useSharingReviewStream: mockUseSharingReviewStream,
+  } = mocks
 
 describe('SharingWorkspacePage', () => {
   const approveMutate = vi.fn()
@@ -54,25 +56,31 @@ describe('SharingWorkspacePage', () => {
         created_at: new Date('2024-01-02T00:00:00Z').toISOString(),
       },
     ],
-    releases: [
-      {
-        id: 'rel-1',
-        repository_id: 'repo-1',
-        version: 'v1.0.0',
-        title: 'Initial release',
-        notes: 'Ready to ship',
-        status: 'awaiting_approval',
-        guardrail_state: 'cleared',
-        guardrail_snapshot: { custody_status: 'clear', breaches: [] },
-        mitigation_summary: null,
-        created_by_id: 'user-maintainer',
-        created_at: new Date('2024-01-02T00:00:00Z').toISOString(),
-        updated_at: new Date('2024-01-02T00:00:00Z').toISOString(),
-        published_at: null,
-        approvals: [],
-      },
-    ],
-  }
+      releases: [
+        {
+          id: 'rel-1',
+          repository_id: 'repo-1',
+          version: 'v1.0.0',
+          title: 'Initial release',
+          notes: 'Ready to ship',
+          status: 'awaiting_approval',
+          guardrail_state: 'cleared',
+          guardrail_snapshot: { custody_status: 'clear', breaches: [] },
+          mitigation_summary: null,
+          created_by_id: 'user-maintainer',
+          planner_session_id: null,
+          lifecycle_snapshot: { source: 'planner' },
+          mitigation_history: [],
+          replay_checkpoint: { checkpoint: 'final' },
+          created_at: new Date('2024-01-02T00:00:00Z').toISOString(),
+          updated_at: new Date('2024-01-02T00:00:00Z').toISOString(),
+          published_at: null,
+          approvals: [],
+        },
+      ],
+      federation_links: [],
+      release_channels: [],
+    }
 
   beforeEach(() => {
     approveMutate.mockReset()
@@ -81,11 +89,11 @@ describe('SharingWorkspacePage', () => {
 
     mockUseRepositories.mockReturnValue({ data: [repository] })
     mockUseCreateRelease.mockReturnValue({ mutate: releaseMutate, isPending: false })
-    mockUseApproveRelease.mockReturnValue({ mutate: approveMutate, isPending: false })
-    mockUseAddCollaborator.mockReturnValue({ mutate: collaboratorMutate, isPending: false })
-    mockUseRepositoryTimeline.mockReturnValue({
-      data: [
-        {
+      mockUseApproveRelease.mockReturnValue({ mutate: approveMutate, isPending: false })
+      mockUseAddCollaborator.mockReturnValue({ mutate: collaboratorMutate, isPending: false })
+      mockUseRepositoryTimeline.mockReturnValue({
+        data: [
+          {
           id: 'timeline-1',
           repository_id: 'repo-1',
           release_id: 'rel-1',
@@ -94,9 +102,10 @@ describe('SharingWorkspacePage', () => {
           created_at: new Date('2024-01-02T00:00:00Z').toISOString(),
           created_by_id: 'user-maintainer',
         },
-      ],
+        ],
+      })
+      mockUseSharingReviewStream.mockReturnValue({ isConnected: false, close: vi.fn() })
     })
-  })
 
   it('renders repository details and guardrail policy', () => {
     render(<SharingWorkspacePage />)

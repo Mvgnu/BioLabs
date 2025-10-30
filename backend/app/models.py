@@ -1273,7 +1273,7 @@ class GovernanceSampleCustodyLog(Base):
         index=True,
     )
     planner_session_id = Column(
-        UUID(as_uuid=True),
+        String,
         ForeignKey("cloning_planner_sessions.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
@@ -1841,6 +1841,31 @@ class Equipment(Base):
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
 
+    # purpose: expose instrumentation metadata relationships for orchestration services
+    # status: active
+    # outputs: instrumentation capabilities, sop links, reservations, runs
+    # depends_on: backend.app.models.InstrumentCapability
+    capabilities = relationship(
+        "InstrumentCapability",
+        back_populates="equipment",
+        cascade="all, delete-orphan",
+    )
+    sop_links = relationship(
+        "InstrumentSOPLink",
+        back_populates="equipment",
+        cascade="all, delete-orphan",
+    )
+    reservations = relationship(
+        "InstrumentRunReservation",
+        back_populates="equipment",
+        cascade="all, delete-orphan",
+    )
+    runs = relationship(
+        "InstrumentRun",
+        back_populates="equipment",
+        cascade="all, delete-orphan",
+    )
+
 
 class EquipmentReading(Base):
     __tablename__ = "equipment_readings"
@@ -1884,6 +1909,115 @@ class TrainingRecord(Base):
     equipment_id = Column(UUID(as_uuid=True), ForeignKey("equipment.id"))
     trained_by = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     trained_at = Column(DateTime, default=datetime.now(timezone.utc))
+
+
+class InstrumentCapability(Base):
+    __tablename__ = "instrument_capabilities"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id = Column(
+        UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False
+    )
+    capability_key = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    parameters = Column(JSON, default=dict, nullable=False)
+    guardrail_requirements = Column(JSON, default=list, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
+
+    # purpose: describe instrument capability metadata for orchestration checks
+    # inputs: equipment_id -> equipment primary key
+    # outputs: guardrail requirements for scheduling and run gating
+    # status: active
+    equipment = relationship("Equipment", back_populates="capabilities")
+
+
+class InstrumentSOPLink(Base):
+    __tablename__ = "instrument_sop_links"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id = Column(
+        UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False
+    )
+    sop_id = Column(UUID(as_uuid=True), ForeignKey("sops.id", ondelete="CASCADE"), nullable=False)
+    status = Column(String, default="active", nullable=False)
+    effective_at = Column(DateTime, default=datetime.now(timezone.utc))
+    retired_at = Column(DateTime, nullable=True)
+
+    # purpose: bind SOP revisions to instrument usage policies
+    # depends_on: backend.app.models.SOP
+    # status: active
+    equipment = relationship("Equipment", back_populates="sop_links")
+    sop = relationship("SOP")
+
+
+class InstrumentRunReservation(Base):
+    __tablename__ = "instrument_run_reservations"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    equipment_id = Column(
+        UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False
+    )
+    planner_session_id = Column(UUID(as_uuid=True), nullable=True)
+    protocol_execution_id = Column(UUID(as_uuid=True), nullable=True)
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    requested_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    scheduled_start = Column(DateTime, nullable=False)
+    scheduled_end = Column(DateTime, nullable=False)
+    status = Column(String, default="scheduled", nullable=False)
+    run_parameters = Column(JSON, default=dict, nullable=False)
+    guardrail_snapshot = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
+
+    # purpose: reserve instrument windows with custody guardrail metadata
+    # outputs: guardrail_snapshot consumed by instrumentation service
+    # status: active
+    equipment = relationship("Equipment", back_populates="reservations")
+    requested_by = relationship("User")
+
+
+class InstrumentRun(Base):
+    __tablename__ = "instrument_runs"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    reservation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("instrument_run_reservations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    equipment_id = Column(
+        UUID(as_uuid=True), ForeignKey("equipment.id", ondelete="CASCADE"), nullable=False
+    )
+    team_id = Column(UUID(as_uuid=True), ForeignKey("teams.id"), nullable=True)
+    planner_session_id = Column(UUID(as_uuid=True), nullable=True)
+    protocol_execution_id = Column(UUID(as_uuid=True), nullable=True)
+    status = Column(String, default="queued", nullable=False)
+    run_parameters = Column(JSON, default=dict, nullable=False)
+    guardrail_flags = Column(JSON, default=list, nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=datetime.now(timezone.utc), onupdate=datetime.now(timezone.utc))
+
+    # purpose: persist instrument run state transitions and guardrail results
+    # status: active
+    equipment = relationship("Equipment", back_populates="runs")
+    reservation = relationship("InstrumentRunReservation")
+    telemetry_samples = relationship(
+        "InstrumentTelemetrySample", back_populates="run", cascade="all, delete-orphan"
+    )
+
+
+class InstrumentTelemetrySample(Base):
+    __tablename__ = "instrument_telemetry_samples"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(
+        UUID(as_uuid=True), ForeignKey("instrument_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    channel = Column(String, nullable=False)
+    payload = Column(JSON, default=dict, nullable=False)
+    recorded_at = Column(DateTime, default=datetime.now(timezone.utc))
+
+    # purpose: retain instrument telemetry envelopes for replay and analytics
+    # status: active
+    run = relationship("InstrumentRun", back_populates="telemetry_samples")
 
 class ComplianceRecord(Base):
     __tablename__ = "compliance_records"
@@ -2291,6 +2425,17 @@ class DNARepository(Base):
         cascade="all, delete-orphan",
         order_by="DNARepositoryRelease.created_at.desc()",
     )
+    federation_links = relationship(
+        "DNARepositoryFederationLink",
+        back_populates="repository",
+        cascade="all, delete-orphan",
+    )
+    release_channels = relationship(
+        "DNARepositoryReleaseChannel",
+        back_populates="repository",
+        cascade="all, delete-orphan",
+        order_by="DNARepositoryReleaseChannel.created_at.desc()",
+    )
     timeline_events = relationship(
         "DNARepositoryTimelineEvent",
         back_populates="repository",
@@ -2351,6 +2496,15 @@ class DNARepositoryRelease(Base):
     title = Column(String, nullable=False)
     notes = Column(Text, nullable=True)
     created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    planner_session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("cloning_planner_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    lifecycle_snapshot = Column(JSON, default=dict, nullable=False)
+    mitigation_history = Column(JSON, default=list, nullable=False)
+    replay_checkpoint = Column(JSON, default=dict, nullable=False)
     status = Column(String, default="draft", nullable=False)
     guardrail_state = Column(String, default="pending", nullable=False)
     guardrail_snapshot = Column(JSON, default=dict, nullable=False)
@@ -2366,6 +2520,7 @@ class DNARepositoryRelease(Base):
 
     repository = relationship("DNARepository", back_populates="releases")
     creator = relationship("User")
+    planner_session = relationship("CloningPlannerSession")
     approvals = relationship(
         "DNARepositoryReleaseApproval",
         back_populates="release",
@@ -2373,6 +2528,11 @@ class DNARepositoryRelease(Base):
     )
     timeline_events = relationship(
         "DNARepositoryTimelineEvent",
+        back_populates="release",
+        cascade="all, delete-orphan",
+    )
+    channel_versions = relationship(
+        "DNARepositoryReleaseChannelVersion",
         back_populates="release",
         cascade="all, delete-orphan",
     )
@@ -2453,3 +2613,173 @@ class DNARepositoryTimelineEvent(Base):
     repository = relationship("DNARepository", back_populates="timeline_events")
     release = relationship("DNARepositoryRelease", back_populates="timeline_events")
     actor = relationship("User")
+
+
+class DNARepositoryFederationLink(Base):
+    __tablename__ = "dna_repository_federation_links"
+
+    # purpose: map guarded DNA repositories to federated partner workspaces
+    # status: experimental
+    # depends_on: dna_repositories
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    external_repository_id = Column(String, nullable=False)
+    external_organization = Column(String, nullable=False)
+    trust_state = Column(String, default="pending", nullable=False)
+    permissions = Column(JSON, default=dict, nullable=False)
+    guardrail_contract = Column(JSON, default=dict, nullable=False)
+    last_attested_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    repository = relationship("DNARepository", back_populates="federation_links")
+    attestations = relationship(
+        "DNARepositoryFederationAttestation",
+        back_populates="link",
+        cascade="all, delete-orphan",
+        order_by="DNARepositoryFederationAttestation.created_at.desc()",
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "repository_id",
+            "external_repository_id",
+            name="uq_dna_repository_federation_peer",
+        ),
+    )
+
+
+class DNARepositoryFederationAttestation(Base):
+    __tablename__ = "dna_repository_federation_attestations"
+
+    # purpose: persist cross-organization guardrail attestation packages
+    # status: experimental
+    # depends_on: dna_repository_federation_links, dna_repository_releases
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    link_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_federation_links.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    release_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_releases.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    attestor_organization = Column(String, nullable=False)
+    attestor_contact = Column(String, nullable=True)
+    guardrail_summary = Column(JSON, default=dict, nullable=False)
+    provenance_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+
+    link = relationship("DNARepositoryFederationLink", back_populates="attestations")
+    release = relationship("DNARepositoryRelease")
+    actor = relationship("User")
+
+
+class DNARepositoryReleaseChannel(Base):
+    __tablename__ = "dna_repository_release_channels"
+
+    # purpose: define audience-specific release streams with governance guardrails
+    # status: experimental
+    # depends_on: dna_repositories, dna_repository_federation_links
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    repository_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repositories.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    federation_link_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_federation_links.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    name = Column(String, nullable=False)
+    slug = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    audience_scope = Column(String, default="internal", nullable=False)
+    guardrail_profile = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+    updated_at = Column(
+        DateTime,
+        default=datetime.now(timezone.utc),
+        onupdate=datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    repository = relationship("DNARepository", back_populates="release_channels")
+    federation_link = relationship("DNARepositoryFederationLink")
+    versions = relationship(
+        "DNARepositoryReleaseChannelVersion",
+        back_populates="channel",
+        cascade="all, delete-orphan",
+        order_by="DNARepositoryReleaseChannelVersion.sequence.asc()",
+    )
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "repository_id",
+            "slug",
+            name="uq_dna_repository_release_channel",
+        ),
+    )
+
+
+class DNARepositoryReleaseChannelVersion(Base):
+    __tablename__ = "dna_repository_release_channel_versions"
+
+    # purpose: capture release placements within channels with attestation metadata
+    # status: experimental
+    # depends_on: dna_repository_release_channels, dna_repository_releases
+    # related_docs: docs/sharing/README.md
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    channel_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_release_channels.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    release_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("dna_repository_releases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    sequence = Column(Integer, nullable=False)
+    version_label = Column(String, nullable=False)
+    guardrail_attestation = Column(JSON, default=dict, nullable=False)
+    provenance_snapshot = Column(JSON, default=dict, nullable=False)
+    mitigation_digest = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.now(timezone.utc), nullable=False)
+
+    channel = relationship("DNARepositoryReleaseChannel", back_populates="versions")
+    release = relationship("DNARepositoryRelease", back_populates="channel_versions")
+
+    __table_args__ = (
+        sa.UniqueConstraint(
+            "channel_id",
+            "sequence",
+            name="uq_dna_repository_channel_sequence",
+        ),
+    )

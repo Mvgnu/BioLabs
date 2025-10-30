@@ -60,6 +60,7 @@ from .routes import (
     workflows,
     sharing,
     lifecycle,
+    instrumentation,
 )
 
 
@@ -151,6 +152,7 @@ app.include_router(knowledge.router)
 app.include_router(workflows.router)
 app.include_router(sharing.router)
 app.include_router(lifecycle.router)
+app.include_router(instrumentation.router)
 
 
 def audit_routes():
