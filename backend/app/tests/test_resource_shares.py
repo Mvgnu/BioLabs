@@ -1,10 +1,9 @@
-from .conftest import client
+from .conftest import client, ensure_auth_headers
 
 
 def get_headers(client, email):
-    resp = client.post("/api/auth/register", json={"email": email, "password": "secret"})
-    token = resp.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    headers, _ = ensure_auth_headers(client, email=email)
+    return headers
 
 
 def test_resource_share_flow(client):
