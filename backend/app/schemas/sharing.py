@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,6 +39,8 @@ class DNARepositoryOut(DNARepositoryBase):
     updated_at: datetime
     collaborators: list["DNARepositoryCollaboratorOut"] = []
     releases: list["DNARepositoryReleaseOut"] = []
+    federation_links: list["DNARepositoryFederationLinkOut"] = []
+    release_channels: list["DNARepositoryReleaseChannelOut"] = []
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -67,6 +69,18 @@ class DNARepositoryReleaseCreate(BaseModel):
         default=None,
         description="Optional planner session anchor enforcing custody checks",
     )
+    lifecycle_snapshot: dict = Field(
+        default_factory=dict,
+        description="Captured lifecycle aggregation context for provenance",
+    )
+    mitigation_history: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Historical guardrail mitigation actions applied to the release",
+    )
+    replay_checkpoint: dict = Field(
+        default_factory=dict,
+        description="Planner replay checkpoint payload aligning release assets",
+    )
 
 
 class DNARepositoryReleaseOut(BaseModel):
@@ -80,6 +94,10 @@ class DNARepositoryReleaseOut(BaseModel):
     guardrail_snapshot: dict
     mitigation_summary: Optional[str]
     created_by_id: UUID
+    planner_session_id: Optional[UUID]
+    lifecycle_snapshot: dict
+    mitigation_history: list[dict[str, Any]]
+    replay_checkpoint: dict
     created_at: datetime
     updated_at: datetime
     published_at: Optional[datetime]
@@ -113,5 +131,123 @@ class DNARepositoryTimelineEventOut(BaseModel):
     payload: dict
     created_at: datetime
     created_by_id: Optional[UUID]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DNARepositoryFederationLinkCreate(BaseModel):
+    external_repository_id: str
+    external_organization: str
+    permissions: dict = Field(default_factory=dict)
+    guardrail_contract: dict = Field(default_factory=dict)
+
+
+class DNARepositoryFederationLinkOut(BaseModel):
+    id: UUID
+    repository_id: UUID
+    external_repository_id: str
+    external_organization: str
+    trust_state: str
+    permissions: dict
+    guardrail_contract: dict
+    last_attested_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    attestations: list["DNARepositoryFederationAttestationOut"] = []
+    grants: list["DNARepositoryFederationGrantOut"] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DNARepositoryFederationAttestationCreate(BaseModel):
+    release_id: Optional[UUID] = None
+    attestor_organization: str
+    attestor_contact: Optional[str] = None
+    guardrail_summary: dict = Field(default_factory=dict)
+    provenance_notes: Optional[str] = None
+
+
+class DNARepositoryFederationAttestationOut(BaseModel):
+    id: UUID
+    link_id: UUID
+    release_id: Optional[UUID]
+    attestor_organization: str
+    attestor_contact: Optional[str]
+    guardrail_summary: dict
+    provenance_notes: Optional[str]
+    created_at: datetime
+    created_by_id: Optional[UUID]
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DNARepositoryFederationGrantCreate(BaseModel):
+    organization: str
+    permission_tier: Literal["reviewer", "publisher", "observer"] = "reviewer"
+    guardrail_scope: dict = Field(default_factory=dict)
+
+
+class DNARepositoryFederationGrantDecision(BaseModel):
+    decision: Literal["approve", "revoke"]
+    notes: Optional[str] = None
+
+
+class DNARepositoryFederationGrantOut(BaseModel):
+    id: UUID
+    link_id: UUID
+    organization: str
+    permission_tier: str
+    guardrail_scope: dict
+    handshake_state: str
+    requested_by_id: Optional[UUID]
+    approved_by_id: Optional[UUID]
+    activated_at: Optional[datetime]
+    revoked_at: Optional[datetime]
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DNARepositoryReleaseChannelCreate(BaseModel):
+    name: str
+    slug: str
+    description: Optional[str] = None
+    audience_scope: Literal["internal", "partners", "public"] = "internal"
+    guardrail_profile: dict = Field(default_factory=dict)
+    federation_link_id: Optional[UUID] = None
+
+
+class DNARepositoryReleaseChannelOut(BaseModel):
+    id: UUID
+    repository_id: UUID
+    federation_link_id: Optional[UUID]
+    name: str
+    slug: str
+    description: Optional[str]
+    audience_scope: str
+    guardrail_profile: dict
+    created_at: datetime
+    updated_at: datetime
+    versions: list["DNARepositoryReleaseChannelVersionOut"] = []
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DNARepositoryReleaseChannelVersionCreate(BaseModel):
+    release_id: UUID
+    version_label: str
+    guardrail_attestation: dict = Field(default_factory=dict)
+    provenance_snapshot: dict = Field(default_factory=dict)
+    mitigation_digest: Optional[str] = None
+    grant_id: Optional[UUID] = None
+
+
+class DNARepositoryReleaseChannelVersionOut(BaseModel):
+    id: UUID
+    channel_id: UUID
+    release_id: UUID
+    sequence: int
+    version_label: str
+    guardrail_attestation: dict
+    provenance_snapshot: dict
+    mitigation_digest: Optional[str]
+    created_at: datetime
+    grant_id: Optional[UUID]
     model_config = ConfigDict(from_attributes=True)
 

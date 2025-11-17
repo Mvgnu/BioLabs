@@ -1,14 +1,11 @@
-from .conftest import client
-import uuid
+from .conftest import client, ensure_auth_headers
 import json
 from datetime import datetime
 
 
 def get_auth_headers(client, email=None):
-    email = email or f"user{uuid.uuid4()}@example.com"
-    resp = client.post("/api/auth/register", json={"email": email, "password": "secret"})
-    token = resp.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    headers, _ = ensure_auth_headers(client, email=email)
+    return headers
 
 
 def create_item(client, headers, name="Sample", status="available"):

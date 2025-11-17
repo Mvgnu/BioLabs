@@ -46,6 +46,7 @@ from .routes import (
     labs,
     resource_shares,
     marketplace,
+    billing,
     services,
     forum,
     community,
@@ -60,6 +61,7 @@ from .routes import (
     workflows,
     sharing,
     lifecycle,
+    instrumentation,
 )
 
 
@@ -136,6 +138,7 @@ app.include_router(audit.router)
 app.include_router(labs.router)
 app.include_router(resource_shares.router)
 app.include_router(marketplace.router)
+app.include_router(billing.router)
 app.include_router(services.router)
 app.include_router(forum.router)
 app.include_router(community.router)
@@ -151,6 +154,7 @@ app.include_router(knowledge.router)
 app.include_router(workflows.router)
 app.include_router(sharing.router)
 app.include_router(lifecycle.router)
+app.include_router(instrumentation.router)
 
 
 def audit_routes():

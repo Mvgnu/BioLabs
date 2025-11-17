@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 from uuid import UUID
 
+import sqlalchemy as sa
 from sqlalchemy.orm import Session
 
 from .. import models, notify, schemas
@@ -129,6 +130,10 @@ def create_release(
         title=payload.title,
         notes=payload.notes,
         created_by_id=actor_id,
+        planner_session_id=payload.planner_session_id,
+        lifecycle_snapshot=payload.lifecycle_snapshot,
+        mitigation_history=payload.mitigation_history,
+        replay_checkpoint=payload.replay_checkpoint,
         status=status,
         guardrail_state=guardrail_state,
         guardrail_snapshot=payload.guardrail_snapshot,
@@ -145,6 +150,12 @@ def create_release(
             "release_id": str(release.id),
             "version": release.version,
             "guardrail_state": release.guardrail_state,
+            "planner_session_id": str(payload.planner_session_id)
+            if payload.planner_session_id
+            else None,
+            "lifecycle_snapshot": payload.lifecycle_snapshot,
+            "mitigation_history": payload.mitigation_history,
+            "replay_checkpoint": payload.replay_checkpoint,
         },
         release=release,
     )
@@ -188,13 +199,14 @@ def record_release_approval(
         release.repository,
         event_type="release.approval_recorded",
         actor_id=approver_id,
-        payload={
-            "release_id": str(release.id),
-            "status": approval.status,
-            "guardrail_flags": approval.guardrail_flags,
-        },
-        release=release,
-    )
+          payload={
+              "release_id": str(release.id),
+              "status": approval.status,
+              "guardrail_flags": approval.guardrail_flags,
+              "mitigation_history": release.mitigation_history,
+          },
+          release=release,
+      )
 
     if approval_payload.status == "rejected":
         release.status = "rejected"
@@ -232,13 +244,246 @@ def _maybe_publish_release(db: Session, release: models.DNARepositoryRelease) ->
         repo,
         event_type="release.published",
         actor_id=None,
+          payload={
+              "release_id": str(release.id),
+              "version": release.version,
+              "replay_checkpoint": release.replay_checkpoint,
+              "lifecycle_snapshot": release.lifecycle_snapshot,
+          },
+          release=release,
+      )
+    _notify_release_publication(db, release)
+
+
+def request_federation_link(
+    db: Session,
+    repo: models.DNARepository,
+    payload: schemas.DNARepositoryFederationLinkCreate,
+    *,
+    actor_id: UUID,
+) -> models.DNARepositoryFederationLink:
+    """Register a pending federation link and emit a governance timeline entry."""
+
+    link = models.DNARepositoryFederationLink(
+        repository_id=repo.id,
+        external_repository_id=payload.external_repository_id,
+        external_organization=payload.external_organization,
+        permissions=payload.permissions,
+        guardrail_contract=payload.guardrail_contract,
+        trust_state="requested",
+    )
+    db.add(link)
+    db.flush()
+    _create_timeline_event(
+        db,
+        repo,
+        event_type="federation.link_requested",
+        actor_id=actor_id,
         payload={
-            "release_id": str(release.id),
-            "version": release.version,
+            "link_id": str(link.id),
+            "external_repository_id": link.external_repository_id,
+            "external_organization": link.external_organization,
+        },
+    )
+    return link
+
+
+def record_federation_attestation(
+    db: Session,
+    link: models.DNARepositoryFederationLink,
+    payload: schemas.DNARepositoryFederationAttestationCreate,
+    *,
+    actor_id: UUID,
+) -> models.DNARepositoryFederationAttestation:
+    """Capture a guardrail attestation from a federated partner."""
+
+    release: models.DNARepositoryRelease | None = None
+    if payload.release_id:
+        release = db.get(models.DNARepositoryRelease, payload.release_id)
+
+    attestation = models.DNARepositoryFederationAttestation(
+        link_id=link.id,
+        release_id=payload.release_id,
+        attestor_organization=payload.attestor_organization,
+        attestor_contact=payload.attestor_contact,
+        guardrail_summary=payload.guardrail_summary,
+        provenance_notes=payload.provenance_notes,
+        created_by_id=actor_id,
+    )
+    link.trust_state = "attested"
+    link.last_attested_at = datetime.now(timezone.utc)
+    db.add(attestation)
+    db.add(link)
+    _create_timeline_event(
+        db,
+        link.repository,
+        event_type="federation.attestation_recorded",
+        actor_id=actor_id,
+        payload={
+            "link_id": str(link.id),
+            "attestor": attestation.attestor_organization,
+            "release_id": str(payload.release_id) if payload.release_id else None,
         },
         release=release,
     )
-    _notify_release_publication(db, release)
+    return attestation
+
+
+def request_federation_grant(
+    db: Session,
+    link: models.DNARepositoryFederationLink,
+    payload: schemas.DNARepositoryFederationGrantCreate,
+    *,
+    actor_id: UUID,
+) -> models.DNARepositoryFederationGrant:
+    """Request cross-organization access within a federated workspace."""
+
+    now = datetime.now(timezone.utc)
+    grant = models.DNARepositoryFederationGrant(
+        link_id=link.id,
+        organization=payload.organization,
+        permission_tier=payload.permission_tier,
+        guardrail_scope=payload.guardrail_scope,
+        handshake_state="pending",
+        requested_by_id=actor_id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(grant)
+    db.flush()
+    _create_timeline_event(
+        db,
+        link.repository,
+        event_type="federation.grant_requested",
+        actor_id=actor_id,
+        payload={
+            "link_id": str(link.id),
+            "grant_id": str(grant.id),
+            "organization": grant.organization,
+            "permission_tier": grant.permission_tier,
+        },
+    )
+    return grant
+
+
+def record_federation_grant_decision(
+    db: Session,
+    grant: models.DNARepositoryFederationGrant,
+    payload: schemas.DNARepositoryFederationGrantDecision,
+    *,
+    actor_id: UUID,
+) -> models.DNARepositoryFederationGrant:
+    """Approve or revoke a federated grant and emit guardrail timeline events."""
+
+    now = datetime.now(timezone.utc)
+    if payload.decision == "approve":
+        grant.handshake_state = "active"
+        grant.approved_by_id = actor_id
+        grant.activated_at = now
+        grant.revoked_at = None
+    else:
+        grant.handshake_state = "revoked"
+        grant.revoked_at = now
+    grant.updated_at = now
+    db.add(grant)
+    _create_timeline_event(
+        db,
+        grant.link.repository,
+        event_type=(
+            "federation.grant_approved"
+            if payload.decision == "approve"
+            else "federation.grant_revoked"
+        ),
+        actor_id=actor_id,
+        payload={
+            "grant_id": str(grant.id),
+            "organization": grant.organization,
+            "decision": payload.decision,
+        },
+    )
+    return grant
+
+
+def create_release_channel(
+    db: Session,
+    repo: models.DNARepository,
+    payload: schemas.DNARepositoryReleaseChannelCreate,
+    *,
+    actor_id: UUID,
+) -> models.DNARepositoryReleaseChannel:
+    """Provision a release channel to manage audience-specific publishing."""
+
+    channel = models.DNARepositoryReleaseChannel(
+        repository_id=repo.id,
+        federation_link_id=payload.federation_link_id,
+        name=payload.name,
+        slug=payload.slug,
+        description=payload.description,
+        audience_scope=payload.audience_scope,
+        guardrail_profile=payload.guardrail_profile,
+    )
+    db.add(channel)
+    db.flush()
+    _create_timeline_event(
+        db,
+        repo,
+        event_type="channel.created",
+        actor_id=actor_id,
+        payload={
+            "channel_id": str(channel.id),
+            "slug": channel.slug,
+            "audience_scope": channel.audience_scope,
+        },
+    )
+    return channel
+
+
+def publish_release_to_channel(
+    db: Session,
+    channel: models.DNARepositoryReleaseChannel,
+    release: models.DNARepositoryRelease,
+    payload: schemas.DNARepositoryReleaseChannelVersionCreate,
+    *,
+    actor_id: UUID,
+) -> models.DNARepositoryReleaseChannelVersion:
+    """Link a release to a channel with attestation metadata and sequencing."""
+
+    next_sequence = _next_channel_sequence(db, channel.id)
+    grant_id = payload.grant_id
+    if grant_id:
+        grant = db.get(models.DNARepositoryFederationGrant, grant_id)
+        if not grant or grant.link.repository_id != release.repository_id:
+            raise ValueError("Grant does not belong to repository")
+        if grant.handshake_state != "active":
+            raise ValueError("Grant must be active to publish to a channel")
+    else:
+        grant = None
+    version = models.DNARepositoryReleaseChannelVersion(
+        channel_id=channel.id,
+        release_id=release.id,
+        sequence=next_sequence,
+        version_label=payload.version_label,
+        guardrail_attestation=payload.guardrail_attestation,
+        provenance_snapshot=payload.provenance_snapshot,
+        mitigation_digest=payload.mitigation_digest,
+        grant_id=grant.id if grant else None,
+    )
+    db.add(version)
+    db.flush()
+    _create_timeline_event(
+        db,
+        release.repository,
+        event_type="channel.version_published",
+        actor_id=actor_id,
+        payload={
+            "channel_id": str(channel.id),
+            "release_id": str(release.id),
+            "sequence": next_sequence,
+            "grant_id": str(grant.id) if grant else None,
+        },
+        release=release,
+    )
+    return version
 
 
 def _notify_release_publication(db: Session, release: models.DNARepositoryRelease) -> None:
@@ -253,6 +498,15 @@ def _notify_release_publication(db: Session, release: models.DNARepositoryReleas
         user = collaborator.user
         if user and user.email:
             notify.send_email(user.email, subject, message)
+
+
+def _next_channel_sequence(db: Session, channel_id: UUID) -> int:
+    last_sequence = (
+        db.query(sa.func.max(models.DNARepositoryReleaseChannelVersion.sequence))
+        .filter(models.DNARepositoryReleaseChannelVersion.channel_id == channel_id)
+        .scalar()
+    )
+    return int(last_sequence or 0) + 1
 
 
 def _create_timeline_event(

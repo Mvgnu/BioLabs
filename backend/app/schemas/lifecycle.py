@@ -52,6 +52,9 @@ class LifecycleSummary(BaseModel):
     latest_event_at: datetime | None = None
     custody_state: str | None = None
     context_chips: list[LifecycleContextChip] = Field(default_factory=list)
+    compliance_allowed: bool | None = None
+    compliance_flags: list[str] = Field(default_factory=list)
+    compliance_region: str | None = None
 
 
 class LifecycleTimelineResponse(BaseModel):

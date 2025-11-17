@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import func
+from uuid import UUID
 
 from ..database import get_db
 from ..auth import get_current_user
@@ -10,14 +11,19 @@ from .. import models, schemas
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
+
+def _user_team_ids(user: models.User) -> list[UUID]:
+    members = getattr(user, "teams", []) or []
+    return [member.team_id for member in members if getattr(member, "team_id", None)]
+
+
 @router.get("/summary", response_model=List[schemas.ItemTypeCount])
 def analytics_summary(db: Session = Depends(get_db), user: models.User = Depends(get_current_user)):
-    rows = (
-        db.query(models.InventoryItem.item_type, func.count(models.InventoryItem.id))
-        .filter(models.InventoryItem.team_id == user.team_id)
-        .group_by(models.InventoryItem.item_type)
-        .all()
-    )
+    team_ids = _user_team_ids(user)
+    query = db.query(models.InventoryItem.item_type, func.count(models.InventoryItem.id))
+    if team_ids:
+        query = query.filter(models.InventoryItem.team_id.in_(team_ids))
+    rows = query.group_by(models.InventoryItem.item_type).all()
     return [{"item_type": r[0], "count": r[1]} for r in rows]
 
 
@@ -28,7 +34,8 @@ def analytics_trending_protocols(
     user: models.User = Depends(get_current_user),
 ):
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    rows = (
+    team_ids = _user_team_ids(user)
+    query = (
         db.query(
             models.ProtocolExecution.template_id,
             func.count(models.ProtocolExecution.id).label("cnt"),
@@ -36,10 +43,10 @@ def analytics_trending_protocols(
         )
         .join(models.ProtocolTemplate, models.ProtocolExecution.template_id == models.ProtocolTemplate.id)
         .filter(models.ProtocolExecution.created_at >= since)
-        .filter(models.ProtocolTemplate.team_id == user.team_id)
-        .group_by(models.ProtocolExecution.template_id)
-        .all()
     )
+    if team_ids:
+        query = query.filter(models.ProtocolTemplate.team_id.in_(team_ids))
+    rows = query.group_by(models.ProtocolExecution.template_id).all()
     scored = [
         (
             r.template_id,
@@ -233,7 +240,6 @@ def analytics_trending_articles(
         )
         .join(models.KnowledgeArticle, models.KnowledgeArticleView.article_id == models.KnowledgeArticle.id)
         .filter(models.KnowledgeArticleView.viewed_at >= since)
-        .filter(models.KnowledgeArticle.team_id == user.team_id)
         .group_by(models.KnowledgeArticleView.article_id)
         .all()
     )
@@ -272,7 +278,8 @@ def analytics_trending_items(
     user: models.User = Depends(get_current_user),
 ):
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    rows = (
+    team_ids = _user_team_ids(user)
+    query = (
         db.query(
             models.NotebookEntry.item_id,
             func.count(models.NotebookEntry.id).label("cnt"),
@@ -282,11 +289,11 @@ def analytics_trending_items(
         .filter(
             models.NotebookEntry.item_id.isnot(None),
             models.NotebookEntry.created_at >= since,
-            models.InventoryItem.team_id == user.team_id
         )
-        .group_by(models.NotebookEntry.item_id)
-        .all()
     )
+    if team_ids:
+        query = query.filter(models.InventoryItem.team_id.in_(team_ids))
+    rows = query.group_by(models.NotebookEntry.item_id).all()
     scored = [
         (
             r.item_id,
@@ -333,7 +340,6 @@ def analytics_trending_threads(
         )
         .join(models.ForumThread, models.ForumPost.thread_id == models.ForumThread.id)
         .filter(models.ForumPost.created_at >= since)
-        .filter(models.ForumThread.team_id == user.team_id)
         .group_by(models.ForumPost.thread_id)
         .all()
     )
@@ -376,42 +382,40 @@ def analytics_trending_posts(
     user: models.User = Depends(get_current_user),
 ):
     since = datetime.now(timezone.utc) - timedelta(days=days)
-    likes = (
+    rows = (
         db.query(
-            models.PostLike.post_id,
-            func.count(models.PostLike.user_id).label("cnt"),
+            models.CommunityPortfolio.id,
+            models.CommunityPortfolio.slug,
+            models.CommunityPortfolio.title,
+            models.CommunityPortfolio.guardrail_flags,
+            func.coalesce(func.sum(models.CommunityPortfolioEngagement.weight), 0).label("engagement_total"),
         )
-        .filter(models.PostLike.created_at >= since)
-        .group_by(models.PostLike.post_id)
+        .join(
+            models.CommunityPortfolioEngagement,
+            models.CommunityPortfolioEngagement.portfolio_id == models.CommunityPortfolio.id,
+        )
+        .filter(models.CommunityPortfolioEngagement.created_at >= since)
+        .filter(models.CommunityPortfolio.status == "published")
+        .group_by(
+            models.CommunityPortfolio.id,
+            models.CommunityPortfolio.slug,
+            models.CommunityPortfolio.title,
+            models.CommunityPortfolio.guardrail_flags,
+        )
+        .order_by(func.coalesce(func.sum(models.CommunityPortfolioEngagement.weight), 0).desc())
+        .limit(5)
         .all()
     )
-    ids = [l.post_id for l in likes]
-    posts = {
-        p.id: p
-        for p in db.query(models.Post).filter(models.Post.id.in_(ids)).all()
-    }
-    scored = [
-        (
-            l.post_id,
-            l.cnt,
-            l.cnt
-            / (
-                1
-                + (
-                    datetime.now(timezone.utc)
-                    - posts[l.post_id].created_at.replace(tzinfo=timezone.utc)
-                ).days
-            ),
+    results: list[schemas.TrendingPost] = []
+    for row in rows:
+        guardrail_flags = list(row.guardrail_flags or []) if isinstance(row.guardrail_flags, list) else []
+        results.append(
+            schemas.TrendingPost(
+                portfolio_id=row.id,
+                slug=row.slug,
+                title=row.title,
+                guardrail_flags=guardrail_flags,
+                engagement_count=float(row.engagement_total or 0.0),
+            )
         )
-        for l in likes
-        if l.post_id in posts
-    ]
-    scored.sort(key=lambda x: x[2], reverse=True)
-    return [
-        {
-            "post_id": pid,
-            "content": posts[pid].content,
-            "count": cnt,
-        }
-        for pid, cnt, _score in scored[:5]
-    ]
+    return results

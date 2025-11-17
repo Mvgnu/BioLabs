@@ -95,7 +95,7 @@ export const LifecycleSummaryPanel: FC<LifecycleSummaryPanelProps> = ({ scope, l
           ))}
         </div>
       </header>
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-5">
         <div className="rounded border border-slate-100 bg-slate-50 p-3">
           <p className="text-xs uppercase text-slate-500">Total events</p>
           <p className="text-xl font-semibold text-slate-900">{summary?.total_events ?? entries.length}</p>
@@ -112,7 +112,32 @@ export const LifecycleSummaryPanel: FC<LifecycleSummaryPanelProps> = ({ scope, l
           <p className="text-xs uppercase text-slate-500">Custody state</p>
           <p className="text-xl font-semibold text-slate-900">{summary?.custody_state ?? '—'}</p>
         </div>
+        <div className="rounded border border-slate-100 bg-slate-50 p-3">
+          <p className="text-xs uppercase text-slate-500">Residency</p>
+          <p
+            className={`text-xl font-semibold ${
+              summary?.compliance_allowed === false
+                ? 'text-rose-600'
+                : summary?.compliance_allowed
+                  ? 'text-emerald-600'
+                  : 'text-slate-900'
+            }`}
+          >
+            {summary?.compliance_allowed === false
+              ? 'Blocked'
+              : summary?.compliance_allowed
+                ? 'Allowed'
+                : 'Unknown'}
+          </p>
+          <p className="text-xs text-slate-500">{summary?.compliance_region ?? '—'}</p>
+        </div>
       </div>
+      {summary?.compliance_flags && summary.compliance_flags.length > 0 ? (
+        <div className="rounded border border-amber-200 bg-amber-50 p-3">
+          <p className="text-xs uppercase text-amber-600">Residency guardrails</p>
+          <p className="text-sm text-amber-700">{summary.compliance_flags.join(', ')}</p>
+        </div>
+      ) : null}
       {entries.length === 0 ? (
         <p className="text-sm text-slate-500">No lifecycle events recorded yet.</p>
       ) : (

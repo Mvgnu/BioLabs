@@ -494,13 +494,21 @@ def _apply_reassign_override_effect(
     if not isinstance(before_values, Iterable) or not isinstance(after_values, Iterable):
         return 0.0
 
-    current_assignments = baseline_assignments.get(baseline_uuid)
+    status_normalized = str(status or "").lower()
     before_set = _normalise_uuid_set(before_values)
     after_set = _normalise_uuid_set(after_values)
-    if current_assignments is None:
-        current_assignments = before_set
 
-    desired_set = after_set
+    if status_normalized not in {"executed", "reversed"}:
+        return 0.0
+
+    if status_normalized == "reversed":
+        desired_set = before_set
+        fallback_current = after_set
+    else:
+        desired_set = after_set
+        fallback_current = before_set
+
+    current_assignments = set(baseline_assignments.get(baseline_uuid) or fallback_current)
     additions = desired_set - current_assignments
     removals = current_assignments - desired_set
 
@@ -517,7 +525,9 @@ def _apply_reassign_override_effect(
         if pending and accumulator.pending > 0:
             accumulator.pending -= 1
 
-    baseline_assignments[baseline_uuid] = desired_set
+    baseline_assignments[baseline_uuid] = set(desired_set)
+
+    return float(len(additions) - len(removals))
 
 
 def compute_guardrail_health(

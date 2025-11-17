@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from ..auth import get_current_user
 from .. import models, schemas
 from ..database import get_db
+from ..services import billing as billing_service
 from ..sequence import (
     process_sequence_file,
     align_sequences,
@@ -112,12 +113,13 @@ async def create_analysis_job(
     user: models.User = Depends(get_current_user),
 ):
     data = await upload.read()
-    job = models.SequenceAnalysisJob(user_id=user.id, format=format)
+    job = models.SequenceAnalysisJob(user_id=user.id, format=format, result=None)
     db.add(job)
+    db.flush()
+    _emit_sequence_usage_event(db, user, job)
     db.commit()
     db.refresh(job)
     enqueue_analyze_sequence_job(str(job.id), data, format)
-    db.refresh(job)
     return job
 
 
@@ -156,3 +158,40 @@ async def get_analysis_job(
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return job
+
+
+def _emit_sequence_usage_event(db: Session, user: models.User, job: models.SequenceAnalysisJob) -> None:
+    team_id, organization_id = _resolve_user_team_scope(db, user)
+    if not organization_id:
+        return
+    try:
+        billing_service.record_usage_event(
+            db,
+            schemas.MarketplaceUsageEventCreate(
+                organization_id=organization_id,
+                team_id=team_id,
+                user_id=user.id,
+                service="analytics",
+                operation="sequence_analysis_job",
+                unit_quantity=1.0,
+                credits_consumed=5,
+                guardrail_flags=[],
+                metadata={"job_id": str(job.id), "format": job.format},
+            ),
+        )
+    except billing_service.SubscriptionNotFound:
+        return
+
+
+def _resolve_user_team_scope(db: Session, user: models.User) -> tuple[UUID | None, UUID | None]:
+    membership = (
+        db.query(models.TeamMember)
+        .join(models.Team)
+        .filter(models.TeamMember.user_id == user.id)
+        .filter(models.Team.organization_id.isnot(None))
+        .order_by(models.Team.created_at.asc())
+        .first()
+    )
+    if membership and membership.team and membership.team.organization_id:
+        return membership.team.id, membership.team.organization_id
+    return None, None

@@ -42,12 +42,57 @@ from .lifecycle import (
     LifecycleTimelineEntry,
     LifecycleTimelineResponse,
 )
+from .compliance import (
+    ComplianceOrganizationReport,
+    ComplianceRecordOut,
+    ComplianceRecordPayload,
+    ComplianceRecordUpdatePayload,
+    ComplianceReport,
+    ComplianceSummaryRow,
+    LegalHoldCreate,
+    LegalHoldOut,
+    OrganizationCreate,
+    OrganizationOut,
+    OrganizationUpdate,
+    ResidencyEvaluation,
+    ResidencyPolicyOut,
+    ResidencyPolicyPayload,
+)
+from .instrumentation import (
+    InstrumentCapabilityCreate,
+    InstrumentCapabilityOut,
+    InstrumentProfile,
+    InstrumentReservationCreate,
+    InstrumentReservationOut,
+    InstrumentRunDispatch,
+    InstrumentRunOut,
+    InstrumentRunStatusUpdate,
+    InstrumentRunTelemetryEnvelope,
+    InstrumentSimulationEvent,
+    InstrumentSimulationRequest,
+    InstrumentSimulationResult,
+    InstrumentSOPLinkCreate,
+    InstrumentSOPSummary,
+    InstrumentTelemetrySampleCreate,
+    InstrumentTelemetrySampleOut,
+)
 from .sharing import (
     DNARepositoryCollaboratorAdd,
     DNARepositoryCollaboratorOut,
     DNARepositoryCreate,
+    DNARepositoryFederationAttestationCreate,
+    DNARepositoryFederationAttestationOut,
+    DNARepositoryFederationLinkCreate,
+    DNARepositoryFederationLinkOut,
+    DNARepositoryFederationGrantCreate,
+    DNARepositoryFederationGrantDecision,
+    DNARepositoryFederationGrantOut,
     DNARepositoryGuardrailPolicy,
     DNARepositoryOut,
+    DNARepositoryReleaseChannelCreate,
+    DNARepositoryReleaseChannelOut,
+    DNARepositoryReleaseChannelVersionCreate,
+    DNARepositoryReleaseChannelVersionOut,
     DNARepositoryReleaseApprovalCreate,
     DNARepositoryReleaseApprovalOut,
     DNARepositoryReleaseCreate,
@@ -2435,9 +2480,11 @@ class TrendingThread(BaseModel):
 
 
 class TrendingPost(BaseModel):
-    post_id: UUID
-    content: str
-    count: int
+    portfolio_id: UUID
+    slug: str
+    title: str
+    guardrail_flags: List[str]
+    engagement_count: float
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2452,27 +2499,11 @@ class PubMedArticle(BaseModel):
     title: str
 
 
-class ComplianceRecordCreate(BaseModel):
-    item_id: UUID | None = None
-    record_type: str
-    status: str = "pending"
-    notes: str | None = None
+# purpose: legacy alias support for compliance schemas after module refactor
+# status: experimental
+ComplianceRecordCreate = ComplianceRecordPayload
+ComplianceRecordUpdate = ComplianceRecordUpdatePayload
 
-
-class ComplianceRecordUpdate(BaseModel):
-    status: str | None = None
-    notes: str | None = None
-
-
-class ComplianceRecordOut(BaseModel):
-    id: UUID
-    item_id: UUID | None = None
-    user_id: UUID | None = None
-    record_type: str
-    status: str
-    notes: str | None = None
-    created_at: datetime
-    model_config = ConfigDict(from_attributes=True)
 
 
 class KnowledgeArticleCreate(BaseModel):
@@ -2623,42 +2654,231 @@ class MarketplaceRequestOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class PostCreate(BaseModel):
-    content: str
-
-
-class PostOut(BaseModel):
+class MarketplacePlanFeatureOut(BaseModel):
     id: UUID
-    user_id: UUID
-    content: str
+    feature_key: str
+    label: str
+    details: str | None = None
     created_at: datetime
+
     model_config = ConfigDict(from_attributes=True)
 
 
-class FollowOut(BaseModel):
-    follower_id: UUID
-    followed_id: UUID
-    created_at: datetime
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PostReportCreate(BaseModel):
-    reason: str
-
-
-class PostReportOut(BaseModel):
+class MarketplacePricingPlanOut(BaseModel):
     id: UUID
-    post_id: UUID
-    reporter_id: UUID
-    reason: str
+    slug: str
+    title: str
+    description: str | None = None
+    billing_cadence: str
+    base_price_cents: int
+    credit_allowance: int
+    sla_tier: str
+    metadata: Dict[str, Any] = Field(alias='plan_metadata')
+    created_at: datetime
+    updated_at: datetime
+    features: List[MarketplacePlanFeatureOut]
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class MarketplaceSubscriptionCreate(BaseModel):
+    plan_id: UUID
+    billing_email: str | None = None
+    sla_acceptance: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MarketplaceSubscriptionOut(BaseModel):
+    id: UUID
+    organization_id: UUID
+    plan: MarketplacePricingPlanOut
     status: str
+    billing_email: str | None = None
+    started_at: datetime
+    renews_at: datetime | None = None
+    cancelled_at: datetime | None = None
+    sla_acceptance: Dict[str, Any]
+    current_credits: int
+    metadata: Dict[str, Any] = Field(alias='subscription_metadata')
     created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class MarketplaceUsageEventCreate(BaseModel):
+    organization_id: UUID
+    subscription_id: UUID | None = None
+    team_id: UUID | None = None
+    user_id: UUID | None = None
+    service: Literal["planner", "instrumentation", "dna_viewer", "analytics", "other"]
+    operation: str
+    unit_quantity: float = 0
+    credits_consumed: int = 0
+    guardrail_flags: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    occurred_at: datetime | None = None
+
+
+class MarketplaceUsageEventOut(BaseModel):
+    id: UUID
+    subscription_id: UUID | None = None
+    organization_id: UUID
+    team_id: UUID | None = None
+    user_id: UUID | None = None
+    service: str
+    operation: str
+    unit_quantity: float
+    credits_consumed: int
+    guardrail_flags: List[str]
+    metadata: Dict[str, Any] = Field(alias='event_metadata')
+    occurred_at: datetime
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class MarketplaceCreditAdjustmentCreate(BaseModel):
+    subscription_id: UUID
+    delta_credits: int
+    reason: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MarketplaceCreditLedgerOut(BaseModel):
+    id: UUID
+    subscription_id: UUID
+    organization_id: UUID
+    usage_event_id: UUID | None = None
+    delta_credits: int
+    reason: str
+    running_balance: int
+    metadata: Dict[str, Any] = Field(alias='ledger_metadata')
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
+
+
+class MarketplaceInvoiceOut(BaseModel):
+    id: UUID
+    subscription_id: UUID
+    organization_id: UUID
+    invoice_number: str
+    period_start: datetime
+    period_end: datetime
+    amount_due_cents: int
+    credit_usage: int
+    status: str
+    issued_at: datetime | None = None
+    paid_at: datetime | None = None
+    line_items: List[Dict[str, Any]]
+    created_at: datetime
+
     model_config = ConfigDict(from_attributes=True)
 
 
-class PostLikeOut(BaseModel):
-    post_id: UUID
+class MarketplaceInvoiceDraftRequest(BaseModel):
+    period_start: datetime
+    period_end: datetime
+
+
+class CommunityPortfolioAssetRef(BaseModel):
+    asset_type: Literal["protocol", "dna_asset", "planner_session"]
+    asset_id: UUID
+    asset_version_id: UUID | None = None
+    planner_session_id: UUID | None = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class CommunityPortfolioCreate(BaseModel):
+    slug: str
+    title: str
+    summary: str | None = None
+    visibility: Literal["public", "restricted"] = "public"
+    license: str = "CC-BY-4.0"
+    tags: List[str] = Field(default_factory=list)
+    attribution: Dict[str, Any] = Field(default_factory=dict)
+    provenance: Dict[str, Any] = Field(default_factory=dict)
+    mitigation_history: List[Dict[str, Any]] = Field(default_factory=list)
+    replay_checkpoints: List[Dict[str, Any]] = Field(default_factory=list)
+    assets: List[CommunityPortfolioAssetRef] = Field(default_factory=list)
+
+
+class CommunityPortfolioAssetOut(CommunityPortfolioAssetRef):
+    id: UUID
+    guardrail_snapshot: Dict[str, Any]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommunityPortfolioOut(BaseModel):
+    id: UUID
+    slug: str
+    title: str
+    summary: str | None = None
+    visibility: str
+    license: str
+    tags: List[str]
+    attribution: Dict[str, Any]
+    provenance: Dict[str, Any]
+    mitigation_history: List[Any]
+    replay_checkpoints: List[Any]
+    guardrail_flags: List[str]
+    engagement_score: float
+    status: str
+    published_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    assets: List[CommunityPortfolioAssetOut]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommunityPortfolioEngagementCreate(BaseModel):
+    interaction: Literal["view", "star", "bookmark", "review"]
+    weight: float | None = None
+
+
+class CommunityPortfolioEngagementOut(BaseModel):
+    id: UUID
+    portfolio_id: UUID
     user_id: UUID
+    interaction: str
+    weight: float
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CommunityFeedEntry(BaseModel):
+    portfolio: CommunityPortfolioOut
+    reason: str
+    score: float
+
+
+class CommunityTrendingPortfolio(BaseModel):
+    portfolio: CommunityPortfolioOut
+    engagement_delta: float
+    guardrail_summary: List[str] = Field(default_factory=list)
+
+
+class CommunityTrendingOut(BaseModel):
+    timeframe: Literal["24h", "7d", "30d"]
+    portfolios: List[CommunityTrendingPortfolio]
+
+
+class CommunityModerationDecision(BaseModel):
+    outcome: Literal["cleared", "requires_mitigation", "blocked"]
+    notes: str | None = None
+
+
+class CommunityModerationEventOut(BaseModel):
+    id: UUID
+    portfolio_id: UUID
+    triggered_by_id: UUID | None = None
+    guardrail_flags: List[str]
+    outcome: str
+    notes: str | None = None
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)

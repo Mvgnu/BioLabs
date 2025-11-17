@@ -11,22 +11,37 @@ const mocks = vi.hoisted(() => ({
   useApproveRelease: vi.fn(),
   useAddCollaborator: vi.fn(),
   useRepositoryTimeline: vi.fn(),
+  useSharingReviewStream: vi.fn(),
+  useRequestFederationGrant: vi.fn(),
+  useDecideFederationGrant: vi.fn(),
+  useCreateReleaseChannel: vi.fn(),
+  usePublishReleaseChannelVersion: vi.fn(),
 }))
 
 vi.mock('../../hooks/useSharingWorkspace', () => mocks)
 
-const {
-  useRepositories: mockUseRepositories,
-  useCreateRelease: mockUseCreateRelease,
-  useApproveRelease: mockUseApproveRelease,
-  useAddCollaborator: mockUseAddCollaborator,
-  useRepositoryTimeline: mockUseRepositoryTimeline,
-} = mocks
+  const {
+    useRepositories: mockUseRepositories,
+    useCreateRelease: mockUseCreateRelease,
+    useApproveRelease: mockUseApproveRelease,
+    useAddCollaborator: mockUseAddCollaborator,
+    useRepositoryTimeline: mockUseRepositoryTimeline,
+    useSharingReviewStream: mockUseSharingReviewStream,
+    useRequestFederationGrant: mockUseRequestGrant,
+    useDecideFederationGrant: mockUseDecideGrant,
+    useCreateReleaseChannel: mockUseCreateChannel,
+    usePublishReleaseChannelVersion: mockUsePublishChannel,
+  } = mocks
 
 describe('SharingWorkspacePage', () => {
   const approveMutate = vi.fn()
   const releaseMutate = vi.fn()
   const collaboratorMutate = vi.fn()
+
+  const requestGrantMutate = vi.fn()
+  const decideGrantMutate = vi.fn()
+  const createChannelMutate = vi.fn()
+  const publishChannelMutate = vi.fn()
 
   const repository: DNARepository = {
     id: 'repo-1',
@@ -66,10 +81,60 @@ describe('SharingWorkspacePage', () => {
         guardrail_snapshot: { custody_status: 'clear', breaches: [] },
         mitigation_summary: null,
         created_by_id: 'user-maintainer',
+        planner_session_id: null,
+        lifecycle_snapshot: { source: 'planner' },
+        mitigation_history: [],
+        replay_checkpoint: { checkpoint: 'final' },
         created_at: new Date('2024-01-02T00:00:00Z').toISOString(),
         updated_at: new Date('2024-01-02T00:00:00Z').toISOString(),
         published_at: null,
         approvals: [],
+      },
+    ],
+    federation_links: [
+      {
+        id: 'link-1',
+        repository_id: 'repo-1',
+        external_repository_id: 'ext-1',
+        external_organization: 'Partner Org',
+        trust_state: 'pending',
+        permissions: { pull: true },
+        guardrail_contract: { nda: true },
+        last_attested_at: null,
+        created_at: new Date('2024-01-02T00:00:00Z').toISOString(),
+        updated_at: new Date('2024-01-02T00:00:00Z').toISOString(),
+        attestations: [],
+        grants: [
+          {
+            id: 'grant-1',
+            link_id: 'link-1',
+            organization: 'Partner Org',
+            permission_tier: 'reviewer',
+            guardrail_scope: { datasets: ['summary'] },
+            handshake_state: 'pending',
+            requested_by_id: 'user-owner',
+            approved_by_id: null,
+            activated_at: null,
+            revoked_at: null,
+            created_at: new Date('2024-01-02T00:00:00Z').toISOString(),
+            updated_at: new Date('2024-01-02T00:00:00Z').toISOString(),
+          },
+        ],
+      },
+    ],
+    release_channels: [
+      {
+        id: 'channel-1',
+        repository_id: 'repo-1',
+        federation_link_id: 'link-1',
+        name: 'Partner Channel',
+        slug: 'partner',
+        description: 'Partner distribution',
+        audience_scope: 'partners',
+        guardrail_profile: { requires_grant: true },
+        created_at: new Date('2024-01-02T00:00:00Z').toISOString(),
+        updated_at: new Date('2024-01-02T00:00:00Z').toISOString(),
+        versions: [],
       },
     ],
   }
@@ -96,6 +161,11 @@ describe('SharingWorkspacePage', () => {
         },
       ],
     })
+    mockUseSharingReviewStream.mockReturnValue({ isConnected: false, close: vi.fn() })
+    mockUseRequestGrant.mockReturnValue({ mutate: requestGrantMutate, isPending: false })
+    mockUseDecideGrant.mockReturnValue({ mutate: decideGrantMutate, isPending: false })
+    mockUseCreateChannel.mockReturnValue({ mutate: createChannelMutate, isPending: false })
+    mockUsePublishChannel.mockReturnValue({ mutate: publishChannelMutate, isPending: false })
   })
 
   it('renders repository details and guardrail policy', () => {
@@ -118,5 +188,12 @@ describe('SharingWorkspacePage', () => {
       id: 'rel-1',
       data: { status: 'approved', guardrail_flags: [], notes: 'Approved from workspace' },
     })
+  })
+
+  it('renders federation grant and release channel sections', () => {
+    render(<SharingWorkspacePage />)
+
+    expect(screen.getAllByText('Federated Collaborations')[0]).toBeDefined()
+    expect(screen.getAllByText('Release Channels')[0]).toBeDefined()
   })
 })
